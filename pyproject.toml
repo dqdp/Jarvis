@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis-assistant-core"
+version = "0.0.0"
+description = "Local-first personal assistant core daemon"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.18",
+  "asyncpg>=0.31",
+  "fastapi>=0.115",
+  "greenlet>=3.0",
+  "httpx>=0.27",
+  "PyYAML>=6.0",
+  "SQLAlchemy>=2.0",
+  "uvicorn>=0.32",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+  "unit: fast unit tests without external services",
+  "contract: replaceable port contract tests",
+  "integration: tests requiring infrastructure such as PostgreSQL",
+  "golden: deterministic golden-output tests",
+  "architecture: import and boundary guardrail tests",
+  "e2e: end-to-end user-turn lifecycle tests",
+]

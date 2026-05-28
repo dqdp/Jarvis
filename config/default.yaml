@@ -1,0 +1,158 @@
+app:
+  environment: local
+  instance_id: personal-assistant-local
+  default_user_id: local_user
+  default_language: ru
+
+api:
+  host: 127.0.0.1
+  port: 8080
+  request_timeout_seconds: 180
+  sse_heartbeat_seconds: 15
+
+model_profiles:
+  local_main:
+    purpose: chat
+    provider: local_openai_compatible
+    enabled: true
+    cloud: false
+    model: qwen3-32b-instruct
+    endpoint: http://inference-node:8000/v1
+    timeout_seconds: 120
+    max_input_tokens: 12000
+    max_output_tokens: 2048
+    temperature: 0.3
+    supports_streaming: true
+
+  local_structured:
+    purpose: structured
+    provider: local_openai_compatible
+    enabled: true
+    cloud: false
+    model: qwen3-14b-instruct
+    endpoint: http://inference-node:8000/v1
+    timeout_seconds: 60
+    max_input_tokens: 8000
+    max_output_tokens: 1024
+    temperature: 0.0
+    structured_output:
+      mode: json_schema_prompt
+      validation: local
+      validation_retry: 1
+
+  local_embedding:
+    purpose: embedding
+    provider: local_embedding
+    enabled: true
+    cloud: false
+    model: qwen3-embedding-0.6b
+    endpoint: http://inference-node:8001
+    dimension: 1024
+    timeout_seconds: 30
+    batch_size: 32
+    retry: 1
+
+  cloud_reasoning:
+    purpose: reasoning
+    provider: openai
+    enabled: false
+    cloud: true
+    model: gpt-placeholder
+    api_key_env: OPENAI_API_KEY
+
+memory:
+  allowed_types: [fact, preference, procedure, summary]
+  namespaces:
+    user.preferences:
+      sensitivity: personal
+      allowed_types: [preference]
+      default_retrieval: true
+    user.working_style:
+      sensitivity: personal
+      allowed_types: [preference, procedure, summary]
+      default_retrieval: true
+    project.personal_assistant:
+      sensitivity: project
+      allowed_types: [fact, procedure, summary]
+      default_retrieval: when_active_project
+    system.runtime_rules:
+      sensitivity: project
+      allowed_types: [fact, procedure]
+      default_retrieval: always
+    environment.inference_node:
+      sensitivity: infra
+      allowed_types: [fact, procedure, summary]
+      default_retrieval: when_relevant
+  retrieval:
+    max_hits_total: 8
+    max_hits_per_namespace: 4
+    min_score: null
+    include_statuses: [active]
+    exclude_sensitivity: [secret]
+
+context_assembly:
+  full_prompt_logging: false
+  sections:
+    order:
+      - system_identity
+      - runtime_rules
+      - user_preferences
+      - working_style
+      - project_or_environment_memory
+      - recent_conversation
+      - current_user_message
+      - output_contract
+  conversation_window:
+    max_messages: 12
+    max_tokens: 3000
+    include_roles: [user, assistant]
+    exclude_sensitivity: [secret]
+    trimming_strategy: drop_oldest_first
+  context_budget:
+    max_input_tokens: 12000
+    memory_tokens_max: 2500
+    recent_conversation_tokens_max: 6000
+
+runtime_budgets:
+  memory_augmented_answer:
+    max_model_calls: 1
+    max_tool_calls: 0
+    max_wall_time_seconds: 180
+    max_context_assembly_seconds: 10
+    max_memory_retrieval_seconds: 5
+    max_model_call_seconds: 120
+    max_output_tokens: 2048
+    allow_cloud: false
+    allow_tools: false
+    allow_autonomous_memory_write: false
+
+policy:
+  cloud_models_enabled: false
+  tools_enabled: false
+  autonomous_memory_write_enabled: false
+  model_access:
+    local:
+      allow_sensitivity: [public, project, personal, infra]
+      deny_sensitivity: [secret]
+    cloud:
+      enabled: false
+      allow_sensitivity: []
+      deny_sensitivity: [public, project, personal, infra, secret]
+  memory_write:
+    deny_sensitivity: [secret]
+  context_inclusion:
+    deny_sensitivity: [secret]
+
+privacy:
+  sensitivity_order: [public, project, personal, infra, secret]
+  raw_prompt_logging: false
+  raw_secret_logging: false
+  store_context_manifest: true
+
+observability:
+  log_level: info
+  structured_logs: true
+  log_raw_messages: false
+  log_raw_prompts: false
+  log_model_outputs: false
+  metrics_enabled: true

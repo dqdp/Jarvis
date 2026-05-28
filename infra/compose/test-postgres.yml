@@ -1,0 +1,14 @@
+services:
+  postgres-test:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: jarvis
+      POSTGRES_PASSWORD: jarvis
+      POSTGRES_DB: jarvis_test
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jarvis -d jarvis_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 20

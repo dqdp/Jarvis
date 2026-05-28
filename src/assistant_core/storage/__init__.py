@@ -1,0 +1,1 @@
+"""Storage foundation and adapters."""
