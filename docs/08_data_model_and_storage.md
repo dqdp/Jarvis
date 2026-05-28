@@ -434,7 +434,12 @@ metadata jsonb not null default '{}'
 
 Assembled prompt context is not a primary domain record.
 
-Phase 1 should persist or event-record a ContextManifest containing:
+Phase 1 records the ContextManifest in the `context.assembled` event payload.
+The manifest has a stable `context_manifest_id` that is copied into
+`model_invocations.context_manifest_id` when a model call uses the
+assembled context. A separate `context_manifests` table is not required in MVP.
+
+The ContextManifest contains:
 
 ```text
 used_message_ids
@@ -474,7 +479,7 @@ For accepted user message submission, one transaction should create:
 assistant_request row
 user message row
 user.message.created event
-request.processing.started/accepted event
+request.processing.started event
 ```
 
 If this transaction fails, the request is not accepted.

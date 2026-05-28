@@ -225,6 +225,9 @@ context.assembly.truncated
 
 ```text
 memory.retrieved
+memory.retrieval.failed
+memory.embedding.created
+memory.embedding.failed
 memory.created
 memory.updated
 memory.archived
@@ -237,6 +240,7 @@ memory.superseded
 model.request.created
 model.response.received
 model.request.failed
+model.request.denied
 ```
 
 ### 6.6 Policy
@@ -479,8 +483,9 @@ API-level message submission should support idempotency.
 
 Phase 1 baseline:
 
-- client may provide `idempotency_key` / `client_request_id`;
-- repeated submission with same key should not create duplicate user messages;
+- public API clients provide `client_message_id`;
+- repeated submission with the same `client_message_id` should not create duplicate user messages;
+- EventEnvelope stores this value in `idempotency_key`;
 - related events include the same `idempotency_key`.
 
 Recommended table support:

@@ -14,6 +14,123 @@ Implementation-order-only revisions may update this document without ADR.
 
 ---
 
+## Goal execution milestones
+
+These milestones are intended for running the full Phase 1 MVP through a
+long-lived `/goal`. They do not replace the slice-level TDD workflow. A
+milestone is complete only when every included slice satisfies its own
+definition of done.
+
+### Milestone 1 — Foundation and guardrails
+
+Scope:
+
+```text
+Slice 00 — Repository skeleton and tooling
+Slice 01 — Config and Settings
+Slice 02 — Domain schemas and enums
+Slice 02a — Architecture guardrails baseline
+```
+
+Exit criteria:
+
+```text
+package imports
+pytest markers and task runner work
+default/test config validate
+canonical domain enums and event names exist
+baseline architecture tests are green
+```
+
+### Milestone 2 — Durable core contracts
+
+Scope:
+
+```text
+Slice 03 — EventLogPort with in-memory adapter
+Slice 04 — PostgreSQL foundation and migrations
+Slice 05 — PostgresEventLogPort
+Slice 06 — ConversationStorePort and assistant_requests
+Slice 07 — PolicyPort / ConfigPolicyEngine
+```
+
+Exit criteria:
+
+```text
+EventLog contract passes for in-memory and Postgres adapters
+migrations apply cleanly
+conversation/message/request lifecycle is durable
+client_message_id idempotency is enforced and event-linked
+minimal policy decisions are enforced and audited
+```
+
+### Milestone 3 — Runtime, API and MVP acceptance
+
+Scope:
+
+```text
+Slice 08 — ModelRouterPort with FakeModelProvider
+Slice 09 — Local OpenAI-compatible provider adapter
+Slice 10 — MemoryWritePort baseline
+Slice 11 — EmbeddingPort and memory embeddings
+Slice 12 — MemoryReadPort retrieval
+Slice 13 — ContextAssembler golden baseline
+Slice 14 — AgentRuntime memory_augmented_answer
+Slice 15 — Assistant API request lifecycle
+Slice 16 — SSE streaming
+Slice 17 — E2E user-turn lifecycle
+Slice 18 — Architecture guardrails hardening
+Slice 19 — Documentation / acceptance review
+```
+
+Exit criteria:
+
+```text
+model routing works with fake providers in CI
+manual memory write/retrieval works with fake embeddings
+ContextAssembler golden tests pass
+runtime emits canonical event chain
+API and SSE lifecycle pass with fake model provider
+main e2e user-turn lifecycle test passes
+architecture hardening and MVP acceptance checklist are green
+```
+
+---
+
+## Remaining implementation decisions for startup
+
+These are implementation choices fixed for the initial run. They may be
+revised only through the normal slice-plan change process if repository or
+dependency evidence shows a concrete problem.
+
+```text
+Python packaging/test baseline:
+  pyproject.toml, pytest, pytest-asyncio, pytest markers, Makefile targets.
+
+Config implementation:
+  typed Settings object, YAML defaults/test config, environment overrides,
+  strict startup validation.
+
+Database implementation:
+  SQLAlchemy async + asyncpg + Alembic, with PostgreSQL/pgvector as the
+  integration-test target.
+
+Integration database:
+  prefer a docker-compose/test PostgreSQL service; allow DATABASE_URL override
+  for environments that provide a ready test database.
+
+Provider tests:
+  fake model/embedding providers are mandatory for CI; local OpenAI-compatible
+  provider is tested through HTTP mocks, not live inference.
+
+Runtime restart semantics:
+  durable messages, events and request status are mandatory; automatic
+  continuation of an in-flight streaming request after daemon restart is not
+  required in MVP.
+```
+
+---
+
 ## 1. Purpose
 
 This document turns the Testing Strategy into an initial implementation plan for coding agents.
@@ -166,6 +283,8 @@ test_memory_type_enum_values
 test_sensitivity_enum_values
 test_request_status_transitions
 test_event_envelope_required_fields
+test_event_type_enum_includes_canonical_user_turn_chain
+test_event_type_enum_includes_error_and_degraded_events
 test_chat_message_provider_neutral_shape
 ```
 
@@ -178,6 +297,37 @@ domain/memory.py
 domain/models.py
 domain/policy.py
 domain/context.py
+```
+
+Canonical Phase 1 event names are defined in `domain/events.py`.
+
+User-turn chain:
+
+```text
+user.message.created
+request.processing.started
+context.assembly.started
+memory.retrieved
+context.assembled
+model.request.created
+model.response.received
+assistant.message.created
+request.processing.completed
+```
+
+Required error/degraded events:
+
+```text
+request.processing.failed
+context.assembly.failed
+context.assembly.truncated
+memory.retrieval.failed
+memory.embedding.created
+memory.embedding.failed
+model.request.failed
+model.request.denied
+policy.decision.recorded
+runtime.error
 ```
 
 ### Acceptance criteria
@@ -197,7 +347,50 @@ provider clients
 
 ---
 
-## 6. Slice 03 — EventLogPort with in-memory adapter
+## 6. Slice 02a — Architecture guardrails baseline
+
+### Goal
+
+Introduce architecture tests early so boundary violations are visible before
+runtime and adapter implementation expands.
+
+### Tests first
+
+```text
+test_domain_does_not_import_adapters
+test_domain_does_not_import_api
+test_domain_does_not_import_runtime
+test_ports_do_not_expose_adapter_types
+```
+
+### Implementation
+
+```text
+tests/architecture/
+import graph or AST helper
+baseline module boundary rules
+```
+
+### Acceptance criteria
+
+```text
+architecture baseline tests green
+architecture test target exists
+```
+
+### Out of scope
+
+```text
+full runtime/provider/storage guardrails
+adapter-specific checks before adapters exist
+```
+
+Later slices extend these tests as modules are added. Slice 18 remains the
+final hardening pass.
+
+---
+
+## 7. Slice 03 — EventLogPort with in-memory adapter
 
 ### Goal
 
@@ -235,7 +428,7 @@ API
 
 ---
 
-## 7. Slice 04 — PostgreSQL foundation and migrations
+## 8. Slice 04 — PostgreSQL foundation and migrations
 
 ### Goal
 
@@ -273,7 +466,7 @@ business adapters except minimal migration smoke
 
 ---
 
-## 8. Slice 05 — PostgresEventLogPort
+## 9. Slice 05 — PostgresEventLogPort
 
 ### Goal
 
@@ -287,6 +480,7 @@ Same contract tests against Postgres adapter:
 test_event_log_contract_append_assigns_sequence[postgres]
 test_event_log_contract_query_by_request_id_ordered[postgres]
 test_event_log_contract_causation_chain[postgres]
+test_event_log_contract_preserves_idempotency_key
 ```
 
 ### Implementation
@@ -311,7 +505,7 @@ runtime must not import PostgresEventLog directly
 
 ---
 
-## 9. Slice 06 — ConversationStorePort and assistant_requests
+## 10. Slice 06 — ConversationStorePort and assistant_requests
 
 ### Goal
 
@@ -326,6 +520,7 @@ test_append_assistant_message
 test_load_messages_ordered
 test_client_message_id_idempotency_same_content
 test_client_message_id_conflict_different_content
+test_client_message_id_is_copied_to_event_idempotency_key
 test_create_assistant_request
 test_request_status_transitions
 ```
@@ -338,6 +533,9 @@ PostgresConversationStore
 conversations/messages/assistant_requests tables
 idempotency constraint
 ```
+
+External API and storage use `client_message_id`. EventEnvelope stores the
+same value in `idempotency_key`.
 
 ### Acceptance criteria
 
@@ -355,7 +553,7 @@ runtime execution
 
 ---
 
-## 10. Slice 07 — PolicyPort / ConfigPolicyEngine
+## 11. Slice 07 — PolicyPort / ConfigPolicyEngine
 
 ### Goal
 
@@ -379,6 +577,17 @@ ConfigPolicyEngine
 PolicyDecision
 ```
 
+MVP `PolicyPort` methods:
+
+```text
+evaluate_model_request
+evaluate_memory_write
+evaluate_context_inclusion
+```
+
+`evaluate_context_inclusion` is intentionally minimal in Phase 1: deny
+`secret`, allow non-secret local context. It is not a policy DSL.
+
 ### Acceptance criteria
 
 ```text
@@ -394,7 +603,7 @@ tool policies
 
 ---
 
-## 11. Slice 08 — ModelRouterPort with FakeModelProvider
+## 12. Slice 08 — ModelRouterPort with FakeModelProvider
 
 ### Goal
 
@@ -441,7 +650,7 @@ live model tests
 
 ---
 
-## 12. Slice 09 — Local OpenAI-compatible provider adapter
+## 13. Slice 09 — Local OpenAI-compatible provider adapter
 
 ### Goal
 
@@ -479,7 +688,7 @@ live vLLM required in CI
 
 ---
 
-## 13. Slice 10 — MemoryWritePort baseline
+## 14. Slice 10 — MemoryWritePort baseline
 
 ### Goal
 
@@ -521,7 +730,7 @@ RAG
 
 ---
 
-## 14. Slice 11 — EmbeddingPort and memory embeddings
+## 15. Slice 11 — EmbeddingPort and memory embeddings
 
 ### Goal
 
@@ -562,7 +771,7 @@ background jobs
 
 ---
 
-## 15. Slice 12 — MemoryReadPort retrieval
+## 16. Slice 12 — MemoryReadPort retrieval
 
 ### Goal
 
@@ -607,7 +816,7 @@ document chunks
 
 ---
 
-## 16. Slice 13 — ContextAssembler golden baseline
+## 17. Slice 13 — ContextAssembler golden baseline
 
 ### Goal
 
@@ -625,6 +834,7 @@ test_drops_oldest_messages_first
 test_retrieves_active_memories
 test_excludes_secret_memories_and_messages
 test_context_manifest_contains_used_refs
+test_context_manifest_is_event_recorded_without_raw_prompt
 test_no_full_prompt_logged_by_default
 test_degraded_context_when_memory_retrieval_fails
 ```
@@ -638,6 +848,10 @@ NamespaceSelector
 ConversationWindow policy
 ContextManifest
 ```
+
+Phase 1 records `ContextManifest` in the `context.assembled` event payload.
+It also produces a stable `context_manifest_id` used by model invocation audit.
+No separate `context_manifests` table is required in MVP.
 
 ### Acceptance criteria
 
@@ -656,7 +870,7 @@ LLM query rewriting
 
 ---
 
-## 17. Slice 14 — AgentRuntime memory_augmented_answer
+## 18. Slice 14 — AgentRuntime memory_augmented_answer
 
 ### Goal
 
@@ -671,6 +885,8 @@ test_runtime_calls_model_router_once
 test_runtime_max_model_calls_one
 test_runtime_memory_retrieval_failure_degraded
 test_runtime_model_failure_marks_request_failed
+test_runtime_uses_canonical_event_type_enum
+test_runtime_context_manifest_id_links_model_invocation_to_context_event
 test_no_assistant_message_on_system_failure
 ```
 
@@ -683,6 +899,10 @@ LangGraph integration or minimal graph wrapper
 runtime events
 request status updates
 ```
+
+LangGraph checkpoints are PostgreSQL-backed runtime state, but Phase 1 does
+not require automatic continuation of an in-flight streaming request after
+daemon restart. Durable messages, events and request status remain mandatory.
 
 ### Acceptance criteria
 
@@ -701,7 +921,7 @@ scheduler
 
 ---
 
-## 18. Slice 15 — Assistant API request lifecycle
+## 19. Slice 15 — Assistant API request lifecycle
 
 ### Goal
 
@@ -746,7 +966,7 @@ cancellation
 
 ---
 
-## 19. Slice 16 — SSE streaming
+## 20. Slice 16 — SSE streaming
 
 ### Goal
 
@@ -788,7 +1008,7 @@ cancellation
 
 ---
 
-## 20. Slice 17 — E2E user-turn lifecycle
+## 21. Slice 17 — E2E user-turn lifecycle
 
 ### Goal
 
@@ -824,11 +1044,11 @@ main E2E test green
 
 ---
 
-## 21. Slice 18 — Architecture guardrails hardening
+## 22. Slice 18 — Architecture guardrails hardening
 
 ### Goal
 
-Make boundary tests mandatory.
+Complete boundary tests after all MVP modules exist.
 
 ### Tests first
 
@@ -857,11 +1077,12 @@ CI target
 architecture tests green
 ```
 
-Some guardrails may be added earlier. This slice performs final hardening.
+Baseline guardrails are introduced in Slice 02a. This slice extends them to
+runtime, storage, provider adapters, pgvector usage and raw prompt logging.
 
 ---
 
-## 22. Slice 19 — Documentation / acceptance review
+## 23. Slice 19 — Documentation / acceptance review
 
 ### Goal
 
@@ -886,7 +1107,7 @@ archive generated
 
 ---
 
-## 23. How coding agents may propose changes
+## 24. How coding agents may propose changes
 
 A coding agent may propose slice-plan changes after repository/dependency analysis.
 
@@ -910,7 +1131,7 @@ Architecture-changing changes require ADR update.
 
 ---
 
-## 24. Non-negotiable constraints
+## 25. Non-negotiable constraints
 
 Coding agents must not:
 

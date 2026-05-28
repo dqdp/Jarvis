@@ -383,12 +383,15 @@ Required decisions:
 ```text
 evaluate_model_request
 evaluate_memory_write
+evaluate_context_inclusion
 ```
+
+`evaluate_context_inclusion` is minimal in Phase 1: it denies `secret` sources
+and allows non-secret sources for local context.
 
 Deferred:
 
 ```text
-evaluate_context_inclusion
 evaluate_tool_call
 evaluate_cloud_redaction
 evaluate_secret_access

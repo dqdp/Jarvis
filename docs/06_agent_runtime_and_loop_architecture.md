@@ -160,13 +160,15 @@ It should:
 All loops emit RuntimeStreamEvents:
 
 ```json
-{"type": "conversation.started"}
-{"type": "memory.retrieval.started"}
-{"type": "memory.retrieval.completed"}
-{"type": "model.started"}
+{"type": "request.processing.started"}
+{"type": "context.assembly.started"}
+{"type": "memory.retrieved"}
+{"type": "context.assembled"}
+{"type": "model.request.created"}
 {"type": "token"}
-{"type": "model.completed"}
-{"type": "conversation.completed"}
+{"type": "model.response.received"}
+{"type": "assistant.message.created"}
+{"type": "request.processing.completed"}
 ```
 
 ## 11. Testing Requirements

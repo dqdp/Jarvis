@@ -318,6 +318,9 @@ Rule:
 unique(conversation_id, client_message_id)
 ```
 
+EventEnvelope stores the same value as `idempotency_key`; the public API
+does not expose a second idempotency field in Phase 1.
+
 If the same `client_message_id` and same content are submitted again:
 
 ```text

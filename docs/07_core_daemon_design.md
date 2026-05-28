@@ -43,7 +43,7 @@ assistant_core/
 POST /v1/conversations/{id}/messages
   → validate request
   → append user.message
-  → emit conversation.started
+  → emit request.processing.started
   → AgentRuntime executes selected LoopStrategy
   → retrieve memory
   → call ModelRouter
