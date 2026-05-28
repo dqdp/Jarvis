@@ -4,7 +4,10 @@
 
 This document defines the Phase 1 data model baseline.
 
-PostgreSQL is the primary system of record. pgvector is used as the initial retrieval adapter for explicit long-term memory records.
+PostgreSQL is the primary system of record. Memory retrieval for explicit
+long-term memory records is accessed through `MemoryReadPort`; pgvector is the
+preferred similarity-index adapter when available, but not the data-model
+contract.
 
 Phase 1 uses domain tables plus an append-only event log. It does not implement full event sourcing.
 
@@ -24,7 +27,7 @@ memory_candidates
 memory_embeddings
 model_invocations
 policy_decisions
-runtime checkpoint tables / LangGraph checkpoint tables
+deferred graph checkpoint tables
 ```
 
 ---
@@ -141,7 +144,7 @@ completed
 failed
 ```
 
-Reserved future status:
+Allowed MVP terminal status:
 
 ```text
 cancelled
@@ -351,7 +354,7 @@ embedding_profile text not null
 embedding_model text not null
 embedding_dimension int not null
 content_hash text not null
-embedding vector(...)
+embedding vector(...) or double precision[]
 created_at timestamptz not null
 metadata jsonb not null default '{}'
 primary key(memory_id, embedding_profile)
@@ -363,7 +366,7 @@ Rules:
 - default implementation delegates to `ModelRouter.embed(local_embedding)`;
 - retrieval excludes embeddings whose `content_hash` does not match current memory content hash.
 
-Vector index example:
+Optional pgvector index example:
 
 ```sql
 create index memory_embeddings_hnsw_idx
@@ -460,7 +463,9 @@ Full prompt body should not be persisted by default.
 
 ## 13. Runtime checkpoints
 
-LangGraph checkpoint tables are stored in PostgreSQL but are logically runtime execution state.
+MVP does not require graph checkpoint tables. If LangGraph or another graph
+runtime is introduced later, checkpoint tables may be stored in PostgreSQL but
+remain logically runtime execution state.
 
 Rules:
 

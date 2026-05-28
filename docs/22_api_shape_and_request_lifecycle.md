@@ -88,6 +88,7 @@ POST /v1/conversations
 POST /v1/conversations/{conversation_id}/messages
 GET  /v1/requests/{request_id}
 GET  /v1/requests/{request_id}/stream
+POST /v1/requests/{request_id}/cancel
 GET  /v1/conversations/{conversation_id}/messages
 POST /v1/memories
 GET  /v1/memories
@@ -101,7 +102,6 @@ GET  /v1/conversations/{conversation_id}
 GET  /v1/conversations/{conversation_id}/events
 GET  /v1/requests/{request_id}/events
 POST /v1/conversations/{conversation_id}/archive
-POST /v1/requests/{request_id}/cancel
 GET  /v1/model-profiles
 ```
 
@@ -194,7 +194,7 @@ Response:
   "conversation_id": "uuid",
   "user_message_id": "uuid",
   "assistant_message_id": "uuid|null",
-  "status": "accepted|running|completed|failed",
+  "status": "accepted|running|completed|failed|cancelled",
   "created_at": "...",
   "started_at": "...",
   "completed_at": "...",
@@ -202,13 +202,19 @@ Response:
 }
 ```
 
-Reserved future status:
+`queued` may be added when a real queue is introduced.
 
-```text
-cancelled
+Cancellation is explicit:
+
+```http
+POST /v1/requests/{request_id}/cancel
 ```
 
-`queued` may be added when a real queue is introduced.
+It transitions an `accepted` or `running` request to `cancelled` only while
+the request is still non-terminal. If completion, failure or a prior
+cancellation has already won the status race, the endpoint returns the
+unchanged terminal state. Client disconnect from SSE does not cancel runtime
+execution.
 
 ---
 
@@ -221,7 +227,10 @@ GET /v1/requests/{request_id}/stream
 Accept: text/event-stream
 ```
 
-The stream emits normalized runtime events, not raw provider events.
+The stream emits normalized public runtime events, not raw provider events or
+raw persisted EventEnvelope payloads. Replay uses the same public DTO
+projection as the live stream, so internal fields such as manifest internals,
+policy audit reasons, raw prompts or metadata are not exposed through SSE.
 
 Examples:
 
@@ -230,19 +239,19 @@ event: request.processing.started
 data: {"request_id":"...","event_id":"..."}
 
 event: context.assembly.started
-data: {"request_id":"..."}
+data: {"request_id":"...","event_id":"..."}
 
 event: memory.retrieved
-data: {"hit_count":4,"used_memory_ids":["..."]}
+data: {"request_id":"...","event_id":"..."}
 
 event: token
-data: {"delta":"Да"}
+data: {"request_id":"...","delta":"Да"}
 
 event: assistant.message.created
-data: {"message_id":"..."}
+data: {"request_id":"...","event_id":"...","message_id":"...","content_hash":"..."}
 
 event: request.processing.completed
-data: {"assistant_message_id":"...","status":"completed"}
+data: {"request_id":"...","event_id":"...","assistant_message_id":"..."}
 ```
 
 Persisted events should use event names matching EventEnvelope event types.
@@ -255,6 +264,11 @@ heartbeat
 ```
 
 Token events are not persisted in event log.
+
+The implemented FastAPI adapter starts runtime execution after message
+submission. Opening the SSE stream subscribes to the in-process event buffer and
+replays buffered events for the same daemon process; terminal state is durable
+through `assistant_requests`, persisted events and conversation messages.
 
 ---
 
@@ -369,6 +383,8 @@ conflict
 policy_denied
 model_unavailable
 request_failed
+runtime_timeout
+cancelled
 internal_error
 ```
 
@@ -376,17 +392,23 @@ internal_error
 
 ## 13. Cancellation
 
-Cancel endpoint is reserved but not required in MVP:
+Cancel endpoint is implemented:
 
 ```http
 POST /v1/requests/{request_id}/cancel
 ```
 
-Rationale for deferral:
+Behavior:
 
-- provider stream cancellation needs careful implementation;
-- request state synchronization becomes more complex;
-- Phase 1 can operate without cancellation.
+```text
+accepted -> cancelled
+running -> cancelled
+completed/failed/cancelled -> unchanged terminal state
+```
+
+Cancellation emits `request.processing.cancelled` only when the request was
+actually moved from `accepted` or `running` to `cancelled`. It is explicit; SSE
+subscriber disconnect does not cancel the request.
 
 ---
 
@@ -436,7 +458,7 @@ On message submit, one database transaction should create:
 assistant_request row
 user message row
 user.message.created event
-request.processing.started or accepted event
+request.processing.started event
 ```
 
 Then runtime processing starts.
@@ -485,11 +507,6 @@ accepted
 running
 completed
 failed
-```
-
-Reserved:
-
-```text
 cancelled
 ```
 
@@ -500,6 +517,7 @@ cancelled
 MVP includes:
 
 - request lifecycle with `request_id`;
+- explicit cancellation endpoint for `accepted` and `running` requests;
 - separate SSE stream;
 - client idempotency;
 - request status endpoint;
@@ -510,7 +528,6 @@ MVP includes:
 
 Deferred:
 
-- request cancellation;
 - blocking complete endpoint;
 - conversation archive endpoint;
 - full memory lifecycle endpoints;

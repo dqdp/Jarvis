@@ -41,11 +41,23 @@ accepted
 running
 completed
 failed
+cancelled
 ```
 
-`cancelled` is reserved.
+Cancel endpoint is implemented for MVP hardening:
 
-Cancel endpoint is reserved but not required in MVP.
+```http
+POST /v1/requests/{request_id}/cancel
+```
+
+Cancellation changes only a still non-terminal `accepted` or `running` request.
+If `completed`, `failed` or `cancelled` has already won the status race, the
+terminal state is returned unchanged.
+
+SSE stream opening subscribes to public runtime events. It does not execute the
+request itself and does not expose raw persisted EventEnvelope payloads. Runtime
+execution starts after message submission, and reconnect must not re-run the
+model provider.
 
 No blocking completion endpoint is required in MVP.
 
@@ -68,6 +80,7 @@ Positive:
 - robust retry behavior;
 - clear request tracing;
 - stream reconnect can recover final state;
+- SSE disconnect does not strand a request in `running`;
 - aligns with EventEnvelope and request_id;
 - does not require WebSocket in MVP.
 
@@ -75,11 +88,10 @@ Trade-offs:
 
 - clients perform two steps instead of one;
 - no token replay guarantee;
-- cancellation is deferred.
+- cancellation requires an explicit second API call.
 
 ## Deferred
 
-- request cancellation;
 - blocking complete endpoint;
 - WebSocket transport;
 - event trace UI;

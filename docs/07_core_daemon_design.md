@@ -8,6 +8,7 @@ Phase 1 runs primarily as one assistant-api process:
 assistant-api:
   FastAPI
   AgentRuntime
+  ContextAssembler
   ModelRouter
   Memory adapters
   Storage adapters
@@ -21,12 +22,18 @@ postgres
 local-inference-node
 ```
 
+The implemented MVP uses FastAPI for the HTTP API adapter.
+
 ## 2. Package Layout
 
 ```text
 assistant_core/
   api/
+  config/
+  domain/
+  ports/
   runtime/
+  context_assembly/
   conversations/
   events/
   memory/
@@ -45,7 +52,7 @@ POST /v1/conversations/{id}/messages
   → append user.message
   → emit request.processing.started
   → AgentRuntime executes selected LoopStrategy
-  → retrieve memory
+  → assemble context through ContextAssemblerPort
   → call ModelRouter
   → stream tokens/events
   → append assistant.message

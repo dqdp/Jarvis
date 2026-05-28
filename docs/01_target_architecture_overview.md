@@ -13,11 +13,14 @@ Client / CLI / Minimal Web
 Assistant API
         |
         v
-Agent Runtime / LangGraph
+Agent Runtime / custom deterministic workflow
         |
         +--> ConversationStorePort --> PostgreSQL
         +--> EventLogPort -----------> PostgreSQL
-        +--> MemoryReadPort ---------> Memory Subsystem Adapter
+        +--> ContextAssemblerPort ---> Context Assembly module
+        |       +--> ConversationStorePort
+        |       +--> MemoryReadPort -> Memory Subsystem Adapter
+        |       +--> PolicyPort
         +--> ModelRouterPort --------> Local Inference Node
         +--> PolicyPort -------------> ConfigPolicyEngine
 ```
@@ -28,6 +31,7 @@ Physical Phase 1 deployment:
 assistant-api process:
   FastAPI
   Agent Runtime
+  Context Assembly module
   Model Router module
   Memory Service module
   Storage adapters
@@ -41,11 +45,13 @@ postgres process:
   memory_candidates
   embeddings
   model_invocations
-  runtime checkpoints
+  graph checkpoints deferred post-MVP
 
 inference-node process:
   vLLM / Ollama / NIM-like OpenAI-compatible server
 ```
+
+The implemented MVP uses FastAPI for the assistant API route contract.
 
 ## 3. Component Boundaries
 
@@ -65,10 +71,8 @@ Responsibilities:
 Responsibilities:
 
 - select Loop Strategy;
-- execute LangGraph workflow;
-- load recent context;
-- retrieve memory;
-- build prompt;
+- execute the deterministic MVP workflow;
+- call ContextAssemblerPort for recent context, memory retrieval and prompt context assembly;
 - call ModelRouterPort;
 - emit RuntimeStreamEvents;
 - persist domain events.
@@ -145,7 +149,7 @@ Long-term memory:
   interpreted knowledge with provenance/confidence/status.
 
 Runtime execution state:
-  LangGraph checkpoints, graph thread state, intermediate values.
+  in-process request task state during MVP; graph checkpoints deferred post-MVP.
 ```
 
 Rules:
@@ -155,13 +159,14 @@ Rules:
 - event log can be used to rebuild memory;
 - runtime state can be discarded/rebuilt more aggressively than events.
 
-## 5. LangGraph Checkpoints
+## 5. Graph Checkpoints
 
 Decision:
 
-- Phase 1 stores LangGraph checkpoints in PostgreSQL.
-- They are physically colocated with domain data for simplicity.
-- They are logically separate runtime state.
+- MVP does not require graph checkpoint tables.
+- LangGraph is deferred until graph-native branching or checkpoint replay is required.
+- Future checkpoint tables may be physically colocated with domain data for simplicity.
+- They remain logically separate runtime state.
 - Domain logic must not depend on checkpoint schema.
 
 ## 6. Queue/Event Bus
@@ -185,7 +190,8 @@ Decision:
 
 Decision:
 
-- LangGraph is execution substrate, not agent architecture.
+- MVP runtime uses a custom deterministic workflow behind AgentRuntime.
+- LangGraph is deferred; it may become an adapter/substrate for later loop strategies.
 - Phase 1 selected loop: deterministic memory-augmented workflow.
 - ReAct-style tool loop is deferred until ToolGatewayPort exists.
 - All future loop strategies must define budgets, stopping conditions, policy hooks and emitted events.
@@ -236,7 +242,7 @@ Not decided in Phase 1:
 - autonomous task lifecycle.
 
 
-## 10. Context Assembly Boundary
+## 11. Context Assembly Boundary
 
 Current context management is a separate core subsystem.
 

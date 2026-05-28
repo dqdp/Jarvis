@@ -77,7 +77,6 @@ Trade-offs:
 
 ## Deferred
 
-- request cancellation implementation;
 - partial assistant message persistence;
 - stream resume;
 - workflow compensation;

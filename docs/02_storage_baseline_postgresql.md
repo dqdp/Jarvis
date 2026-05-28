@@ -4,7 +4,14 @@
 
 PostgreSQL is the primary system of record for Phase 1.
 
-pgvector is used as the initial vector retrieval adapter.
+Memory embeddings are colocated in PostgreSQL. pgvector is the preferred
+similarity-index adapter when the extension/client dependency is available, but
+the architectural contract is `MemoryReadPort`, not pgvector itself.
+
+The implemented MVP stores embeddings in PostgreSQL through a portable numeric
+array adapter and deterministic ranking. This keeps durability and adapter
+boundaries intact while leaving the pgvector operator/index swap as a storage
+adapter follow-up.
 
 ## 2. Why PostgreSQL
 
@@ -18,7 +25,7 @@ PostgreSQL is selected because Phase 1 needs durable, queryable, transactional s
 - memory_embeddings;
 - model_invocations;
 - policy_decisions;
-- runtime checkpoints;
+- future graph checkpoints;
 - future tool_invocations;
 - future scheduled tasks.
 
@@ -73,6 +80,7 @@ Rules:
 Future replacements:
 
 ```text
+PostgreSQL array adapter -> pgvector
 pgvector -> Qdrant
 pgvector -> Weaviate
 pgvector -> Milvus
@@ -96,7 +104,7 @@ ModelInvocationRepository:
   model_invocations
 
 RuntimeCheckpointAdapter:
-  LangGraph checkpoint tables
+  deferred graph checkpoint tables
 ```
 
 ## 6. Retention Principles
@@ -105,13 +113,14 @@ Phase 1 default:
 
 - events retained indefinitely;
 - messages retained indefinitely;
-- model request/response payloads retained unless sensitivity policy changes;
+- model invocation metadata and sanitized request/response audit records retained
+  unless sensitivity policy changes; raw full prompts are not retained by default;
 - runtime checkpoints may have retention/cleanup later;
 - memories can be active/archived/superseded but not hard-deleted by default.
 
 ## 7. Later Re-evaluation Triggers
 
-Revisit PostgreSQL + pgvector if:
+Revisit PostgreSQL array adapter / pgvector if:
 
 - retrieval latency becomes unacceptable;
 - memory volume grows significantly;

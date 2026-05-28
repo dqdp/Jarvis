@@ -44,3 +44,53 @@ Ready for initial coding-agent analysis and TDD implementation planning.
 ## v17 TDD clarification
 
 `AGENTS.md` was strengthened with an explicit red-green-refactor workflow, red-phase requirements, green-phase scope limits, test modification rules and slice definition-of-done.
+
+## v18 implementation alignment
+
+After the TDD implementation pass, the documentation package was updated from
+pre-implementation handoff status to implemented MVP status.
+
+One implementation-level storage adjustment is now explicit:
+
+- the MVP memory retrieval adapter stores embeddings in PostgreSQL numeric
+  arrays and uses deterministic ranking behind `MemoryReadPort`; pgvector
+  remains a replaceable adapter path, not a runtime/domain dependency.
+
+This adjustment preserves the accepted architecture boundaries and does not add
+post-MVP scope.
+
+## v19 FastAPI adapter alignment
+
+The temporary minimal ASGI adapter was replaced with the intended FastAPI API
+adapter. API/SSE/e2e contract tests now use `httpx.ASGITransport` against the
+FastAPI app.
+
+## v20 MVP hardening closure
+
+The post-review hardening items were implemented in order:
+
+- request execution starts after message submission, not when SSE is opened;
+- SSE reconnect subscribes/replays without re-running the provider and emits
+  heartbeat events while waiting;
+- explicit request cancellation is implemented;
+- `client_message_id` replay handles concurrent insert races;
+- `memory.retrieved`, context causation and policy-decision audit are recorded;
+- ContextAssembler uses `PolicyPort` for context inclusion;
+- API bodies use strict FastAPI/Pydantic schemas with sanitized validation
+  errors;
+- destructive test DB helpers assert an explicit local test database;
+- runtime context/model timeouts, readiness health and serialized golden
+  ContextAssembler fixtures are covered by tests.
+
+## v21 final review closure
+
+The final consistency review follow-ups were closed without expanding MVP
+scope:
+
+- migration 0006 now rejects assistant messages whose `request_id` is missing
+  or different from the owning assistant request;
+- SSE live/replay output is projected through explicit public event DTOs;
+- memory retrieval applies configured sensitivity exclusions and `min_score`;
+- architecture tests guard against accidental MVP scope-creep packages for
+  tools, MCP, RAG, ReAct, planner and voice;
+- cancellation docs now state that already terminal requests remain unchanged.

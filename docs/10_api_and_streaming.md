@@ -29,6 +29,7 @@ POST /v1/conversations
 POST /v1/conversations/{conversation_id}/messages
 GET  /v1/requests/{request_id}
 GET  /v1/requests/{request_id}/stream
+POST /v1/requests/{request_id}/cancel
 GET  /v1/conversations/{conversation_id}/messages
 POST /v1/memories
 GET  /v1/memories
@@ -61,6 +62,7 @@ Token-by-token events are not persisted in Event Log.
 
 ```text
 user.message.created
+request.processing.started
 context.assembly.started
 memory.retrieved
 context.assembled
@@ -76,7 +78,11 @@ request.processing.completed
 
 ## 5. Reconnect
 
-No token replay guarantee after reconnect.
+The FastAPI adapter keeps an in-process per-request stream buffer while the
+daemon process is alive, so reconnect to the same process can replay buffered
+runtime/token events without re-running the provider.
+
+There is no token replay guarantee after daemon restart.
 
 Clients recover by reading:
 
@@ -92,6 +98,14 @@ GET /v1/requests/{request_id}/events
 ```
 
 if implemented.
+
+SSE heartbeat events are emitted while a request is still running and no new
+runtime event is available. Client disconnect from SSE does not cancel the
+request; explicit cancellation uses:
+
+```http
+POST /v1/requests/{request_id}/cancel
+```
 
 ---
 

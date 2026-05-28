@@ -211,6 +211,11 @@ Chat model timeout:
 request failed
 ```
 
+In the implemented runtime, context assembly and model calls are wrapped with
+the configured budget timeouts. Timeout failures are exposed through the
+standard error envelope with `runtime_timeout` and the request is marked
+`failed`.
+
 Embedding timeout:
 
 ```text
@@ -257,6 +262,16 @@ model.request.failed event
 request.processing.failed event
 partial_output_persisted = false
 ```
+
+If a request is explicitly cancelled:
+
+```text
+request.status = cancelled
+request.processing.cancelled event
+assistant message is not created
+```
+
+SSE disconnect alone is not cancellation; it only closes that subscriber.
 
 Partial streamed tokens are not persisted as assistant message in MVP.
 
@@ -333,13 +348,9 @@ Allowed MVP transitions:
 ```text
 accepted -> running
 accepted -> failed
+accepted -> cancelled
 running -> completed
 running -> failed
-```
-
-Reserved:
-
-```text
 running -> cancelled
 ```
 
@@ -400,13 +411,13 @@ request status transitions
 standard error codes
 sanitized error events
 no assistant message on system failure
+explicit cancellation without assistant side effects
 no partial response persistence
 ```
 
 Deferred:
 
 ```text
-request cancellation implementation
 request retry/resume
 partial assistant message persistence
 stream resume

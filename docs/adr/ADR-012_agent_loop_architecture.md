@@ -8,7 +8,7 @@ Need decide whether Phase 1 uses ReAct, custom workflow or various schemes.
 
 ## Decision
 
-Phase 1 uses deterministic memory-augmented workflow. LangGraph is substrate. ReAct deferred until ToolGatewayPort. Future loops are Loop Strategies with budgets, stopping conditions and policy hooks.
+Phase 1 uses deterministic memory-augmented workflow. LangGraph is deferred until graph-native branching or checkpoint replay is required. ReAct is deferred until ToolGatewayPort. Future loops are Loop Strategies with budgets, stopping conditions and policy hooks.
 
 ## Consequences
 

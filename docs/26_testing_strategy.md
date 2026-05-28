@@ -127,7 +127,9 @@ If an adapter is replaced, the new adapter must pass the same contract tests.
 
 ## 7. Integration tests
 
-Integration tests verify real adapters with PostgreSQL/pgvector and local infrastructure.
+Integration tests verify real adapters with PostgreSQL and local infrastructure.
+If a pgvector adapter is enabled, it must be covered by the same integration
+and MemoryReadPort contract tests.
 
 Examples:
 
@@ -212,6 +214,8 @@ Canonical event chain:
 ```text
 user.message.created
 request.processing.started
+context.assembly.started
+memory.retrieved
 context.assembled
 model.request.created
 model.response.received
@@ -255,6 +259,7 @@ Real LLM calls are not required for CI.
 ```text
 default config validates
 test config validates
+JARVIS_ env overrides apply through double-underscore nested keys
 cloud_reasoning disabled by default
 raw_prompt_logging=false by default
 local_main/local_structured/local_embedding exist
@@ -315,6 +320,7 @@ token budget
 active memories only
 secret exclusion
 ContextManifest not full prompt
+AssembledContext exposes explicit ContextManifest
 degraded mode on memory retrieval failure
 ```
 
@@ -322,6 +328,8 @@ degraded mode on memory retrieval failure
 
 ```text
 create allowed memory
+MemoryRecord has sensitivity/content_hash/indexing_status
+memory_candidates schema/domain exists without auto-extraction
 reject unknown namespace
 reject invalid memory type
 reject namespace/type mismatch
@@ -353,6 +361,9 @@ POST /conversations creates conversation
 POST /messages returns request_id
 GET /requests/{id} returns status
 GET /requests/{id}/stream emits runtime events
+POST /memories creates manual memory
+GET /memories lists memories
+GET /health returns healthy status
 same client_message_id returns existing request
 same client_message_id different content -> 409
 standard error format

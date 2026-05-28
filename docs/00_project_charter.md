@@ -56,7 +56,7 @@ Phase 1 поставляет core daemon, который умеет:
 - local-first policy;
 - cloud-optional model routing;
 - auditable model invocations;
-- graph-based runtime flow;
+- deterministic runtime workflow;
 - streaming-first interaction model;
 - modular monolith + ports/adapters;
 - separation between runtime, storage, memory, context assembly, model routing, inference serving;
@@ -77,7 +77,6 @@ Agent Runtime не должен зависеть от:
 
 Agent Runtime может зависеть от:
 
-- MemoryReadPort;
 - ContextAssemblerPort;
 - ModelRouterPort;
 - EventLogPort;
@@ -96,11 +95,11 @@ Agent Runtime может зависеть от:
 
 - FastAPI assistant API;
 - basic conversation lifecycle;
-- CLI или minimal web client;
-- deterministic memory-augmented conversation workflow на LangGraph;
+- optional thin CLI or minimal web client for local/manual testing, with the HTTP API as the required MVP interface;
+- deterministic memory-augmented conversation workflow in process;
 - ContextAssembler as a first-class core component;
 - PostgreSQL primary system of record;
-- pgvector initial vector retrieval adapter;
+- PostgreSQL-backed memory retrieval adapter, with pgvector as the preferred similarity-index implementation when available;
 - event log;
 - message storage;
 - model invocation audit;
@@ -145,14 +144,14 @@ Phase 1 не предназначена для:
 ## 8. Согласованные архитектурные решения
 
 1. PostgreSQL выбран как primary system of record.
-2. pgvector используется как initial retrieval adapter.
+2. PostgreSQL-backed retrieval is the initial adapter; pgvector remains the preferred similarity-index implementation when available.
 3. Memory subsystem доступна через MemoryReadPort / MemoryWritePort.
 4. memory_candidates входят в data model, но auto-extraction не входит в MVP acceptance.
-5. LangGraph используется как execution substrate.
+5. MVP runtime uses a custom deterministic workflow; LangGraph is deferred.
 6. Phase 1 agent loop — deterministic memory-augmented workflow.
 7. ReAct не используется в Phase 1.
 8. ReAct-style tool loop откладывается до ToolGatewayPort.
-9. LangGraph checkpoints хранятся в PostgreSQL как runtime state.
+9. Graph checkpoints are deferred runtime state, not MVP storage scope.
 10. Redis/NATS не вводятся как обязательная зависимость Phase 1.
 11. SSE — primary streaming transport.
 12. RuntimeStreamEvent schema transport-agnostic.
@@ -170,9 +169,9 @@ Phase 1 не предназначена для:
 ```text
 Language: Python
 API: FastAPI
-Runtime: LangGraph
+Runtime: custom deterministic workflow; LangGraph adapter deferred
 Architecture: modular monolith + ports/adapters
-Storage: PostgreSQL + pgvector
+Storage: PostgreSQL; pgvector-compatible retrieval adapter path
 Inference serving: vLLM preferred, Ollama acceptable for early experiments
 Streaming: SSE
 Deployment: Docker Compose
@@ -197,7 +196,7 @@ Phase 1 считается завершенной, когда:
 10. ModelRouter hides concrete inference backend;
 11. external LLM profile exists but disabled by default;
 12. system runs through Docker Compose;
-13. basic tests cover storage, model-router, context assembly, graph flow;
+13. basic tests cover storage, model-router, context assembly and runtime workflow;
 14. contract tests cover replaceable ports.
 
 ## 11. Основные риски
@@ -237,7 +236,7 @@ Mitigation: Phase 1 no ReAct; all future loops must define budgets/stopping cond
 См. `README.md` и остальные документы пакета.
 
 
-## 20. Event log и historical truth
+## 13. Event log и historical truth
 
 Phase 1 использует append-only event log как immutable historical truth о действиях системы.
 
@@ -247,7 +246,7 @@ Phase 1 использует append-only event log как immutable historical t
 
 Raw full prompts не хранятся по умолчанию. Для context assembly хранится `ContextManifest`. Raw message content хранится в `messages`, а events хранят refs/hashes/redacted snapshots.
 
-## 21. Data sensitivity and privacy baseline
+## 14. Data sensitivity and privacy baseline
 
 Phase 1 вводит минимальную модель чувствительности данных:
 
@@ -280,7 +279,7 @@ Phase 1 не включает LLM-based sensitivity classifier, full PII detecto
 
 ---
 
-## 20. Hardening additions
+## 15. Hardening additions
 
 Final reviewed package adds:
 

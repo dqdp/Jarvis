@@ -221,9 +221,12 @@ class MemoryRecord:
     memory_type: Literal["fact", "preference", "procedure", "summary"]
     content: str
     summary: str | None
+    content_hash: str
+    sensitivity: Literal["public", "project", "personal", "infra", "secret"]
     confidence: float
     importance: float
     status: Literal["active", "archived", "superseded"]
+    indexing_status: Literal["indexed", "embedding_pending", "embedding_failed"]
     source_event_ids: list[str]
     supersedes_memory_ids: list[str]
     superseded_by_memory_id: str | None
@@ -236,6 +239,11 @@ class MemoryRecord:
     valid_until: datetime | None
     metadata: dict[str, Any]
 ```
+
+`MemoryRecord` is a domain contract, not a direct copy of the PostgreSQL row.
+However, `sensitivity`, `content_hash` and `indexing_status` are mandatory
+domain-contract fields because policy enforcement, stale-embedding exclusion
+and retrieval eligibility depend on them.
 
 ### MemoryQuery
 
@@ -341,6 +349,6 @@ no reranker
 no hybrid search
 ```
 
-A memory record may exist without valid embedding if embedding generation failed. Such records have `indexing_status=embedding_failed` and are excluded from vector retrieval until reindexed.
+A memory record may exist without valid embedding if embedding generation failed. Such records have `indexing_status=embedding_failed` and are excluded from retrieval until reindexed.
 
 Full RAG is not part of Memory subsystem.

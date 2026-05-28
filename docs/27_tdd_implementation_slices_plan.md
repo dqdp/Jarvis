@@ -112,8 +112,9 @@ Config implementation:
   strict startup validation.
 
 Database implementation:
-  SQLAlchemy async + asyncpg + Alembic, with PostgreSQL/pgvector as the
-  integration-test target.
+  SQLAlchemy async + asyncpg + Alembic, with PostgreSQL as the integration-test
+  target. pgvector remains the preferred similarity-index adapter when available;
+  the MVP may use a PostgreSQL numeric-array adapter behind MemoryReadPort.
 
 Integration database:
   prefer a docker-compose/test PostgreSQL service; allow DATABASE_URL override
@@ -197,26 +198,42 @@ test_config_test_environment_loads_minimally
 ```text
 pyproject.toml
 src/assistant_core/
+src/assistant_core/ports/
 tests/
 config/
 Makefile or task runner
 pytest markers
 ```
 
+`src/assistant_core/ports/` may contain minimal Protocol stubs or empty
+interface modules in Slice 00. It must not import adapters or provider-specific
+types. The early package exists so Slice 02a architecture tests have a concrete
+boundary to inspect.
+
 ### Acceptance criteria
 
 ```text
+make test works
 make test-unit works
+make test-contract works
+make test-integration works
+make test-golden works
+make test-architecture works
+make test-e2e works
 pytest sees markers
 package imports successfully
 ```
+
+In Slice 00, non-unit targets may be marker-filtered smoke commands with no
+substantive tests yet. The goal is to establish the stable test-runner
+interface early; later slices add the actual tests for each layer.
 
 ### Out of scope
 
 ```text
 FastAPI
 PostgreSQL
-LangGraph
+graph runtime adapter
 ModelRouter
 ```
 
@@ -233,6 +250,7 @@ Implement typed config loader and startup validation.
 ```text
 test_default_config_validates
 test_test_config_validates
+test_env_override_nested_keys_apply_with_jarvis_prefix
 test_cloud_reasoning_disabled_by_default
 test_raw_prompt_logging_disabled_by_default
 test_required_model_profiles_exist
@@ -280,12 +298,15 @@ Create canonical domain types before adapters.
 
 ```text
 test_memory_type_enum_values
+test_memory_candidate_status_enum_values
 test_sensitivity_enum_values
 test_request_status_transitions
 test_event_envelope_required_fields
 test_event_type_enum_includes_canonical_user_turn_chain
 test_event_type_enum_includes_error_and_degraded_events
 test_chat_message_provider_neutral_shape
+test_memory_record_contract_fields_include_sensitivity_hash_and_indexing_status
+test_context_manifest_is_explicit_domain_object
 ```
 
 ### Implementation
@@ -298,6 +319,11 @@ domain/models.py
 domain/policy.py
 domain/context.py
 ```
+
+Domain schemas are provider-neutral and adapter-neutral contracts. `MemoryRecord`
+must include `sensitivity`, `content_hash` and `indexing_status`. `AssembledContext`
+must include an explicit `ContextManifest` object rather than hiding the manifest
+inside an unstructured metadata dictionary.
 
 Canonical Phase 1 event names are defined in `domain/events.py`.
 
@@ -370,6 +396,11 @@ tests/architecture/
 import graph or AST helper
 baseline module boundary rules
 ```
+
+The baseline architecture test target includes the minimal `ports` package
+created in Slice 00. It verifies that port modules expose only domain schemas,
+typing/protocol constructs and other port definitions, never concrete adapter,
+ORM, pgvector or provider-client types.
 
 ### Acceptance criteria
 
@@ -704,6 +735,7 @@ test_reject_namespace_type_mismatch
 test_reject_secret_memory_write
 test_archive_memory
 test_supersede_memory
+test_memory_candidates_schema_exists_without_auto_extraction
 ```
 
 ### Implementation
@@ -712,6 +744,7 @@ test_supersede_memory
 MemoryWritePort
 PostgresMemoryStore write side
 memories table
+memory_candidates table/domain placeholder
 memory lifecycle events
 ```
 
@@ -726,6 +759,7 @@ memory write contract tests pass
 ```text
 vector retrieval
 RAG
+automatic memory extraction
 ```
 
 ---
@@ -795,10 +829,15 @@ test_retrieval_failure_can_be_reported
 
 ```text
 MemoryReadPort
-pgvector query
-MemoryHit
-retrieval config
+  PostgreSQL-backed retrieval adapter
+  MemoryHit
+  retrieval config
 ```
+
+The current MVP adapter uses deterministic lexical, importance and recency
+ranking over active memory records while preserving `MemoryReadPort`. A pgvector
+query/index can replace this adapter without changing runtime or domain
+contracts.
 
 ### Acceptance criteria
 
@@ -895,14 +934,14 @@ test_no_assistant_message_on_system_failure
 ```text
 AgentRuntime
 memory_augmented_answer workflow
-LangGraph integration or minimal graph wrapper
+custom deterministic workflow
 runtime events
 request status updates
 ```
 
-LangGraph checkpoints are PostgreSQL-backed runtime state, but Phase 1 does
-not require automatic continuation of an in-flight streaming request after
-daemon restart. Durable messages, events and request status remain mandatory.
+LangGraph is deferred for MVP. Phase 1 does not require automatic continuation
+of an in-flight streaming request after daemon restart. Durable messages,
+events and request status remain mandatory.
 
 ### Acceptance criteria
 
@@ -934,6 +973,9 @@ test_post_conversation
 test_post_message_returns_request_id
 test_get_request_status
 test_get_conversation_messages
+test_post_memory
+test_get_memories
+test_get_health
 test_idempotent_message_submit
 test_conflicting_client_message_id_returns_409
 test_standard_error_format
@@ -961,7 +1003,6 @@ API tests green
 ```text
 auth
 WebSocket
-cancellation
 ```
 
 ---
@@ -1003,7 +1044,6 @@ SSE tests green
 ```text
 token replay guarantee
 WebSocket
-cancellation
 ```
 
 ---

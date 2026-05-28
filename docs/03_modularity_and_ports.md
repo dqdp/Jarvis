@@ -31,7 +31,9 @@ Phase 1:
 - EventLogPort;
 - MemoryReadPort;
 - MemoryWritePort;
+- ContextAssemblerPort;
 - ModelRouterPort;
+- EmbeddingPort;
 - PolicyPort.
 
 Future:
@@ -78,10 +80,20 @@ MemoryReadPort:
   exclude archived memories
   return provenance
 
+ContextAssemblerPort:
+  assemble provider-neutral context
+  return ContextManifest
+  exclude secret sources
+
 EventLogPort:
   append ordered events
   query by conversation/correlation id
   preserve payload
+
+EmbeddingPort:
+  generate local embeddings
+  keep memory subsystem provider-independent
+  preserve model invocation audit
 
 ModelRouterPort:
   call local model profile

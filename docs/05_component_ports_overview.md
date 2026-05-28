@@ -52,7 +52,27 @@ class ContextAssemblerPort(Protocol):
 class ModelRouterPort(Protocol):
     async def chat(self, request: ChatModelRequest) -> ChatModelResponse: ...
     async def stream_chat(self, request: ChatModelRequest) -> AsyncIterator[ModelStreamEvent]: ...
+    async def structured(self, request: StructuredModelRequest) -> StructuredModelResponse: ...
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse: ...
 ```
+
+### EmbeddingPort
+
+`EmbeddingPort` is introduced in Phase 1 as a narrow facade for embedding generation.
+
+Default implementation:
+
+```text
+EmbeddingPort -> ModelRouter.embed(local_embedding)
+```
+
+Purpose:
+
+- keep Memory subsystem independent from concrete embedding providers;
+- preserve model invocation audit for embeddings;
+- allow future replacement of embedding backend without changing Memory subsystem.
+
+`EmbeddingPort` is intentionally small and should not become a generic model router.
 
 ### PolicyPort
 
@@ -104,22 +124,3 @@ For wake word, VAD, STT, TTS, realtime sessions.
 `MemoryWritePort` must reject `secret` memory records.
 
 `EventLogPort` must persist sensitivity labels and redacted payloads for secret-bearing events.
-
-
-## EmbeddingPort
-
-`EmbeddingPort` is introduced in Phase 1 as a narrow facade for embedding generation.
-
-Default implementation:
-
-```text
-EmbeddingPort -> ModelRouter.embed(local_embedding)
-```
-
-Purpose:
-
-- keep Memory subsystem independent from concrete embedding providers;
-- preserve model invocation audit for embeddings;
-- allow future replacement of embedding backend without changing Memory subsystem.
-
-`EmbeddingPort` is intentionally small and should not become a generic model router.

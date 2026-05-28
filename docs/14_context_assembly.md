@@ -68,7 +68,7 @@ Current prompt context is not:
 - long-term memory;
 - event log;
 - conversation store;
-- LangGraph checkpoint;
+- graph checkpoint;
 - a permanent document;
 - a source of historical truth.
 
@@ -97,10 +97,32 @@ ContextAssembler uses:
 class AssembledContext:
     messages: list[ChatMessage]
     sections: list[ContextSection]
+    manifest: ContextManifest
+    token_estimate: int
+```
+
+`ContextManifest` is an explicit domain object, not an unstructured metadata
+dictionary. Phase 1 `ContextManifest` includes at least:
+
+```python
+@dataclass(frozen=True)
+class ContextManifest:
+    context_manifest_id: str
+    request_id: str
+    conversation_id: str
+    loop_strategy: str
+    model_profile: str
+    section_names: list[str]
     used_message_ids: list[str]
     used_memory_ids: list[str]
+    dropped_refs: list[ContextDroppedRef]
     token_estimate: int
-    metadata: dict[str, Any]
+    active_namespaces: list[str]
+    retrieval_parameters: dict[str, Any]
+    max_sensitivity: Literal["public", "project", "personal", "infra", "secret"]
+    sources_by_sensitivity: dict[str, list[str]]
+    degraded: bool
+    full_prompt_stored: bool = False
 ```
 
 ## 7. Canonical prompt sections
@@ -139,7 +161,7 @@ The following decisions are accepted for Phase 1:
    Phase 1 uses the current user message plus minimal recent-turn context as retrieval text. LLM-generated retrieval queries are deferred.
 
 3. Reranking is not part of the Phase 1 MVP.
-   Retrieval uses namespace-aware vector search and simple ranking by relevance/importance. Learned rerankers may be added later behind the same ContextAssembler facade.
+   Retrieval uses namespace-aware MemoryReadPort results and simple ranking by relevance/importance. A pgvector adapter may provide vector relevance later behind the same ContextAssembler facade.
 
 4. Automatic rolling summaries are not part of the Phase 1 MVP.
    Recent context is managed by a bounded recent-message window. Rolling summaries and compression are deferred to later context-management or sleep/consolidation workflows.
@@ -267,11 +289,11 @@ Minimum contract tests:
 - assembler respects trimming priorities under token pressure.
 
 
-## 15. Post-MVP follow-up: advanced context management
+## 18. Post-MVP follow-up: advanced context management
 
 The following capabilities are explicitly deferred beyond the Phase 1 MVP. They are not part of Phase 1 acceptance criteria, but the Phase 1 design must not block them.
 
-### 15.1 Provider-neutral context representation
+### 18.1 Provider-neutral context representation
 
 Phase 1 may send text-only chat messages to the local model backend, but the internal context representation must not be tied to a specific provider request format.
 
@@ -297,7 +319,7 @@ structured_data_ref
 
 Phase 1 may implement only `text`, but schemas and domain types should not make future typed parts impossible.
 
-### 15.2 Advanced retrieval query generation
+### 18.2 Advanced retrieval query generation
 
 Phase 1 uses current user message plus minimal recent-turn context as retrieval text.
 
@@ -311,7 +333,7 @@ Post-MVP extensions may add:
 
 These extensions must remain internal to ContextAssembler and must be reflected in ContextManifest.
 
-### 15.3 Reranking
+### 18.3 Reranking
 
 Phase 1 does not include learned reranking.
 
@@ -325,7 +347,7 @@ Post-MVP extensions may add:
 
 Reranking must not change the `ContextAssemblerPort` contract.
 
-### 15.4 Rolling summaries and compression
+### 18.4 Rolling summaries and compression
 
 Phase 1 uses bounded recent-message windowing.
 
@@ -342,7 +364,7 @@ Working summaries used for current context must remain distinct from long-term m
 
 ContextManifest must record compressed sources and compression strategy when compression is used.
 
-### 15.5 Tool-aware context
+### 18.5 Tool-aware context
 
 When ToolGatewayPort is introduced, ContextAssembler may add sections such as:
 
@@ -356,7 +378,7 @@ risk_constraints
 
 Tool-aware context must be selected according to loop strategy and PolicyPort decisions.
 
-### 15.6 Planner-aware context
+### 18.6 Planner-aware context
 
 When planner-executor loops are introduced, ContextAssembler may add sections such as:
 
@@ -373,13 +395,13 @@ approval_constraints
 
 Planner context must remain a loop-strategy-specific context policy, not a special case inside AgentRuntime.
 
-### 15.7 Multimodal context
+### 18.7 Multimodal context
 
 Future versions may include screenshots, PDFs, images, audio transcripts, files and structured documents.
 
 The Phase 1 text-only implementation must not prevent future multimodal context sources. Multimodal expansion should happen through typed content parts and provider-specific conversion in ModelRouter.
 
-### 15.8 Context pipeline extensibility
+### 18.8 Context pipeline extensibility
 
 The internal ContextAssembler implementation may evolve into a pipeline of strategies:
 
@@ -400,7 +422,7 @@ ManifestBuilder
 
 Phase 1 does not need to implement all of these as separate classes, but the design should keep these boundaries visible enough to avoid future rewrites.
 
-### 15.9 Non-goals for Phase 1
+### 18.9 Non-goals for Phase 1
 
 The following remain out of MVP scope:
 
@@ -413,7 +435,7 @@ The following remain out of MVP scope:
 - planner-aware context;
 - provider-specific prompt construction in AgentRuntime.
 
-## Sensitivity-aware context assembly
+## 19. Sensitivity-aware context assembly
 
 `ContextAssembler` must enforce the Phase 1 sensitivity policy.
 
@@ -447,7 +469,7 @@ dropped_secret_sources, if any
 Full raw prompt logging remains disabled by default.
 
 
-## Post-MVP Content Retrieval integration
+## 20. Post-MVP Content Retrieval integration
 
 Phase 1 ContextAssembler uses:
 
@@ -468,7 +490,7 @@ ContentRetrievalPort
 Context sections should keep memory-derived context and source-content-derived context separate.
 
 
-## Conversation windowing policy
+## 21. Conversation windowing policy
 
 ContextAssembler owns windowing policy.
 
@@ -490,7 +512,7 @@ These are configurable defaults, not hardcoded architectural constants.
 Future ContextAssembler implementations may use rolling summaries, salience scoring, planner-aware windows or tool-aware windows behind the same `ContextAssemblerPort`.
 
 
-## Configuration relation
+## 22. Configuration relation
 
 Context section order, conversation window limits, token budgets, trimming strategy and raw prompt logging flag are config-driven.
 

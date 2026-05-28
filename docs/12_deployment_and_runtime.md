@@ -12,7 +12,7 @@ inference-node
 
 PostgreSQL:
 
-- pgvector enabled;
+- pgvector-enabled image preferred;
 - persistent volume;
 - migrations through Alembic.
 

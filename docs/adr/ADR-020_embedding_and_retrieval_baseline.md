@@ -41,7 +41,7 @@ A valid memory record may be created even if embedding generation fails. In that
 
 ```text
 indexing_status=embedding_failed
-memory is excluded from vector retrieval
+memory is excluded from retrieval
 memory.embedding.failed event is emitted
 ```
 
@@ -55,8 +55,13 @@ max_hits_per_namespace=4
 no hard min_score
 no reranker
 no hybrid search
-ranking = vector score, then importance, then recency
+ranking = adapter relevance score, then importance, then recency
 ```
+
+The preferred PostgreSQL adapter can use pgvector similarity as the adapter
+relevance score. The implemented MVP may use deterministic lexical ranking over
+PostgreSQL-stored embeddings while keeping the same `MemoryReadPort` and
+`MemoryHit` contract.
 
 Retrieval failure is non-fatal for normal chat. ContextAssembler may proceed in degraded mode without long-term memory.
 

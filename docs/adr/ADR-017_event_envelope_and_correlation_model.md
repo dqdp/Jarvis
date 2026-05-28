@@ -82,4 +82,4 @@ Trade-offs:
 - full event sourcing;
 - token-by-token persisted model traces;
 - storing raw full prompts by default;
-- using LangGraph checkpoints as historical truth.
+- using graph checkpoints as historical truth.

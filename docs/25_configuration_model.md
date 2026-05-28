@@ -42,6 +42,20 @@ config/test.yaml
 
 Secrets are not stored in YAML.
 
+Environment overrides use one canonical MVP convention:
+
+```text
+prefix: JARVIS_
+nested keys: double underscore
+example: JARVIS_API__PORT=8081
+example: JARVIS_MODEL_PROFILES__LOCAL_MAIN__ENDPOINT=http://127.0.0.1:8000/v1
+```
+
+Override values are parsed into the target `Settings` field type during
+startup validation. Environment values may provide secret values or secret
+environment variable names, but resolved secrets must not be written back to
+YAML, raw logs, event payloads or prompts.
+
 ---
 
 ## 4. Secrets
@@ -93,7 +107,7 @@ local_embedding profile missing
 model profile references missing provider
 invalid sensitivity class
 invalid namespace allowed_types
-cloud profile enabled while cloud policy disabled without explicit override
+cloud profile or cloud policy enabled in Phase 1 without a future ADR
 secret logging enabled
 ```
 
@@ -135,7 +149,7 @@ database:
   echo_sql: false
 
 api:
-  host: 0.0.0.0
+  host: 127.0.0.1
   port: 8080
   request_timeout_seconds: 180
   sse_heartbeat_seconds: 15
@@ -423,6 +437,7 @@ Required tests:
 ```text
 default config validates
 test config validates
+JARVIS_ env overrides apply through double-underscore nested keys
 cloud_reasoning disabled by default
 secret not allowed in memory_write
 local_main profile exists

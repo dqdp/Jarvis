@@ -66,7 +66,7 @@ Historical truth не включает:
 
 - фактическую правильность ответа модели;
 - истинность memory content как знания о мире;
-- LangGraph checkpoint как доменную истину;
+- graph checkpoint как доменную истину;
 - embedding vector как знание;
 - ContextManifest как первичный факт мира.
 

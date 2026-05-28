@@ -6,9 +6,9 @@ Define the architecture of the agent runtime loop.
 
 Key decision:
 
-> LangGraph is the execution substrate, not the agent architecture.
+> MVP runtime uses a custom deterministic workflow; LangGraph is deferred.
 
-The assistant's agent loops are defined by our own graph templates, loop strategies, budgets, policy hooks and emitted runtime events.
+The assistant's agent loops are defined by our own workflow templates, loop strategies, budgets, policy hooks and emitted runtime events.
 
 ## 2. Why Not ReAct in Phase 1
 
@@ -51,11 +51,7 @@ structured_extraction_workflow
 ```text
 receive_message
   ↓
-load_conversation_context
-  ↓
-retrieve_memories
-  ↓
-build_prompt
+assemble_context via ContextAssemblerPort
   ↓
 call_model_router
   ↓
@@ -183,11 +179,11 @@ Tests must verify:
 - RuntimeStreamEvents emitted in expected order.
 
 
-## 8. Context Assembly Integration
+## 12. Context Assembly Integration
 
 Phase 1 agent loop does not perform ad-hoc prompt construction.
 
-The graph node responsible for model input construction calls `ContextAssemblerPort`.
+The runtime step responsible for model input construction calls `ContextAssemblerPort`.
 
 ```text
 receive_message
@@ -204,7 +200,7 @@ This keeps the agent loop independent from the internal implementation of contex
 The ContextAssembler may internally use ConversationStorePort, MemoryReadPort, PolicyPort and prompt templates, but Agent Runtime sees only the assembled context contract.
 
 
-## Event trace for Phase 1 loop
+## 13. Event trace for Phase 1 loop
 
 The deterministic memory-augmented workflow emits a canonical event chain for every user turn:
 
@@ -225,7 +221,7 @@ All events in this chain share the same `request_id`. `causation_id` links the d
 Agent Runtime is responsible for preserving this causal chain, but it does not own event storage details directly; it emits through `EventLogPort`.
 
 
-## Runtime budgets and future loop strategies
+## 14. Runtime budgets and future loop strategies
 
 Phase 1 runtime budget applies only to `memory_augmented_answer`.
 

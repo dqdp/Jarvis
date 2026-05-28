@@ -1,8 +1,8 @@
 # Personal Assistant Runtime — Phase 1 MVP Documentation Package
 
-Версия: reviewed baseline v16  
-Дата: 2026-05-28  
-Статус: **Accepted MVP documentation baseline, subject to revision after coding-agent analysis**.
+Версия: implemented baseline v21
+Дата: 2026-05-29
+Статус: **Phase 1 Core Daemon MVP implemented and acceptance-reviewed in the local TDD harness**.
 
 ## Назначение
 
@@ -62,6 +62,9 @@ docs/
   25_configuration_model.md
   26_testing_strategy.md
   27_tdd_implementation_slices_plan.md
+  28_mvp_acceptance_checklist.md
+  29_hardening_review_notes.md
+  30_mvp_implementation_archive.md
 ```
 
 ## ADR Index
@@ -116,8 +119,9 @@ docs/adr/
 ### Storage
 
 - PostgreSQL = primary system of record.
-- pgvector = initial retrieval adapter, not Memory contract.
-- LangGraph checkpoints хранятся в PostgreSQL как runtime state, not memory/audit truth.
+- Memory retrieval is behind `MemoryReadPort`; pgvector remains an adapter path,
+  not the Memory contract.
+- Graph checkpoints are deferred runtime state, not memory/audit truth.
 - Phase 1 uses append-only event log as audit/reconstruction substrate, not full event sourcing.
 
 ### Event model
@@ -148,8 +152,8 @@ docs/adr/
 
 ### Agent runtime
 
-- LangGraph is execution substrate, not predefined agent architecture.
-- Phase 1 loop = deterministic `memory_augmented_answer`.
+- MVP runtime uses a custom deterministic workflow behind `AgentRuntime`.
+- Phase 1 loop = deterministic `memory_augmented_answer`; LangGraph is deferred.
 - ReAct is deferred until `ToolGatewayPort` exists.
 - Future loop strategies must declare budgets, capabilities, policy hooks, failure semantics and emitted events.
 
@@ -204,12 +208,21 @@ docs/adr/
 
 ## Current package status
 
-This package is ready to be given to coding agents for initial repository analysis and implementation planning.
+This package has been used for the initial TDD implementation through Slice 19.
+The repository now contains the Phase 1 Core Daemon MVP contracts, adapters,
+runtime workflow, API surface, SSE stream and acceptance tests.
 
-Allowed post-analysis changes:
+Implementation notes:
 
-- implementation-order-only changes update `docs/27_tdd_implementation_slices_plan.md`;
-- architecture-changing changes require ADR update.
+- The API surface is implemented with FastAPI while preserving the documented
+  route contract.
+- Memory embeddings are stored in PostgreSQL behind `MemoryReadPort`. The current
+  MVP adapter uses portable PostgreSQL arrays and deterministic ranking; pgvector
+  remains an adapter-level optimization path, not a runtime/domain dependency.
+- Fake model and embedding providers are used for CI; real LLM calls are not
+  required for acceptance.
+
+Future architecture-changing changes still require the relevant ADR update.
 
 ## Final hardening additions in v16
 
@@ -219,3 +232,10 @@ Allowed post-analysis changes:
 - Agent implementation instructions were added.
 - Data model document was normalized to remove accumulated numbering drift.
 - Hardening review notes were added.
+
+## Implementation additions in v18
+
+- Phase 1 TDD slices 00-19 were implemented.
+- MVP acceptance checklist was completed.
+- Documentation acceptance tests were added.
+- MVP implementation archive was added.

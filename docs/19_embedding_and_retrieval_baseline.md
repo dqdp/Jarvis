@@ -57,9 +57,15 @@ The Memory subsystem must not depend on concrete embedding provider, endpoint, m
 
 ## 4. Storage baseline
 
-Phase 1 stores memory embeddings in PostgreSQL + pgvector.
+Phase 1 stores memory embeddings in PostgreSQL.
 
 The architectural contract is not pgvector. The contract is `MemoryReadPort`.
+
+The preferred similarity-index adapter is pgvector when the extension and
+Python client dependency are part of the runtime environment. The implemented
+MVP uses a portable PostgreSQL numeric-array adapter with deterministic lexical,
+importance and recency ranking so the core memory contract can be tested without
+additional dependency scope.
 
 Recommended table shape:
 
@@ -70,7 +76,7 @@ memory_embeddings (
   embedding_model text not null,
   embedding_dimension int not null,
   content_hash text not null,
-  embedding vector(...),
+  embedding vector(...) or double precision[],
   created_at timestamptz not null default now(),
 
   primary key (memory_id, embedding_profile)
@@ -103,7 +109,7 @@ MVP rule:
 ```text
 Memory record may exist without valid embedding.
 Such memory is visible in memory management APIs,
-but is not returned by vector retrieval until indexed.
+but is not returned by retrieval until indexed.
 ```
 
 ---
@@ -128,7 +134,7 @@ If embedding generation fails:
 memory record is still created
 indexing_status=embedding_failed
 memory.embedding.failed event is emitted
-memory is excluded from vector retrieval
+memory is excluded from retrieval
 ```
 
 Reason:
@@ -223,12 +229,14 @@ Scores should be logged for future tuning.
 MVP ranking:
 
 ```text
-primary: vector score
+primary: adapter relevance score
 secondary: importance desc
 tertiary: updated_at desc
 ```
 
-No complex relevance formula is defined in Phase 1.
+The pgvector adapter should use vector similarity as the primary relevance
+score. The implemented MVP array adapter uses deterministic lexical overlap as
+the primary relevance score while preserving the same `MemoryHit` contract.
 
 ---
 
@@ -292,7 +300,7 @@ sync embedding on memory create/update
 memory_embeddings table
 content_hash
 indexing_status
-namespace-aware vector retrieval
+namespace-aware retrieval
 active-only retrieval
 max_hits_total / max_hits_per_namespace
 score + importance + recency ordering
