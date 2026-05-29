@@ -315,3 +315,45 @@ def test_toolgateway_does_not_import_loop_strategies() -> None:
             "assistant_core.loops",
         },
     )
+
+
+def test_loop_strategies_do_not_import_storage_adapters() -> None:
+    loop_files = _python_files("runtime/loops")
+    if not loop_files:
+        pytest.fail("PM-03 requires runtime loop strategies")
+    _assert_no_import_prefixes(
+        loop_files,
+        {
+            "assistant_core.storage",
+            "sqlalchemy",
+            "pgvector",
+        },
+    )
+
+
+def test_loop_strategies_do_not_import_provider_clients() -> None:
+    loop_files = _python_files("runtime/loops")
+    if not loop_files:
+        pytest.fail("PM-03 requires runtime loop strategies")
+    _assert_no_import_prefixes(
+        loop_files,
+        {
+            "openai",
+            "ollama",
+            "vllm",
+            "httpx",
+            "urllib.request",
+        },
+    )
+
+
+def test_memory_augmented_answer_loop_does_not_import_toolgateway() -> None:
+    loop_path = SRC_ROOT / "runtime" / "loops" / "memory_augmented_answer.py"
+    assert loop_path.is_file()
+    _assert_no_import_prefixes(
+        [loop_path],
+        {
+            "assistant_core.tools",
+            "assistant_core.ports.tools",
+        },
+    )

@@ -70,7 +70,7 @@ def _sse_events(raw: str) -> list[str]:
     ]
 
 
-def test_e2e_user_turn_lifecycle_with_memory_and_fake_model() -> None:
+def _run_user_turn_lifecycle():
     database_url = _database_url()
     assert_test_database_url(database_url)
     run_migrations(database_url)
@@ -178,7 +178,13 @@ def test_e2e_user_turn_lifecycle_with_memory_and_fake_model() -> None:
         finally:
             await engine.dispose()
 
-    submitted, stream_events, request_status, messages, events, invocations = asyncio.run(scenario())
+    return asyncio.run(scenario())
+
+
+def test_e2e_user_turn_lifecycle_with_memory_and_fake_model() -> None:
+    submitted, stream_events, request_status, messages, events, invocations = (
+        _run_user_turn_lifecycle()
+    )
 
     assert submitted["request_id"]
     assert stream_events[-1] == "request.processing.completed"
@@ -199,3 +205,21 @@ def test_e2e_user_turn_lifecycle_with_memory_and_fake_model() -> None:
     assert memory_event.payload["used_memory_ids"] == context_event.payload["used_memory_ids"]
     assert context_event.causation_id == memory_event.event_id
     assert model_policy_event.payload["allowed"] is True
+
+
+def test_user_turn_lifecycle_still_uses_memory_augmented_answer() -> None:
+    _, _, _, _, events, _ = _run_user_turn_lifecycle()
+
+    loop_started = next(event for event in events if event.event_type == EventType.AGENT_LOOP_STARTED)
+    loop_completed = next(
+        event for event in events if event.event_type == EventType.AGENT_LOOP_COMPLETED
+    )
+    assert loop_started.payload["strategy_name"] == "memory_augmented_answer"
+    assert loop_completed.payload["used_model_calls"] == 1
+    assert loop_completed.payload["used_tool_calls"] == 0
+
+
+def test_no_tool_events_are_emitted_for_memory_augmented_answer() -> None:
+    _, _, _, _, events, _ = _run_user_turn_lifecycle()
+
+    assert all(not event.event_type.value.startswith("tool.") for event in events)

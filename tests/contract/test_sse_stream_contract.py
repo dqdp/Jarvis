@@ -234,6 +234,31 @@ def test_sse_stream_emits_request_started(stream_parts) -> None:
     assert events[0][0] == "request.processing.started"
 
 
+def test_live_sse_stream_does_not_expose_internal_loop_events(stream_parts) -> None:
+    async def scenario():
+        make_app, event_log = stream_parts
+        app = make_app(FakeModelProvider(stream_tokens=["A"]))
+        submitted = await _accepted_message(
+            app,
+            client_message_id="client-live-loop-events",
+        )
+        _, raw = await _request(app, "GET", f"/v1/requests/{submitted['request_id']}/stream")
+        persisted = await event_log.query(EventFilter(request_id=submitted["request_id"]))
+        return _sse_events(raw), persisted
+
+    live_events, persisted_events = asyncio.run(scenario())
+
+    assert all(not event.startswith("agent.loop.") for event, _ in live_events)
+    assert any(
+        event.event_type == EventType.AGENT_LOOP_STARTED
+        for event in persisted_events
+    )
+    assert any(
+        event.event_type == EventType.AGENT_LOOP_COMPLETED
+        for event in persisted_events
+    )
+
+
 def test_request_executes_without_opening_stream(stream_parts) -> None:
     async def scenario():
         make_app, _ = stream_parts
@@ -688,6 +713,37 @@ def test_reconnect_stream_does_not_expose_internal_policy_audit_events(stream_pa
 
     assert EventType.POLICY_DECISION_RECORDED.value not in [event for event, _ in events]
     assert "secret audit payload" not in json.dumps(events)
+
+
+def test_reconnect_stream_does_not_expose_internal_loop_events(stream_parts) -> None:
+    async def scenario():
+        make_app, event_log = stream_parts
+        app = make_app(FakeModelProvider(stream_tokens=["A"]))
+        submitted = await _accepted_message(
+            app,
+            client_message_id="client-loop-reconnect",
+        )
+        await _request(app, "GET", f"/v1/requests/{submitted['request_id']}/stream")
+        replay_app = make_app(FakeModelProvider(stream_tokens=["SHOULD_NOT_RERUN"]))
+        _, reconnect_raw = await _request(
+            replay_app,
+            "GET",
+            f"/v1/requests/{submitted['request_id']}/stream",
+        )
+        persisted = await event_log.query(EventFilter(request_id=submitted["request_id"]))
+        return _sse_events(reconnect_raw), persisted
+
+    events, persisted_events = asyncio.run(scenario())
+
+    assert all(not event.startswith("agent.loop.") for event, _ in events)
+    assert any(
+        event.event_type == EventType.AGENT_LOOP_STARTED
+        for event in persisted_events
+    )
+    assert any(
+        event.event_type == EventType.AGENT_LOOP_COMPLETED
+        for event in persisted_events
+    )
 
 
 def test_reconnect_stream_projects_allowlisted_events_to_public_payloads(stream_parts) -> None:

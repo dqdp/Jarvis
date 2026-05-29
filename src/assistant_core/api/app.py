@@ -498,6 +498,8 @@ class _RequestExecutionManager:
         return failed
 
     async def _publish(self, request_id: str, event_type: str, data: dict[str, Any]) -> None:
+        if event_type != "token" and event_type not in _STREAM_REPLAY_EVENT_TYPES:
+            return
         payload = dict(data)
         payload.setdefault("request_id", request_id)
         self._events.setdefault(request_id, []).append(

@@ -19,6 +19,7 @@ from assistant_core.domain.conversations import (
     UpdateAssistantRequestStatusCommand,
 )
 from assistant_core.domain.events import EventType
+from assistant_core.domain.loops import LoopExecutionResult, LoopStatus, LoopStrategyName
 from assistant_core.domain.memory import MemoryQuery
 from assistant_core.domain.messages import ChatMessage, MessageRole, TextPart
 from assistant_core.domain.models import ChatModelResponse
@@ -110,6 +111,35 @@ class RecordingContextAssembler:
             manifest=manifest,
             token_estimate=2,
         )
+
+
+class RecordingDelegatedStrategy:
+    strategy_name = LoopStrategyName.MEMORY_AUGMENTED_ANSWER
+
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def run_turn(self, request):
+        self.requests.append(request)
+        return LoopExecutionResult(
+            status=LoopStatus.COMPLETED,
+            response_text="delegated answer",
+            assistant_message=None,
+            used_model_calls=1,
+            used_tool_calls=0,
+            context_manifest_refs=("manifest-1",),
+            degraded=False,
+        )
+
+
+class RecordingDelegatedRegistry:
+    def __init__(self, strategy: RecordingDelegatedStrategy) -> None:
+        self.strategy = strategy
+        self.selected_names = []
+
+    def get(self, strategy_name):
+        self.selected_names.append(strategy_name)
+        return self.strategy
 
 
 class SlowContextAssembler(RecordingContextAssembler):
@@ -252,7 +282,12 @@ def test_runtime_persists_event_chain_success(runtime_parts) -> None:
     core_events = [
         event.event_type
         for event in events
-        if event.event_type != EventType.POLICY_DECISION_RECORDED
+        if event.event_type
+        not in {
+            EventType.POLICY_DECISION_RECORDED,
+            EventType.AGENT_LOOP_STARTED,
+            EventType.AGENT_LOOP_COMPLETED,
+        }
     ]
     assert core_events == [
         EventType.USER_MESSAGE_CREATED,
@@ -266,6 +301,135 @@ def test_runtime_persists_event_chain_success(runtime_parts) -> None:
         EventType.REQUEST_PROCESSING_COMPLETED,
     ]
     assert any(event.event_type == EventType.POLICY_DECISION_RECORDED for event in events)
+    assert any(event.event_type == EventType.AGENT_LOOP_STARTED for event in events)
+    assert any(event.event_type == EventType.AGENT_LOOP_COMPLETED for event in events)
+
+
+def test_memory_augmented_answer_loop_preserves_existing_runtime_result(runtime_parts) -> None:
+    async def scenario():
+        _, store, _, _, make_runtime = runtime_parts
+        _, submission = await _accepted_turn(store)
+        return await make_runtime().run_turn(
+            RuntimeTurnCommand(
+                request_id=submission.request.request_id,
+                conversation_id=submission.request.conversation_id,
+                user_message_id=submission.user_message.message_id,
+                user_id="user-1",
+                user_input=submission.user_message.content,
+                active_project_namespace="project.personal_assistant",
+            ),
+        )
+
+    result = asyncio.run(scenario())
+
+    assert result.response_text == "answer"
+    assert result.assistant_message is not None
+    assert result.assistant_message.content == "answer"
+    assert result.model_calls == 1
+    assert result.degraded is False
+
+
+def test_memory_augmented_answer_loop_preserves_existing_event_chain(runtime_parts) -> None:
+    async def scenario():
+        _, store, event_log, _, make_runtime = runtime_parts
+        _, submission = await _accepted_turn(store)
+        await make_runtime().run_turn(
+            RuntimeTurnCommand(
+                request_id=submission.request.request_id,
+                conversation_id=submission.request.conversation_id,
+                user_message_id=submission.user_message.message_id,
+                user_id="user-1",
+                user_input=submission.user_message.content,
+                active_project_namespace="project.personal_assistant",
+            ),
+        )
+        return await event_log.query(EventFilter(request_id=submission.request.request_id))
+
+    events = asyncio.run(scenario())
+    by_type = {event.event_type: event for event in events}
+
+    assert by_type[EventType.MEMORY_RETRIEVED].causation_id == by_type[
+        EventType.CONTEXT_ASSEMBLY_STARTED
+    ].event_id
+    assert by_type[EventType.CONTEXT_ASSEMBLED].causation_id == by_type[
+        EventType.MEMORY_RETRIEVED
+    ].event_id
+    assert by_type[EventType.MODEL_REQUEST_CREATED].causation_id == by_type[
+        EventType.CONTEXT_ASSEMBLED
+    ].event_id
+    assert by_type[EventType.MODEL_RESPONSE_RECEIVED].causation_id == by_type[
+        EventType.MODEL_REQUEST_CREATED
+    ].event_id
+    assert by_type[EventType.ASSISTANT_MESSAGE_CREATED].causation_id == by_type[
+        EventType.MODEL_RESPONSE_RECEIVED
+    ].event_id
+    assert by_type[EventType.REQUEST_PROCESSING_COMPLETED].causation_id == by_type[
+        EventType.ASSISTANT_MESSAGE_CREATED
+    ].event_id
+    assert by_type[EventType.AGENT_LOOP_STARTED].payload["strategy_name"] == (
+        LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value
+    )
+    assert by_type[EventType.AGENT_LOOP_COMPLETED].payload["used_tool_calls"] == 0
+
+
+def test_agent_runtime_delegates_to_strategy_registry() -> None:
+    async def scenario():
+        strategy = RecordingDelegatedStrategy()
+        registry = RecordingDelegatedRegistry(strategy)
+        runtime = AgentRuntime(
+            conversation_store=object(),
+            context_assembler=object(),
+            model_router=object(),
+            event_log=InMemoryEventLog(),
+            settings=ConfigLoader(Path("config")).load("test"),
+            loop_strategy_registry=registry,
+        )
+        result = await runtime.run_turn(
+            RuntimeTurnCommand(
+                request_id="request-1",
+                conversation_id="conversation-1",
+                user_message_id="message-1",
+                user_id="user-1",
+                user_input="hello",
+                active_project_namespace="project.personal_assistant",
+            ),
+        )
+        return result, registry, strategy
+
+    result, registry, strategy = asyncio.run(scenario())
+
+    assert result.response_text == "delegated answer"
+    assert registry.selected_names == [LoopStrategyName.MEMORY_AUGMENTED_ANSWER]
+    assert strategy.requests[0].budget.max_tool_calls == 0
+
+
+def test_strategy_uses_context_assembler_model_router_policy_and_stores_ports(runtime_parts) -> None:
+    async def scenario():
+        _, store, event_log, _, make_runtime = runtime_parts
+        _, submission = await _accepted_turn(store)
+        assembler = RecordingContextAssembler()
+        provider = FakeModelProvider(chat_response="answer")
+        runtime = make_runtime(assembler=assembler, model_provider=provider)
+        await runtime.run_turn(
+            RuntimeTurnCommand(
+                request_id=submission.request.request_id,
+                conversation_id=submission.request.conversation_id,
+                user_message_id=submission.user_message.message_id,
+                user_id="user-1",
+                user_input=submission.user_message.content,
+                active_project_namespace="project.personal_assistant",
+            ),
+        )
+        request = await store.get_assistant_request(submission.request.request_id)
+        events = await event_log.query(EventFilter(request_id=submission.request.request_id))
+        return assembler.calls, provider.chat_calls, request, events
+
+    assembler_calls, chat_calls, request, events = asyncio.run(scenario())
+
+    assert assembler_calls == 1
+    assert chat_calls == 1
+    assert request.status == RequestStatus.COMPLETED
+    assert any(event.event_type == EventType.MODEL_REQUEST_CREATED for event in events)
 
 
 def test_runtime_uses_context_assembler(runtime_parts) -> None:
