@@ -115,6 +115,47 @@ def test_post_conversation(app_parts) -> None:
     assert payload["title"] == "Phase 1"
 
 
+def test_get_conversations_lists_recent_sessions(app_parts) -> None:
+    async def scenario():
+        first = await _create_conversation(app_parts)
+        second_status, second = await _request(
+            app_parts,
+            "POST",
+            "/v1/conversations",
+            {
+                "title": "Second",
+                "active_project_namespace": "project.personal_assistant",
+                "metadata": {},
+            },
+        )
+        assert second_status == 201
+        return first, second, await _request(app_parts, "GET", "/v1/conversations")
+
+    first, second, (status, payload) = asyncio.run(scenario())
+
+    assert status == 200
+    assert [item["conversation_id"] for item in payload["conversations"][:2]] == [
+        second["conversation_id"],
+        first["conversation_id"],
+    ]
+
+
+def test_get_conversation(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        return conversation, await _request(
+            app_parts,
+            "GET",
+            f"/v1/conversations/{conversation['conversation_id']}",
+        )
+
+    conversation, (status, payload) = asyncio.run(scenario())
+
+    assert status == 200
+    assert payload["conversation_id"] == conversation["conversation_id"]
+    assert payload["title"] == "Runtime"
+
+
 def test_post_message_returns_request_id(app_parts) -> None:
     async def scenario():
         conversation = await _create_conversation(app_parts)
@@ -242,6 +283,71 @@ def test_get_memories(app_parts) -> None:
 
     assert status == 200
     assert payload["memories"][0]["content"] == "Memory list item."
+
+
+def test_search_memories_filters_by_query(app_parts) -> None:
+    async def scenario():
+        await _request(
+            app_parts,
+            "POST",
+            "/v1/memories",
+            {
+                "namespace": "project.personal_assistant",
+                "memory_type": "fact",
+                "content": "Alpha memory search target.",
+                "sensitivity": "project",
+            },
+        )
+        await _request(
+            app_parts,
+            "POST",
+            "/v1/memories",
+            {
+                "namespace": "project.personal_assistant",
+                "memory_type": "fact",
+                "content": "Unrelated note.",
+                "sensitivity": "project",
+            },
+        )
+        return await _request(app_parts, "GET", "/v1/memories?query=search target")
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 200
+    assert [memory["content"] for memory in payload["memories"]] == [
+        "Alpha memory search target.",
+    ]
+
+
+def test_delete_memory_archives_record(app_parts) -> None:
+    async def scenario():
+        _, memory = await _request(
+            app_parts,
+            "POST",
+            "/v1/memories",
+            {
+                "namespace": "project.personal_assistant",
+                "memory_type": "fact",
+                "content": "Archive me.",
+                "sensitivity": "project",
+            },
+        )
+        return await _request(app_parts, "DELETE", f"/v1/memories/{memory['memory_id']}")
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 200
+    assert payload["status"] == "archived"
+    assert payload["archive_reason"] == "deleted_by_user"
+
+
+def test_get_runtime_status_exposes_active_local_profile(app_parts) -> None:
+    status, payload = asyncio.run(_request(app_parts, "GET", "/v1/runtime/status"))
+
+    assert status == 200
+    assert payload["default_model_profile"] == "local_main"
+    assert payload["model_profiles"]["local_main"]["provider"]
+    assert payload["model_profiles"]["local_main"]["model"]
 
 
 def test_get_health(app_parts) -> None:

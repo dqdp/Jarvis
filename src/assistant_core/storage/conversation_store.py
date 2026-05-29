@@ -21,6 +21,7 @@ from assistant_core.domain.conversations import (
     ConversationStatus,
     CreateAssistantRequestCommand,
     CreateConversationCommand,
+    ListConversationsQuery,
     MessageSubmission,
     MessageSubmissionCommand,
     RecentMessagesQuery,
@@ -163,6 +164,28 @@ class PostgresConversationStore:
         if row is None:
             return None
         return _row_to_conversation(row)
+
+    async def list_conversations(
+        self,
+        query: ListConversationsQuery | None = None,
+        *,
+        user_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[Conversation]:
+        if query is None:
+            if user_id is None:
+                raise TypeError("list_conversations requires query or user_id")
+            query = ListConversationsQuery(user_id=user_id, limit=limit or 20)
+
+        statement = (
+            sa.select(_conversations)
+            .where(_conversations.c.user_id == query.user_id)
+            .order_by(_conversations.c.updated_at.desc(), _conversations.c.conversation_id.desc())
+            .limit(query.limit)
+        )
+        async with self.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        return [_row_to_conversation(row) for row in rows]
 
     async def append_message(self, command: AppendMessageCommand) -> ConversationMessage:
         try:

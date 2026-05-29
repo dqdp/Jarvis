@@ -11,6 +11,7 @@ from assistant_core.domain.conversations import (
     ConversationMessage,
     CreateAssistantRequestCommand,
     CreateConversationCommand,
+    ListConversationsQuery,
     MessageSubmission,
     MessageSubmissionCommand,
     RecentMessagesQuery,
@@ -37,6 +38,11 @@ class ConversationStorePort(Protocol):
     ) -> Conversation: ...
 
     async def get_conversation(self, conversation_id: str) -> Conversation | None: ...
+
+    async def list_conversations(
+        self,
+        query: ListConversationsQuery,
+    ) -> list[Conversation]: ...
 
     async def append_message(
         self,

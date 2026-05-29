@@ -110,6 +110,12 @@ class RecentMessagesQuery:
 
 
 @dataclass(frozen=True)
+class ListConversationsQuery:
+    user_id: str
+    limit: int = 20
+
+
+@dataclass(frozen=True)
 class MessageSubmissionCommand:
     conversation_id: str
     client_message_id: str

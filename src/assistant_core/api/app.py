@@ -16,12 +16,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from assistant_core.config.settings import Settings
 from assistant_core.domain.conversations import (
     CreateConversationCommand,
+    ListConversationsQuery,
     MessageSubmissionCommand,
     RecentMessagesQuery,
     UpdateAssistantRequestStatusCommand,
 )
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
-from assistant_core.domain.memory import CreateMemoryCommand, MemoryType
+from assistant_core.domain.memory import ArchiveMemoryCommand, CreateMemoryCommand, MemoryType
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.ports.conversation_store import (
@@ -129,6 +130,20 @@ def create_app(
         )
         return _json_response(201, _conversation_payload(conversation))
 
+    @app.get("/v1/conversations")
+    async def get_conversations(limit: int = 20):
+        conversations = await conversation_store.list_conversations(
+            ListConversationsQuery(user_id=settings.app.default_user_id, limit=limit),
+        )
+        return {"conversations": [_conversation_payload(item) for item in conversations]}
+
+    @app.get("/v1/conversations/{conversation_id}")
+    async def get_conversation(conversation_id: str):
+        conversation = await conversation_store.get_conversation(str(_uuid(conversation_id)))
+        if conversation is None:
+            raise KeyError("conversation not found")
+        return _conversation_payload(conversation)
+
     @app.post("/v1/conversations/{conversation_id}/messages")
     async def post_message(conversation_id: str, body: MessageCreateBody):
         submission = await conversation_store.submit_user_message(
@@ -210,9 +225,24 @@ def create_app(
         return _json_response(201, _memory_payload(memory))
 
     @app.get("/v1/memories")
-    async def get_memories():
-        memories = await memory_store.list_memories()
+    async def get_memories(limit: int = 100, query: str | None = None):
+        memories = await memory_store.list_memories(limit=limit, query=query)
         return {"memories": [_memory_payload(memory) for memory in memories]}
+
+    @app.delete("/v1/memories/{memory_id}")
+    async def delete_memory(memory_id: str):
+        normalized_memory_id = str(_uuid(memory_id))
+        await memory_store.archive_memory(
+            ArchiveMemoryCommand(memory_id=normalized_memory_id, reason="deleted_by_user"),
+        )
+        memory = await memory_store.get_memory(normalized_memory_id)
+        if memory is None:
+            raise KeyError("memory not found")
+        return _memory_payload(memory)
+
+    @app.get("/v1/runtime/status")
+    async def get_runtime_status():
+        return _runtime_status_payload(settings)
 
     return app
 
@@ -812,7 +842,45 @@ def _memory_payload(memory) -> dict[str, Any]:
         "indexing_status": memory.indexing_status.value,
         "confidence": memory.confidence,
         "importance": memory.importance,
+        "created_at": memory.created_at,
+        "updated_at": memory.updated_at,
+        "archived_at": memory.archived_at,
+        "archive_reason": memory.archive_reason,
         "metadata": memory.metadata,
+    }
+
+
+def _runtime_status_payload(settings: Settings) -> dict[str, Any]:
+    return {
+        "status": "ready",
+        "default_model_profile": "local_main",
+        "model_profiles": {
+            name: {
+                "purpose": profile.purpose,
+                "provider": profile.provider,
+                "enabled": profile.enabled,
+                "cloud": profile.cloud,
+                "model": profile.model,
+                "endpoint": profile.endpoint,
+                "max_input_tokens": profile.max_input_tokens,
+                "max_output_tokens": profile.max_output_tokens,
+                "temperature": profile.temperature,
+                "supports_streaming": profile.supports_streaming,
+            }
+            for name, profile in settings.model_profiles.items()
+        },
+        "runtime_budgets": {
+            name: {
+                "max_model_calls": budget.max_model_calls,
+                "max_tool_calls": budget.max_tool_calls,
+                "max_wall_time_seconds": budget.max_wall_time_seconds,
+                "max_output_tokens": budget.max_output_tokens,
+                "allow_cloud": budget.allow_cloud,
+                "allow_tools": budget.allow_tools,
+                "allow_autonomous_memory_write": budget.allow_autonomous_memory_write,
+            }
+            for name, budget in settings.runtime_budgets.items()
+        },
     }
 
 

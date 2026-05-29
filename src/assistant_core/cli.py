@@ -32,9 +32,17 @@ class SlashCommand:
 
 SLASH_COMMANDS = (
     SlashCommand("/help", "Show this help."),
+    SlashCommand("/status", "Show daemon readiness."),
+    SlashCommand("/model", "Show active local model profile."),
+    SlashCommand("/sessions", "List recent conversations."),
+    SlashCommand("/resume ID", "Resume a conversation."),
     SlashCommand("/new [title]", "Start a new conversation."),
+    SlashCommand("/clear", "Clear current conversation."),
+    SlashCommand("/cancel [request_id]", "Cancel the last or selected request."),
     SlashCommand("/memory add TEXT", "Save manual memory."),
     SlashCommand("/memory list", "List manual memories."),
+    SlashCommand("/memory search TEXT", "Search manual memories."),
+    SlashCommand("/memory delete ID", "Archive a manual memory."),
     SlashCommand("/exit", "Quit."),
     SlashCommand("/quit", "Quit."),
 )
@@ -49,6 +57,10 @@ class JarvisClient(Protocol):
         title: str | None,
         active_project_namespace: str | None,
     ) -> dict[str, Any]: ...
+
+    async def list_conversations(self, *, limit: int = 20) -> dict[str, Any]: ...
+
+    async def get_conversation(self, conversation_id: str) -> dict[str, Any]: ...
 
     async def submit_message(
         self,
@@ -72,7 +84,15 @@ class JarvisClient(Protocol):
 
     async def list_memories(self) -> dict[str, Any]: ...
 
+    async def search_memories(self, query: str) -> dict[str, Any]: ...
+
+    async def delete_memory(self, memory_id: str) -> dict[str, Any]: ...
+
     async def cancel_request(self, request_id: str) -> dict[str, Any]: ...
+
+    async def get_request_status(self, request_id: str) -> dict[str, Any]: ...
+
+    async def runtime_status(self) -> dict[str, Any]: ...
 
 
 class ReadlineModule(Protocol):
@@ -104,6 +124,12 @@ class HttpJarvisClient:
                 "metadata": {},
             },
         )
+
+    async def list_conversations(self, *, limit: int = 20) -> dict[str, Any]:
+        return await self._get_json("/v1/conversations", params={"limit": limit})
+
+    async def get_conversation(self, conversation_id: str) -> dict[str, Any]:
+        return await self._get_json(f"/v1/conversations/{conversation_id}")
 
     async def submit_message(
         self,
@@ -172,16 +198,53 @@ class HttpJarvisClient:
     async def list_memories(self) -> dict[str, Any]:
         return await self._get_json("/v1/memories")
 
+    async def search_memories(self, query: str) -> dict[str, Any]:
+        return await self._get_json("/v1/memories", params={"query": query})
+
+    async def delete_memory(self, memory_id: str) -> dict[str, Any]:
+        return await self._delete_json(f"/v1/memories/{memory_id}")
+
     async def cancel_request(self, request_id: str) -> dict[str, Any]:
         return await self._post_json(f"/v1/requests/{request_id}/cancel", {})
 
-    async def _get_json(self, path: str) -> dict[str, Any]:
+    async def get_request_status(self, request_id: str) -> dict[str, Any]:
+        return await self._get_json(f"/v1/requests/{request_id}")
+
+    async def runtime_status(self) -> dict[str, Any]:
+        return await self._get_json("/v1/runtime/status")
+
+    async def _get_json(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         try:
             async with httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=REQUEST_TIMEOUT_SECONDS,
             ) as client:
-                response = await client.get(path)
+                response = (
+                    await client.get(path)
+                    if params is None
+                    else await client.get(path, params=params)
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as exc:
+            raise CliUserError(_http_error_message(exc, path)) from exc
+        except httpx.HTTPError as exc:
+            raise CliUserError(f"cannot reach daemon at {self._base_url}: {exc}") from exc
+        except ValueError as exc:
+            raise CliUserError(f"invalid JSON response from daemon for {path}") from exc
+
+    async def _delete_json(self, path: str) -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            ) as client:
+                response = await client.delete(path)
                 response.raise_for_status()
                 return response.json()
         except httpx.HTTPStatusError as exc:
@@ -287,9 +350,7 @@ async def _run_command(
         return 0
 
     if args.command == "memory" and args.memory_command == "list":
-        payload = await client.list_memories()
-        for memory in payload.get("memories", []):
-            stdout.write(f"{memory['memory_id']} {memory['namespace']} {memory['content']}\n")
+        await write_memory_list(client=client, stdout=stdout)
         return 0
 
     raise AssertionError(f"unhandled command: {args.command}")
@@ -299,6 +360,7 @@ async def _run_command(
 class ChatShellState:
     conversation_id: str | None
     next_title: str | None
+    last_request_id: str | None = None
 
 
 class InteractiveLineReader:
@@ -488,13 +550,67 @@ async def run_interactive_chat(
         if line == "/help":
             write_interactive_help(stdout)
             continue
+        if line == "/status":
+            await write_status(client=client, stdout=stdout)
+            continue
+        if line == "/model":
+            await write_model_status(client=client, stdout=stdout)
+            continue
+        if line == "/sessions":
+            await write_conversation_list(client=client, stdout=stdout)
+            continue
+        if line.startswith("/resume"):
+            conversation_id = line.removeprefix("/resume").strip()
+            if not conversation_id:
+                stdout.write("usage> /resume <conversation_id>\n")
+                continue
+            conversation = await client.get_conversation(conversation_id)
+            state.conversation_id = _required_str(conversation, "conversation_id")
+            state.next_title = None
+            title_suffix = _display_text(conversation.get("title"))
+            stdout.write(f"conversation> resumed {state.conversation_id}")
+            if title_suffix:
+                stdout.write(f" {title_suffix}")
+            stdout.write("\n")
+            continue
         if line.startswith("/new"):
             state.conversation_id = None
             state.next_title = line.removeprefix("/new").strip() or None
+            state.last_request_id = None
             stdout.write("conversation> new conversation\n")
+            continue
+        if line == "/clear":
+            state.conversation_id = None
+            state.next_title = None
+            state.last_request_id = None
+            stdout.write("conversation> cleared\n")
+            continue
+        if line.startswith("/cancel"):
+            request_id = line.removeprefix("/cancel").strip() or state.last_request_id
+            if request_id is None:
+                stdout.write("cancelled> no request\n")
+                continue
+            await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
             continue
         if line == "/memory list":
             await write_memory_list(client=client, stdout=stdout)
+            continue
+        if line.startswith("/memory search"):
+            query = line.removeprefix("/memory search").strip()
+            if not query:
+                stdout.write("usage> /memory search <query>\n")
+                continue
+            await write_memory_list(client=client, stdout=stdout, query=query)
+            continue
+        if line.startswith("/memory delete"):
+            memory_id = line.removeprefix("/memory delete").strip()
+            if not memory_id:
+                stdout.write("usage> /memory delete <memory_id>\n")
+                continue
+            memory = await client.delete_memory(memory_id)
+            stdout.write(
+                f"memory> {_required_str(memory, 'memory_id')} {_display_text(memory.get('status'))}\n"
+            )
             continue
         if line.startswith("/memory add"):
             content = line.removeprefix("/memory add").strip()
@@ -529,6 +645,7 @@ async def run_interactive_chat(
             sensitivity=sensitivity,
             client_message_id=None,
             assistant_prefix="assistant> ",
+            on_request_started=lambda request_id: setattr(state, "last_request_id", request_id),
         )
         if exit_code != 0:
             return exit_code
@@ -562,11 +679,55 @@ def write_slash_command_menu(stdout: TextIO, *, prefix: str) -> None:
         stdout.write(f"  {command.usage:<{longest}}  {command.description}\n")
 
 
-async def write_memory_list(*, client: JarvisClient, stdout: TextIO) -> None:
-    payload = await client.list_memories()
+async def write_status(*, client: JarvisClient, stdout: TextIO) -> None:
+    payload = await client.health()
+    stdout.write(f"status> {_display_text(payload.get('status'))}\n")
+
+
+async def write_model_status(*, client: JarvisClient, stdout: TextIO) -> None:
+    payload = await client.runtime_status()
+    profile_name = _display_text(payload.get("default_model_profile"))
+    profiles = payload.get("model_profiles", {})
+    profile = profiles.get(profile_name, {}) if isinstance(profiles, dict) else {}
+    provider = _display_text(profile.get("provider")) if isinstance(profile, dict) else ""
+    model = _display_text(profile.get("model")) if isinstance(profile, dict) else ""
+    max_output_tokens = profile.get("max_output_tokens") if isinstance(profile, dict) else None
+    temperature = profile.get("temperature") if isinstance(profile, dict) else None
+    stdout.write(f"model> {profile_name} {provider} {model}")
+    if max_output_tokens is not None:
+        stdout.write(f" max_output_tokens={max_output_tokens}")
+    if temperature is not None:
+        stdout.write(f" temperature={temperature}")
+    stdout.write("\n")
+
+
+async def write_conversation_list(*, client: JarvisClient, stdout: TextIO) -> None:
+    payload = await client.list_conversations(limit=20)
+    for conversation in payload.get("conversations", []):
+        stdout.write(
+            "session> "
+            f"{conversation['conversation_id']} "
+            f"{_display_text(conversation.get('status'))} "
+            f"{_display_text(conversation.get('title'))}\n"
+        )
+
+
+async def write_memory_list(
+    *,
+    client: JarvisClient,
+    stdout: TextIO,
+    query: str | None = None,
+) -> None:
+    payload = await client.list_memories() if query is None else await client.search_memories(query)
     for memory in payload.get("memories", []):
         stdout.write(
-            f"{memory['memory_id']} {memory.get('namespace', '')} {memory['content']}\n"
+            "memory> "
+            f"{memory['memory_id']} "
+            f"{_display_text(memory.get('status'))} "
+            f"{_display_text(memory.get('memory_type'))} "
+            f"{_display_text(memory.get('sensitivity'))} "
+            f"{_display_text(memory.get('namespace'))} "
+            f"{_display_text(memory.get('content'))}\n"
         )
 
 
@@ -579,6 +740,7 @@ async def submit_and_stream_message(
     sensitivity: str,
     client_message_id: str | None,
     assistant_prefix: str | None,
+    on_request_started: Callable[[str], None] | None = None,
 ) -> int:
     submitted = await client.submit_message(
         conversation_id=conversation_id,
@@ -587,6 +749,8 @@ async def submit_and_stream_message(
         sensitivity=sensitivity,
     )
     request_id = _required_str(submitted, "request_id")
+    if on_request_started is not None:
+        on_request_started(request_id)
     if assistant_prefix is not None:
         stdout.write(assistant_prefix)
         stdout.flush()
@@ -643,6 +807,12 @@ def _required_str(payload: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise CliUserError(f"daemon response missing string field: {key}")
     return value
+
+
+def _display_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).replace("\n", " ").strip()
 
 
 def _http_error_message(exc: httpx.HTTPStatusError, action: str) -> str:

@@ -34,6 +34,30 @@ class FakeCliClient:
         )
         return {"conversation_id": "conversation-1"}
 
+    async def list_conversations(self, *, limit: int = 20):
+        self.calls.append(("list_conversations", {"limit": limit}))
+        return {
+            "conversations": [
+                {
+                    "conversation_id": "conversation-1",
+                    "title": "First session",
+                    "active_project_namespace": "project.personal_assistant",
+                    "status": "active",
+                    "updated_at": "2026-05-29T10:00:00Z",
+                },
+            ],
+        }
+
+    async def get_conversation(self, conversation_id: str):
+        self.calls.append(("get_conversation", conversation_id))
+        return {
+            "conversation_id": conversation_id,
+            "title": "Resumed session",
+            "active_project_namespace": "project.personal_assistant",
+            "status": "active",
+            "updated_at": "2026-05-29T10:00:00Z",
+        }
+
     async def submit_message(
         self,
         *,
@@ -76,20 +100,62 @@ class FakeCliClient:
         return {"memory_id": "memory-1"}
 
     async def list_memories(self):
-        self.calls.append(("list_memories", None))
+        self.calls.append(("list_memories", {"query": None}))
         return {
             "memories": [
                 {
                     "memory_id": "memory-1",
                     "namespace": "project.personal_assistant",
+                    "memory_type": "fact",
+                    "sensitivity": "project",
+                    "status": "active",
+                    "indexing_status": "indexed",
                     "content": "saved",
                 },
             ],
         }
 
+    async def search_memories(self, query: str):
+        self.calls.append(("list_memories", {"query": query}))
+        return {
+            "memories": [
+                {
+                    "memory_id": "memory-2",
+                    "namespace": "project.personal_assistant",
+                    "memory_type": "fact",
+                    "sensitivity": "project",
+                    "status": "active",
+                    "indexing_status": "indexed",
+                    "content": "search hit",
+                },
+            ],
+        }
+
+    async def delete_memory(self, memory_id: str):
+        self.calls.append(("delete_memory", memory_id))
+        return {"memory_id": memory_id, "status": "archived"}
+
     async def cancel_request(self, request_id: str):
         self.calls.append(("cancel_request", request_id))
         return {"request_id": request_id, "status": "cancelled"}
+
+    async def get_request_status(self, request_id: str):
+        self.calls.append(("get_request_status", request_id))
+        return {"request_id": request_id, "status": "running"}
+
+    async def runtime_status(self):
+        self.calls.append(("runtime_status", None))
+        return {
+            "default_model_profile": "local_main",
+            "model_profiles": {
+                "local_main": {
+                    "provider": "ollama",
+                    "model": "qwen3.5:9b",
+                    "max_output_tokens": 1024,
+                    "temperature": 0.3,
+                },
+            },
+        }
 
 
 class InterruptedStreamCliClient(FakeCliClient):
@@ -138,6 +204,17 @@ def test_terminal_line_reader_shows_slash_commands_when_slash_is_typed() -> None
     assert "/help" in output
     assert "/memory list" in output
     assert output.rstrip().endswith("jarvis> /help")
+
+
+def test_slash_command_menu_filters_by_prefix() -> None:
+    stdout = StringIO()
+
+    cli.write_slash_command_menu(stdout, prefix="/m")
+
+    output = stdout.getvalue()
+    assert "/memory add" in output
+    assert "/memory list" in output
+    assert "/new" not in output
 
 
 def test_terminal_line_reader_uses_in_session_arrow_history() -> None:
@@ -412,7 +489,7 @@ def test_cli_interactive_slash_commands_manage_session_and_memory() -> None:
     output = stdout.getvalue()
     assert "/new [title]" in output
     assert "memory> memory-1" in output
-    assert "memory-1 project.personal_assistant saved" in output
+    assert "memory> memory-1 active fact project project.personal_assistant saved" in output
     assert "conversation> new conversation" in output
     assert "assistant> OK\n" in output
     assert clients[0].calls == [
@@ -425,7 +502,7 @@ def test_cli_interactive_slash_commands_manage_session_and_memory() -> None:
                 "sensitivity": "project",
             },
         ),
-        ("list_memories", None),
+        ("list_memories", {"query": None}),
         (
             "create_conversation",
             {
@@ -459,6 +536,78 @@ def test_cli_memory_add_prints_memory_id() -> None:
 
     assert exit_code == 0
     assert stdout.getvalue() == "memory-1\n"
+
+
+def test_cli_interactive_control_surface_and_sessions() -> None:
+    stdout = StringIO()
+    stdin = StringIO(
+        "/status\n"
+        "/model\n"
+        "/sessions\n"
+        "/resume conversation-1\n"
+        "/clear\n"
+        "hello after clear\n"
+        "/cancel\n"
+        "/exit\n"
+    )
+    clients: list[FakeCliClient] = []
+
+    def client_factory(base_url: str) -> FakeCliClient:
+        client = FakeCliClient(base_url)
+        clients.append(client)
+        return client
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "--project-namespace", "project.demo"],
+            client_factory=client_factory,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "status> ready" in output
+    assert "model> local_main ollama qwen3.5:9b" in output
+    assert "session> conversation-1 active First session" in output
+    assert "conversation> resumed conversation-1 Resumed session" in output
+    assert "conversation> cleared" in output
+    assert "cancelled> request request-1" in output
+    assert ("cancel_request", "request-1") in clients[0].calls
+
+
+def test_cli_memory_search_delete_and_rich_list_output() -> None:
+    stdout = StringIO()
+    stdin = StringIO(
+        "/memory list\n"
+        "/memory search search target\n"
+        "/memory delete memory-2\n"
+        "/exit\n"
+    )
+    clients: list[FakeCliClient] = []
+
+    def client_factory(base_url: str) -> FakeCliClient:
+        client = FakeCliClient(base_url)
+        clients.append(client)
+        return client
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=client_factory,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "memory> memory-1 active fact project project.personal_assistant saved" in output
+    assert "memory> memory-2 active fact project project.personal_assistant search hit" in output
+    assert "memory> memory-2 archived" in output
+    assert ("list_memories", {"query": "search target"}) in clients[0].calls
+    assert ("delete_memory", "memory-2") in clients[0].calls
 
 
 def test_parse_sse_blocks() -> None:

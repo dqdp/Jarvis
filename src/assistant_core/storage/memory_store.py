@@ -269,10 +269,23 @@ class PostgresMemoryStore:
             return None
         return _row_to_memory(row)
 
-    async def list_memories(self, limit: int = 100) -> list[MemoryRecord]:
+    async def list_memories(
+        self,
+        limit: int = 100,
+        query: str | None = None,
+    ) -> list[MemoryRecord]:
+        conditions = [_memories.c.sensitivity != Sensitivity.SECRET.value]
+        if query:
+            pattern = f"%{query.lower()}%"
+            conditions.append(
+                sa.or_(
+                    sa.func.lower(_memories.c.content).like(pattern),
+                    sa.func.lower(sa.func.coalesce(_memories.c.summary, "")).like(pattern),
+                ),
+            )
         statement = (
             sa.select(_memories)
-            .where(_memories.c.sensitivity != Sensitivity.SECRET.value)
+            .where(*conditions)
             .order_by(_memories.c.created_at, _memories.c.memory_id)
             .limit(limit)
         )

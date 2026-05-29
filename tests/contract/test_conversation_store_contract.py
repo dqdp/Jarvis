@@ -96,6 +96,21 @@ def test_create_conversation(store) -> None:
     assert conversation.metadata == {"source": "contract"}
 
 
+def test_list_conversations_returns_most_recent_first(store) -> None:
+    async def scenario():
+        older = await _conversation(store, "older")
+        newer = await _conversation(store, "newer")
+        conversations = await store.list_conversations(user_id="user-1", limit=10)
+        return older, newer, conversations
+
+    older, newer, conversations = asyncio.run(scenario())
+
+    assert [conversation.conversation_id for conversation in conversations[:2]] == [
+        newer.conversation_id,
+        older.conversation_id,
+    ]
+
+
 def test_append_user_message(store) -> None:
     async def scenario():
         conversation = await _conversation(store)
