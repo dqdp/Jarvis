@@ -202,13 +202,13 @@ ContextAssembler combines MemoryHit and ContentHit through explicit sections.
 
 ## 11. Post-MVP follow-up
 
-Add a future ADR when RAG is introduced:
+The accepted Content Retrieval ADR is:
 
 ```text
-ADR-0XX_content_retrieval_subsystem_and_project_docs_rag.md
+docs/adr/ADR-034_content_retrieval_subsystem_and_project_docs_rag.md
 ```
 
-This ADR should define:
+It defines:
 
 ```text
 ContentRetrievalPort

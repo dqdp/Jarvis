@@ -68,6 +68,10 @@ docs/
   31_mvp_release_notes.md
   32_known_limitations.md
   33_alpha_model_behavior_smoke.md
+  34_post_mvp_roadmap.md
+  35_post_mvp_adr_backlog.md
+  36_post_mvp_plan_review.md
+  37_post_mvp_tdd_slices_plan.md
 ```
 
 ## ADR Index
@@ -102,6 +106,11 @@ docs/adr/
   ADR-026_configuration_model.md
   ADR-027_testing_strategy_for_agent_driven_development.md
   ADR-028_provisional_tdd_implementation_slices_plan.md
+  ADR-029_capability_and_permission_model.md
+  ADR-030_toolgateway_boundary_and_tool_invocation_audit.md
+  ADR-031_agent_loop_strategy_architecture.md
+  ADR-033_shell_sandbox_and_local_command_policy.md
+  ADR-034_content_retrieval_subsystem_and_project_docs_rag.md
 ```
 
 ## Ключевые принятые решения
@@ -157,7 +166,8 @@ docs/adr/
 
 - MVP runtime uses a custom deterministic workflow behind `AgentRuntime`.
 - Phase 1 loop = deterministic `memory_augmented_answer`; LangGraph is deferred.
-- ReAct is deferred until `ToolGatewayPort` exists.
+- ReAct is a future loop strategy, not a tool, and is deferred until
+  `ToolGatewayPort` and the loop-strategy boundary exist.
 - Future loop strategies must declare budgets, capabilities, policy hooks, failure semantics and emitted events.
 
 ### Model routing
@@ -237,6 +247,12 @@ Implementation notes:
   chat shell with slash commands.
 
 Future architecture-changing changes still require the relevant ADR update.
+
+Post-MVP planning is tracked in:
+
+- `docs/34_post_mvp_roadmap.md`;
+- `docs/35_post_mvp_adr_backlog.md`;
+- `docs/36_post_mvp_plan_review.md`.
 
 ## Final hardening additions in v16
 

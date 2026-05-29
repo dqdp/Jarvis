@@ -42,6 +42,10 @@ context assembly policy
 
 Future `tool_react_loop` should be bounded and policy-gated.
 
+`tool_react_loop` is a loop strategy, not a tool. It may use tools through
+`ToolGatewayPort`, but the reasoning/control algorithm must remain separate
+from tool execution.
+
 Example budget:
 
 ```yaml
@@ -262,6 +266,7 @@ Future ADRs should define:
 
 ```text
 ToolGateway boundary and security model
+agent loop strategy architecture
 bounded ReAct loop
 planner-executor task model
 approval model
