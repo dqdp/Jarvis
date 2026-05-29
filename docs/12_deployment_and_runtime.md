@@ -92,6 +92,8 @@ The `ollama` profile uses the locally available chat model `qwen3.5:9b` and the
 embedding model `embeddinggemma:latest`. This is a runtime
 profile behind the existing `ModelRouterPort`; CI still uses fake model and
 embedding providers and does not require real LLM calls.
+The Ollama adapter sends anti-repeat generation options and terminates obvious
+repeated-line loops before they exhaust the configured output-token budget.
 
 The CLI talks to the HTTP API:
 

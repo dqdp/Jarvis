@@ -147,6 +147,8 @@ session with `/help`, `/new`, `/memory add`, `/memory list` and `/exit`.
 The CLI also cancels the server request on stream interruption, and the local
 Ollama dogfood profile now uses `qwen3.5:9b` with `max_output_tokens` capped at
 1024 to bound runaway generations.
+The Ollama adapter also sends repeat-penalty options and cuts off repeated-line
+loops before a local model can stream the same sentence until the token cap.
 The interactive shell uses Unix `readline` on TTY for Up/Down in-session input
 history without persisting raw prompts to disk. `/memory add` payloads and
 `secret` sensitivity sessions are excluded from readline history.

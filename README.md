@@ -264,6 +264,8 @@ Future architecture-changing changes still require the relevant ADR update.
 - `qwen3.5:9b` is the current chat/structured model for local dogfood
   verification on the target machine.
 - `embeddinggemma:latest` is the initial local embedding model.
+- The Ollama adapter passes anti-repeat generation options and cuts off
+  repeated-line loops before they run to the full token cap.
 - `make models-list`, `make models-pull` and `make cli ARGS='...'` were added
   for local operation.
 - `make cli` now opens an interactive chat shell with `/help`, `/new`,

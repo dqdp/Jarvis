@@ -18,6 +18,12 @@ from assistant_core.domain.models import (
 from assistant_core.models.router import ModelProviderError
 
 
+REPEAT_LAST_N = 256
+REPEAT_PENALTY = 1.15
+MAX_REPEATED_LINE_OCCURRENCES = 3
+MIN_REPEATED_LINE_LENGTH = 12
+
+
 class OllamaTransport(Protocol):
     async def post_json(
         self,
@@ -86,7 +92,9 @@ class OllamaProviderAdapter:
         except Exception as exc:
             raise ModelProviderError(str(exc)) from exc
 
-        return ChatModelResponse(text=_extract_chat_content(response))
+        return ChatModelResponse(
+            text=_trim_repeating_lines(_extract_chat_content(response)),
+        )
 
     async def stream_chat(self, request: ChatModelRequest) -> AsyncIterator[str]:
         payload = self._chat_payload(request.messages, stream=True)
@@ -96,10 +104,15 @@ class OllamaProviderAdapter:
                 payload,
                 self._profile.timeout_seconds,
             )
+            emitted = ""
             async for chunk in stream:
                 token = _extract_stream_delta(chunk)
                 if token:
-                    yield token
+                    safe_token, emitted, should_stop = _safe_stream_delta(emitted, token)
+                    if safe_token:
+                        yield safe_token
+                    if should_stop:
+                        return
         except (TimeoutError, httpx.TimeoutException) as exc:
             raise ModelProviderError("Ollama provider timed out") from exc
         except ModelProviderError:
@@ -164,6 +177,8 @@ class OllamaProviderAdapter:
             options["temperature"] = self._profile.temperature
         if self._profile.max_output_tokens is not None:
             options["num_predict"] = self._profile.max_output_tokens
+        options["repeat_last_n"] = REPEAT_LAST_N
+        options["repeat_penalty"] = REPEAT_PENALTY
         if options:
             payload["options"] = options
         return payload
@@ -212,6 +227,38 @@ def _extract_stream_delta(chunk: dict[str, Any]) -> str | None:
     if not isinstance(content, str):
         raise ModelProviderError("invalid Ollama stream delta")
     return content
+
+
+def _safe_stream_delta(current_text: str, delta: str) -> tuple[str, str, bool]:
+    candidate = current_text + delta
+    safe_text = _trim_repeating_lines(candidate)
+    if safe_text == candidate:
+        return delta, candidate, False
+    if safe_text.startswith(current_text):
+        return safe_text.removeprefix(current_text), safe_text, True
+    return "", current_text, True
+
+
+def _trim_repeating_lines(text: str) -> str:
+    occurrences: dict[str, int] = {}
+    accepted: list[str] = []
+
+    for line in text.splitlines(keepends=True):
+        normalized = _normalize_repeated_line(line)
+        if normalized is not None:
+            occurrences[normalized] = occurrences.get(normalized, 0) + 1
+            if occurrences[normalized] > MAX_REPEATED_LINE_OCCURRENCES:
+                return "".join(accepted)
+        accepted.append(line)
+
+    return text
+
+
+def _normalize_repeated_line(line: str) -> str | None:
+    normalized = " ".join(line.strip().lower().split())
+    if len(normalized) < MIN_REPEATED_LINE_LENGTH:
+        return None
+    return normalized
 
 
 def _extract_embeddings(response: dict[str, Any]) -> list[list[float]]:

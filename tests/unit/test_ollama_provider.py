@@ -97,6 +97,8 @@ def test_ollama_provider_disables_thinking_for_chat() -> None:
     assert recorded["payload"]["stream"] is False
     assert recorded["payload"]["think"] is False
     assert recorded["payload"]["options"]["num_predict"] == 1024
+    assert recorded["payload"]["options"]["repeat_last_n"] == 256
+    assert recorded["payload"]["options"]["repeat_penalty"] == 1.15
 
 
 def test_ollama_provider_streams_content_only() -> None:
@@ -113,6 +115,58 @@ def test_ollama_provider_streams_content_only() -> None:
         return [token async for token in adapter.stream_chat(_request())]
 
     assert asyncio.run(scenario()) == ["O", "K"]
+
+
+def test_ollama_provider_stops_repeating_stream_lines() -> None:
+    repeated_question = "Do I have a nose?\n"
+
+    async def scenario():
+        transport = FakeOllamaTransport(
+            stream_chunks=[
+                {"message": {"content": "Joke.\n"}},
+                {"message": {"content": repeated_question}},
+                {"message": {"content": "No, you have one!\n"}},
+                {"message": {"content": repeated_question}},
+                {"message": {"content": repeated_question}},
+                {"message": {"content": repeated_question}},
+                {"message": {"content": "SHOULD_NOT_STREAM"}},
+            ],
+        )
+        adapter = OllamaProviderAdapter(profile=_profile("local_main"), transport=transport)
+        return "".join([token async for token in adapter.stream_chat(_request())])
+
+    response = asyncio.run(scenario())
+
+    assert response.count(repeated_question) == 3
+    assert "SHOULD_NOT_STREAM" not in response
+
+
+def test_ollama_provider_trims_repeating_full_response_lines() -> None:
+    repeated_question = "Do I have a nose?\n"
+
+    async def scenario():
+        transport = FakeOllamaTransport(
+            response={
+                "message": {
+                    "content": (
+                        "Joke.\n"
+                        f"{repeated_question}"
+                        "No, you have one!\n"
+                        f"{repeated_question}"
+                        f"{repeated_question}"
+                        f"{repeated_question}"
+                        "SHOULD_NOT_RETURN"
+                    ),
+                },
+            },
+        )
+        adapter = OllamaProviderAdapter(profile=_profile("local_main"), transport=transport)
+        return await adapter.chat(_request())
+
+    response = asyncio.run(scenario())
+
+    assert response.text.count(repeated_question) == 3
+    assert "SHOULD_NOT_RETURN" not in response.text
 
 
 def test_ollama_provider_stream_error_chunk_fails_request() -> None:
