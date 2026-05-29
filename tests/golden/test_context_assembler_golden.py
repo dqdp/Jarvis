@@ -173,8 +173,25 @@ def test_context_golden_fixed_section_order() -> None:
 def test_includes_current_user_message() -> None:
     context = asyncio.run(_assembler().assemble(_request()))
 
+    assert context.messages[0].role == MessageRole.SYSTEM
+    assert "You are Jarvis" in context.messages[0].content[0].text
     assert context.messages[-1].role == MessageRole.USER
     assert context.messages[-1].content[0].text == "current question"
+
+
+def test_context_messages_include_prompt_sections_before_conversation() -> None:
+    context = asyncio.run(
+        _assembler(memories=[MemoryHit(memory=_memory("project"), score=0.9)]).assemble(
+            _request(),
+        ),
+    )
+
+    assert context.messages[0].role == MessageRole.SYSTEM
+    prompt_text = context.messages[0].content[0].text
+    assert "[system_identity]" in prompt_text
+    assert "[project_or_environment_memory]" in prompt_text
+    assert "project memory" in prompt_text
+    assert context.messages[1].role == MessageRole.USER
 
 
 def test_includes_recent_conversation_window() -> None:
@@ -183,11 +200,34 @@ def test_includes_recent_conversation_window() -> None:
         .assemble(_request()),
     )
 
-    assert [message.content[0].text for message in context.messages] == [
+    assert context.messages[0].role == MessageRole.SYSTEM
+    assert [message.content[0].text for message in context.messages[1:]] == [
         "first message",
         "second message",
         "current question",
     ]
+
+
+def test_excludes_persisted_current_user_message_from_recent_window() -> None:
+    context = asyncio.run(
+        _assembler(
+            messages=[
+                _message("previous"),
+                _message("current"),
+            ],
+        ).assemble(
+            _request(
+                current_user_message="current message",
+                current_user_message_id="msg-current",
+            ),
+        ),
+    )
+
+    assert [message.content[0].text for message in context.messages[1:]] == [
+        "previous message",
+        "current message",
+    ]
+    assert context.manifest.used_message_ids == ["msg-previous"]
 
 
 def test_applies_max_messages() -> None:

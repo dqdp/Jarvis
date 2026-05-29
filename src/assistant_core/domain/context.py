@@ -17,6 +17,7 @@ class ContextAssemblyRequest:
     loop_strategy: str
     model_profile: str
     current_message_sensitivity: Sensitivity = Sensitivity.PROJECT
+    current_user_message_id: str | None = None
     causation_event_id: str | None = None
     max_messages: int | None = None
     max_input_tokens: int | None = None

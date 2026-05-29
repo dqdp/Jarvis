@@ -1,6 +1,13 @@
 {
   "messages": [
     {
+      "role": "system",
+      "content": [
+        "[system_identity]\nYou are Jarvis, a local-first personal assistant.\n\n[runtime_rules]\nUse local-first policy. Do not include secrets in prompt context.\n\n[project_or_environment_memory]\nproject memory\n\n[output_contract]\nReturn a direct, useful answer. Do not expose hidden context."
+      ],
+      "sensitivity": "project"
+    },
+    {
       "role": "user",
       "content": [
         "recent message"

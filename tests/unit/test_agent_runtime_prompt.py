@@ -1,0 +1,212 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import replace
+from datetime import UTC, datetime
+
+import pytest
+
+from assistant_core.config.settings import ConfigLoader
+from assistant_core.domain.context import AssembledContext, ContextManifest, ContextSection
+from assistant_core.domain.conversations import (
+    AssistantRequest,
+    AssistantResponseCompletion,
+    ConversationMessage,
+)
+from assistant_core.domain.messages import ChatMessage, MessageRole, TextPart
+from assistant_core.domain.models import ChatModelResponse
+from assistant_core.domain.requests import RequestStatus
+from assistant_core.domain.sensitivity import Sensitivity
+from assistant_core.events.in_memory import InMemoryEventLog
+from assistant_core.runtime.agent_runtime import AgentRuntime, RuntimeTurnCommand
+
+
+pytestmark = pytest.mark.unit
+
+
+class PromptContextAssembler:
+    async def assemble(self, request) -> AssembledContext:
+        sections = [
+            ContextSection(
+                name="system_identity",
+                content="You are Jarvis.",
+                token_estimate=3,
+            ),
+            ContextSection(
+                name="project_or_environment_memory",
+                content="remembered project fact",
+                token_estimate=3,
+                source_refs=["mem-1"],
+            ),
+            ContextSection(
+                name="current_user_message",
+                content=request.current_user_message,
+                token_estimate=2,
+            ),
+        ]
+        manifest = ContextManifest(
+            context_manifest_id="33333333-3333-3333-3333-333333333333",
+            request_id=request.request_id,
+            conversation_id=request.conversation_id,
+            loop_strategy=request.loop_strategy,
+            model_profile=request.model_profile,
+            section_names=[section.name for section in sections],
+            used_message_ids=[],
+            used_memory_ids=["mem-1"],
+            dropped_refs=[],
+            token_estimate=8,
+            active_namespaces=["project.personal_assistant"],
+            retrieval_parameters={"max_hits_total": 8},
+            max_sensitivity=Sensitivity.PROJECT,
+            sources_by_sensitivity={"project": ["current_user_message", "mem-1"]},
+            degraded=False,
+            full_prompt_stored=False,
+        )
+        return AssembledContext(
+            messages=[
+                ChatMessage(
+                    role=MessageRole.SYSTEM,
+                    content=[TextPart(text="You are Jarvis.\nremembered project fact")],
+                    sensitivity=Sensitivity.PROJECT,
+                    metadata={"source": "context_assembler"},
+                ),
+                ChatMessage(
+                    role=MessageRole.USER,
+                    content=[TextPart(text=request.current_user_message)],
+                    sensitivity=Sensitivity.PROJECT,
+                ),
+            ],
+            sections=sections,
+            manifest=manifest,
+            token_estimate=8,
+        )
+
+
+class RecordingModelRouter:
+    def __init__(self) -> None:
+        self.chat_messages: list[ChatMessage] | None = None
+        self.stream_messages: list[ChatMessage] | None = None
+
+    async def chat(self, request):
+        self.chat_messages = request.messages
+        return ChatModelResponse(text="answer")
+
+    async def stream_chat(self, request):
+        self.stream_messages = request.messages
+        yield type("StreamEvent", (), {"event_type": "token", "delta": "answer"})()
+
+
+class FakeConversationStore:
+    def __init__(self) -> None:
+        self.request = AssistantRequest(
+            request_id="11111111-1111-1111-1111-111111111111",
+            conversation_id="22222222-2222-2222-2222-222222222222",
+            user_message_id="user-message-1",
+            assistant_message_id=None,
+            status=RequestStatus.ACCEPTED,
+            client_message_id="client-1",
+            created_at=datetime.now(UTC),
+            started_at=None,
+            completed_at=None,
+            error_code=None,
+            error_message=None,
+        )
+
+    async def update_assistant_request_status(self, command):
+        self.request = replace(
+            self.request,
+            status=command.status,
+            assistant_message_id=command.assistant_message_id or self.request.assistant_message_id,
+            error_code=command.error_code,
+            error_message=command.error_message,
+        )
+
+    async def complete_assistant_response(self, command):
+        now = datetime.now(UTC)
+        message = ConversationMessage(
+            message_id="assistant-message-1",
+            conversation_id=command.conversation_id,
+            request_id=command.request_id,
+            event_id=None,
+            client_message_id=None,
+            role=MessageRole.ASSISTANT,
+            content=command.content,
+            content_hash="hash",
+            sensitivity=command.sensitivity,
+            created_at=now,
+        )
+        self.request = replace(
+            self.request,
+            status=RequestStatus.COMPLETED,
+            assistant_message_id=message.message_id,
+            completed_at=now,
+        )
+        return AssistantResponseCompletion(message=message, request=self.request)
+
+    async def get_assistant_request(self, request_id: str):
+        assert request_id == self.request.request_id
+        return self.request
+
+
+def _runtime(model_router: RecordingModelRouter, store: FakeConversationStore) -> AgentRuntime:
+    return AgentRuntime(
+        conversation_store=store,
+        context_assembler=PromptContextAssembler(),
+        model_router=model_router,
+        event_log=InMemoryEventLog(),
+        settings=ConfigLoader("config").load("test"),
+    )
+
+
+def _command() -> RuntimeTurnCommand:
+    return RuntimeTurnCommand(
+        request_id="11111111-1111-1111-1111-111111111111",
+        conversation_id="22222222-2222-2222-2222-222222222222",
+        user_message_id="user-message-1",
+        user_id="user-1",
+        user_input="current question",
+        active_project_namespace="project.personal_assistant",
+    )
+
+
+def _message_text(messages: list[ChatMessage]) -> str:
+    return "\n".join(part.text for message in messages for part in message.content)
+
+
+def test_run_turn_passes_context_assembler_messages_to_model_prompt() -> None:
+    async def scenario():
+        model_router = RecordingModelRouter()
+        store = FakeConversationStore()
+        await _runtime(model_router, store).run_turn(_command())
+        return model_router.chat_messages
+
+    messages = asyncio.run(scenario())
+
+    assert messages is not None
+    assert len(messages) == 2
+    prompt_text = _message_text(messages)
+    assert "You are Jarvis." in prompt_text
+    assert "remembered project fact" in prompt_text
+    assert messages[0].metadata == {"source": "context_assembler"}
+    assert messages[-1].role == MessageRole.USER
+    assert messages[-1].content[0].text == "current question"
+
+
+def test_stream_turn_passes_context_assembler_messages_to_model_prompt() -> None:
+    async def scenario():
+        model_router = RecordingModelRouter()
+        store = FakeConversationStore()
+        async for _ in _runtime(model_router, store).stream_turn(_command()):
+            pass
+        return model_router.stream_messages
+
+    messages = asyncio.run(scenario())
+
+    assert messages is not None
+    assert len(messages) == 2
+    prompt_text = _message_text(messages)
+    assert "You are Jarvis." in prompt_text
+    assert "remembered project fact" in prompt_text
+    assert messages[0].metadata == {"source": "context_assembler"}
+    assert messages[-1].role == MessageRole.USER
+    assert messages[-1].content[0].text == "current question"

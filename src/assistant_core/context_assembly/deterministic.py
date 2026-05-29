@@ -40,6 +40,15 @@ SENSITIVITY_ORDER = {
     Sensitivity.SECRET: 4,
 }
 
+PROMPT_MESSAGE_SECTION_NAMES = {
+    "system_identity",
+    "runtime_rules",
+    "user_preferences",
+    "working_style",
+    "project_or_environment_memory",
+    "output_contract",
+}
+
 
 class ContextPolicyDenied(Exception):
     """Raised when policy rejects the current user message before retrieval."""
@@ -99,6 +108,7 @@ class DeterministicContextAssembler:
             recent_messages,
             dropped_refs,
         )
+        recent_messages = _exclude_current_user_message(request, recent_messages)
         recent_messages = _apply_message_count_limit(
             recent_messages,
             request.max_messages or 12,
@@ -114,11 +124,11 @@ class DeterministicContextAssembler:
             dropped_refs,
         )
 
-        messages = [
+        conversation_messages = [
             _chat_message(message)
             for message in recent_messages
         ]
-        messages.append(
+        conversation_messages.append(
             ChatMessage(
                 role=MessageRole.USER,
                 content=[TextPart(text=request.current_user_message)],
@@ -126,7 +136,7 @@ class DeterministicContextAssembler:
             ),
         )
 
-        token_estimate = _context_token_estimate(sections, messages)
+        token_estimate = _context_token_estimate(sections, conversation_messages)
         manifest = _manifest(
             request,
             sections,
@@ -136,6 +146,12 @@ class DeterministicContextAssembler:
             token_estimate,
             active_namespaces,
             degraded,
+        )
+        messages = _prompt_messages(
+            sections,
+            conversation_messages,
+            sensitivity=manifest.max_sensitivity,
+            context_manifest_id=manifest.context_manifest_id,
         )
         context = AssembledContext(
             messages=messages,
@@ -388,6 +404,19 @@ def _active_namespaces(request: ContextAssemblyRequest) -> list[str]:
     return namespaces
 
 
+def _exclude_current_user_message(
+    request: ContextAssemblyRequest,
+    messages: list[ConversationMessage],
+) -> list[ConversationMessage]:
+    if request.current_user_message_id is None:
+        return messages
+    return [
+        message
+        for message in messages
+        if message.message_id != request.current_user_message_id
+    ]
+
+
 def _apply_message_count_limit(
     messages: list[ConversationMessage],
     max_messages: int,
@@ -490,6 +519,34 @@ def _chat_message(message: ConversationMessage) -> ChatMessage:
         sensitivity=message.sensitivity,
         metadata={"message_id": message.message_id},
     )
+
+
+def _prompt_messages(
+    sections: list[ContextSection],
+    conversation_messages: list[ChatMessage],
+    *,
+    sensitivity: Sensitivity,
+    context_manifest_id: str,
+) -> list[ChatMessage]:
+    prompt_parts = [
+        f"[{section.name}]\n{section.content.strip()}"
+        for section in sections
+        if section.name in PROMPT_MESSAGE_SECTION_NAMES and section.content.strip()
+    ]
+    if not prompt_parts:
+        return conversation_messages
+    return [
+        ChatMessage(
+            role=MessageRole.SYSTEM,
+            content=[TextPart(text="\n\n".join(prompt_parts))],
+            sensitivity=sensitivity,
+            metadata={
+                "source": "context_sections",
+                "context_manifest_id": context_manifest_id,
+            },
+        ),
+        *conversation_messages,
+    ]
 
 
 def _manifest(
