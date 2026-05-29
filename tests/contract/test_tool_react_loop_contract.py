@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from assistant_core.approvals.in_memory import InMemoryApprovalStore
 from assistant_core.domain.context import AssembledContext, ContextManifest
 from assistant_core.domain.conversations import (
     AssistantRequest,
@@ -170,7 +171,12 @@ def _request(*, sensitivity: Sensitivity = Sensitivity.PROJECT) -> LoopExecution
     )
 
 
-def _loop(*, router: ScriptedRouter, policy: AllowPolicy | None = None):
+def _loop(
+    *,
+    router: ScriptedRouter,
+    policy: AllowPolicy | None = None,
+    approval_store: InMemoryApprovalStore | None = None,
+):
     store = RecordingConversationStore()
     assembler = RecordingContextAssembler()
     event_log = InMemoryEventLog()
@@ -178,6 +184,7 @@ def _loop(*, router: ScriptedRouter, policy: AllowPolicy | None = None):
         registry=ToolRegistry([fake_echo_tool(), datetime_now_tool()]),
         policy=policy or AllowPolicy(),
         event_log=event_log,
+        approval_store=approval_store,
     )
     return (
         ToolReactLoop(
@@ -186,6 +193,7 @@ def _loop(*, router: ScriptedRouter, policy: AllowPolicy | None = None):
             model_router=router,
             event_log=event_log,
             tool_gateway=gateway,
+            approval_store=approval_store,
         ),
         store,
         assembler,
@@ -294,6 +302,155 @@ def test_tool_react_loop_handles_approval_required_observation_without_execution
     assert store.request.status == RequestStatus.FAILED
     observation = next(event for event in events if event.event_type == EventType.TOOL_OBSERVATION_RECORDED)
     assert observation.payload["status"] == ToolObservationStatus.APPROVAL_REQUIRED.value
+
+
+def test_tool_react_loop_retries_after_granted_approval() -> None:
+    async def scenario():
+        event_log = InMemoryEventLog()
+        approval_store = InMemoryApprovalStore(event_log=event_log)
+        store = RecordingConversationStore()
+        assembler = RecordingContextAssembler()
+        gateway = ToolGateway(
+            registry=ToolRegistry([fake_echo_tool()]),
+            policy=AllowPolicy(PolicyDecisionOutcome.APPROVAL_REQUIRED),
+            event_log=event_log,
+            approval_store=approval_store,
+        )
+        loop = ToolReactLoop(
+            conversation_store=store,
+            context_assembler=assembler,
+            model_router=ScriptedRouter(
+                [
+                    {
+                        "action": "tool_call",
+                        "tool_name": "fake.echo",
+                        "arguments": {"message": "hello"},
+                    },
+                    {"action": "final_answer", "final_answer": "approved"},
+                ],
+            ),
+            event_log=event_log,
+            tool_gateway=gateway,
+            approval_store=approval_store,
+        )
+        task = asyncio.create_task(loop.run_turn(_request(sensitivity=Sensitivity.PUBLIC)))
+        approval_id = None
+        for _ in range(100):
+            events = await event_log.query(EventFilter(request_id="request-tool-react"))
+            approval_event = next(
+                (event for event in events if event.event_type == EventType.APPROVAL_REQUIRED),
+                None,
+            )
+            if approval_event is not None:
+                approval_id = approval_event.payload["approval_id"]
+                await approval_store.grant_approval(approval_id, actor_id="user-1")
+                break
+            await asyncio.sleep(0.01)
+        assert approval_id is not None
+        result = await task
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, store, events
+
+    result, store, events = asyncio.run(scenario())
+
+    assert result.response_text == "approved"
+    assert store.request.status == RequestStatus.COMPLETED
+    assert EventType.TOOL_CALL_APPROVED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_streams_failed_terminal_after_denied_approval() -> None:
+    async def scenario():
+        event_log = InMemoryEventLog()
+        approval_store = InMemoryApprovalStore(event_log=event_log)
+        store = RecordingConversationStore()
+        gateway = ToolGateway(
+            registry=ToolRegistry([fake_echo_tool()]),
+            policy=AllowPolicy(PolicyDecisionOutcome.APPROVAL_REQUIRED),
+            event_log=event_log,
+            approval_store=approval_store,
+        )
+        loop = ToolReactLoop(
+            conversation_store=store,
+            context_assembler=RecordingContextAssembler(),
+            model_router=ScriptedRouter(
+                [
+                    {
+                        "action": "tool_call",
+                        "tool_name": "fake.echo",
+                        "arguments": {"message": "hello"},
+                    },
+                ],
+            ),
+            event_log=event_log,
+            tool_gateway=gateway,
+            approval_store=approval_store,
+        )
+        emitted = []
+        async for event in loop.stream_turn(_request(sensitivity=Sensitivity.PUBLIC)):
+            emitted.append(event)
+            if event.event_type == EventType.APPROVAL_REQUIRED.value:
+                await approval_store.deny_approval(event.data["approval_id"], actor_id="user-1")
+        return emitted, store
+
+    emitted, store = asyncio.run(scenario())
+
+    assert store.request.status == RequestStatus.FAILED
+    assert [event.event_type for event in emitted] == [
+        EventType.APPROVAL_REQUIRED.value,
+        EventType.APPROVAL_DENIED.value,
+        EventType.REQUEST_PROCESSING_FAILED.value,
+    ]
+
+
+def test_tool_react_loop_cancels_pending_approval_when_request_is_cancelled() -> None:
+    async def scenario():
+        event_log = InMemoryEventLog()
+        approval_store = InMemoryApprovalStore(event_log=event_log)
+        loop = ToolReactLoop(
+            conversation_store=RecordingConversationStore(),
+            context_assembler=RecordingContextAssembler(),
+            model_router=ScriptedRouter(
+                [
+                    {
+                        "action": "tool_call",
+                        "tool_name": "fake.echo",
+                        "arguments": {"message": "hello"},
+                    },
+                ],
+            ),
+            event_log=event_log,
+            tool_gateway=ToolGateway(
+                registry=ToolRegistry([fake_echo_tool()]),
+                policy=AllowPolicy(PolicyDecisionOutcome.APPROVAL_REQUIRED),
+                event_log=event_log,
+                approval_store=approval_store,
+            ),
+            approval_store=approval_store,
+        )
+        task = asyncio.create_task(loop.run_turn(_request(sensitivity=Sensitivity.PUBLIC)))
+        approval_id = None
+        for _ in range(100):
+            events = await event_log.query(EventFilter(request_id="request-tool-react"))
+            approval_event = next(
+                (event for event in events if event.event_type == EventType.APPROVAL_REQUIRED),
+                None,
+            )
+            if approval_event is not None:
+                approval_id = approval_event.payload["approval_id"]
+                break
+            await asyncio.sleep(0.01)
+        assert approval_id is not None
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        approval = await approval_store.get_approval(approval_id)
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return approval, events
+
+    approval, events = asyncio.run(scenario())
+
+    assert approval.status.value == "cancelled"
+    assert EventType.APPROVAL_CANCELLED in [event.event_type for event in events]
 
 
 def test_tool_react_loop_records_step_events_and_observation_refs() -> None:

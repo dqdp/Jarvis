@@ -49,6 +49,11 @@ class EventType(StrEnum):
     TOOL_CALL_TIMEOUT = "tool.call.timeout"
     TOOL_CALL_CANCELLED = "tool.call.cancelled"
     TOOL_OBSERVATION_RECORDED = "tool.observation.recorded"
+    APPROVAL_REQUIRED = "approval.required"
+    APPROVAL_GRANTED = "approval.granted"
+    APPROVAL_DENIED = "approval.denied"
+    APPROVAL_EXPIRED = "approval.expired"
+    APPROVAL_CANCELLED = "approval.cancelled"
     RUNTIME_ERROR = "runtime.error"
 
 

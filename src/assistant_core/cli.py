@@ -94,6 +94,12 @@ class JarvisClient(Protocol):
 
     async def runtime_status(self) -> dict[str, Any]: ...
 
+    async def get_approval(self, approval_id: str) -> dict[str, Any]: ...
+
+    async def grant_approval(self, approval_id: str) -> dict[str, Any]: ...
+
+    async def deny_approval(self, approval_id: str) -> dict[str, Any]: ...
+
 
 class ReadlineModule(Protocol):
     def add_history(self, line: str) -> None: ...
@@ -213,6 +219,15 @@ class HttpJarvisClient:
     async def runtime_status(self) -> dict[str, Any]:
         return await self._get_json("/v1/runtime/status")
 
+    async def get_approval(self, approval_id: str) -> dict[str, Any]:
+        return await self._get_json(f"/v1/approvals/{approval_id}")
+
+    async def grant_approval(self, approval_id: str) -> dict[str, Any]:
+        return await self._post_json(f"/v1/approvals/{approval_id}/grant", {})
+
+    async def deny_approval(self, approval_id: str) -> dict[str, Any]:
+        return await self._post_json(f"/v1/approvals/{approval_id}/deny", {})
+
     async def _get_json(
         self,
         path: str,
@@ -321,6 +336,7 @@ async def _run_command(
             sensitivity=args.sensitivity,
             client_message_id=args.client_message_id,
             assistant_prefix=None,
+            stdin=stdin,
         )
 
     if args.command == "memory" and args.memory_command == "add":
@@ -650,6 +666,7 @@ async def run_interactive_chat(
                 sensitivity=sensitivity,
                 client_message_id=None,
                 assistant_prefix="assistant> ",
+                stdin=stdin,
                 on_request_started=lambda request_id: setattr(state, "last_request_id", request_id),
             )
             state.last_request_id = None
@@ -759,6 +776,7 @@ async def submit_and_stream_message(
     sensitivity: str,
     client_message_id: str | None,
     assistant_prefix: str | None,
+    stdin: TextIO = sys.stdin,
     on_request_started: Callable[[str], None] | None = None,
 ) -> int:
     submitted = await client.submit_message(
@@ -787,12 +805,88 @@ async def submit_and_stream_message(
                 stdout.write("\n")
                 stdout.write(f"cancelled> request {request_id}\n")
                 return 130
+            elif event_type == "approval.required":
+                if assistant_prefix is not None:
+                    stdout.write("\n")
+                await handle_approval_prompt(
+                    client=client,
+                    stdout=stdout,
+                    stdin=stdin,
+                    data=data,
+                )
     except (asyncio.CancelledError, KeyboardInterrupt):
         stdout.write("\n")
         await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
         return 130
     stdout.write("\n")
     return 0
+
+
+async def handle_approval_prompt(
+    *,
+    client: JarvisClient,
+    stdout: TextIO,
+    stdin: TextIO,
+    data: dict[str, Any],
+) -> None:
+    approval_id = _required_str(data, "approval_id")
+    approval = await client.get_approval(approval_id)
+    status = str(approval.get("status") or data.get("status") or "")
+    if status == "expired":
+        stdout.write("approval> expired\n")
+        return
+    capability = _display_text(approval.get("capability") or data.get("capability"))
+    summary = _approval_summary(approval, data)
+    stdout.write(f"approval> {capability} wants to perform {summary}\n")
+    stdout.write("approve? [y/N] ")
+    stdout.flush()
+    try:
+        answer = stdin.readline()
+    except KeyboardInterrupt:
+        stdout.write("\n")
+        await client.deny_approval(approval_id)
+        stdout.write("approval> denied\n")
+        return
+    normalized = answer.strip().lower()
+    if normalized in {"y", "yes"}:
+        try:
+            await client.grant_approval(approval_id)
+        except CliUserError as exc:
+            if _approval_error_is_expired(exc):
+                stdout.write("approval> expired\n")
+                return
+            raise
+        stdout.write("approval> granted\n")
+        return
+    try:
+        await client.deny_approval(approval_id)
+    except CliUserError as exc:
+        if _approval_error_is_expired(exc):
+            stdout.write("approval> expired\n")
+            return
+        raise
+    stdout.write("approval> denied\n")
+
+
+def _approval_summary(approval: dict[str, Any], event_data: dict[str, Any]) -> str:
+    if isinstance(event_data.get("redacted_summary"), str):
+        return _display_text(event_data["redacted_summary"])
+    payload = approval.get("redacted_payload")
+    if isinstance(payload, dict) and isinstance(payload.get("summary"), str):
+        return _display_text(payload["summary"])
+    scope = approval.get("scope")
+    if isinstance(scope, dict):
+        tool_name = _display_text(scope.get("tool_name"))
+        argument_keys = scope.get("argument_keys")
+        if isinstance(argument_keys, list):
+            return f"{tool_name}({', '.join(str(key) for key in argument_keys)})"
+        return tool_name
+    return "requested action"
+
+
+def _approval_error_is_expired(exc: CliUserError) -> bool:
+    message = str(exc).lower()
+    return "approval_expired" in message or "expired" in message
 
 
 async def cancel_server_request(
@@ -851,7 +945,8 @@ def _http_error_message(exc: httpx.HTTPStatusError, action: str) -> str:
     if isinstance(payload, dict):
         error = payload.get("error")
         if isinstance(error, dict) and isinstance(error.get("message"), str):
-            detail = error["message"]
+            code = error.get("code")
+            detail = f"{code}: {error['message']}" if isinstance(code, str) else error["message"]
         elif isinstance(payload.get("detail"), str):
             detail = payload["detail"]
     return f"{action} failed: {exc.response.status_code} {detail}"

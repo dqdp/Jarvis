@@ -27,6 +27,7 @@ from assistant_core.domain.models import StructuredModelRequest
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.domain.tools import ToolCallRequest, ToolObservationStatus
+from assistant_core.ports.approvals import ApprovalStorePort
 from assistant_core.ports.context_assembler import ContextAssemblerPort
 from assistant_core.ports.conversation_store import ConversationStorePort
 from assistant_core.ports.event_log import EventLogPort
@@ -59,6 +60,7 @@ class ToolReactLoop:
         model_router: ModelRouterPort,
         event_log: EventLogPort,
         tool_gateway: ToolGatewayPort | None,
+        approval_store: ApprovalStorePort | None = None,
     ) -> None:
         if tool_gateway is None:
             raise ValueError("tool_gateway is required")
@@ -67,6 +69,7 @@ class ToolReactLoop:
         self._model_router = model_router
         self._event_log = event_log
         self._tool_gateway = tool_gateway
+        self._approval_store = approval_store
 
     def validate_budget(self, budget: LoopBudget) -> None:
         if budget.max_steps <= 0:
@@ -194,10 +197,7 @@ class ToolReactLoop:
                     step_id=step_id,
                     causation_event_id=step_started.event_id,
                     used_tool_calls=used_tool_calls,
-                    timeout_seconds=_remaining_timeout(
-                        loop_deadline,
-                        request.budget.max_model_call_seconds,
-                    ),
+                    loop_deadline=loop_deadline,
                 )
                 used_tool_calls += 1
                 tool_observation_refs.append(observation_ref)
@@ -257,7 +257,34 @@ class ToolReactLoop:
         raise exc
 
     async def stream_turn(self, request: LoopExecutionRequest):
-        result = await self.run_turn(request)
+        task = asyncio.create_task(self.run_turn(request))
+        seen_approval_events: set[str] = set()
+        try:
+            while not task.done():
+                async for event in self._approval_stream_events(request, seen_approval_events):
+                    yield event
+                await asyncio.wait({task}, timeout=0.05)
+            async for event in self._approval_stream_events(request, seen_approval_events):
+                yield event
+            result = await task
+        except Exception:
+            failed_event = await self._latest_event(
+                request.request_id,
+                EventType.REQUEST_PROCESSING_FAILED,
+            )
+            yield LoopStreamEvent(
+                EventType.REQUEST_PROCESSING_FAILED.value,
+                _failed_stream_payload(request, failed_event),
+            )
+            return
+        except BaseException:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except BaseException:
+                    pass
+            raise
         if result.response_text:
             yield LoopStreamEvent("token", {"delta": result.response_text})
         completed_event = await self._latest_event(
@@ -288,6 +315,27 @@ class ToolReactLoop:
                 return event
         return None
 
+    async def _approval_stream_events(
+        self,
+        request: LoopExecutionRequest,
+        seen_event_ids: set[str],
+    ):
+        events = await self._event_log.query(EventFilter(request_id=request.request_id))
+        for event in events:
+            if event.event_type not in _APPROVAL_STREAM_EVENT_TYPES:
+                continue
+            if event.event_id in seen_event_ids:
+                continue
+            seen_event_ids.add(event.event_id)
+            yield LoopStreamEvent(
+                event.event_type.value,
+                {
+                    "request_id": request.request_id,
+                    "event_id": event.event_id,
+                    **event.payload,
+                },
+            )
+
     async def _execute_tool_proposal(
         self,
         request: LoopExecutionRequest,
@@ -296,7 +344,7 @@ class ToolReactLoop:
         step_id: str,
         causation_event_id: str,
         used_tool_calls: int,
-        timeout_seconds: float,
+        loop_deadline: float,
     ) -> ToolObservationRef:
         if proposal.tool_name is None:
             raise ToolProposalParseError("tool_call requires tool_name")
@@ -314,11 +362,75 @@ class ToolReactLoop:
                 project_namespace=request.active_project_namespace,
                 sensitivity=request.current_message_sensitivity,
                 permission_mode=request.permission_mode,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=_remaining_timeout(
+                    loop_deadline,
+                    request.budget.max_model_call_seconds,
+                ),
                 metadata={"loop_strategy": request.strategy_name.value},
             ),
         )
+        if observation.status == ToolObservationStatus.APPROVAL_REQUIRED:
+            approval_id = observation.metadata.get("approval_id")
+            if approval_id is not None and self._approval_store is not None:
+                await self._wait_for_approval(
+                    approval_id,
+                    loop_deadline=loop_deadline,
+                    actor_id=request.user_id,
+                )
+                observation = await self._tool_gateway.invoke(
+                    ToolCallRequest(
+                        tool_name=proposal.tool_name,
+                        arguments=proposal.arguments,
+                        request_id=request.request_id,
+                        conversation_id=request.conversation_id,
+                        correlation_id=request.correlation_id or request.request_id,
+                        causation_event_id=causation_event_id,
+                        step_id=step_id,
+                        user_id=request.user_id,
+                        project_namespace=request.active_project_namespace,
+                        sensitivity=request.current_message_sensitivity,
+                        permission_mode=request.permission_mode,
+                        approval_id=approval_id,
+                        timeout_seconds=_remaining_timeout(
+                            loop_deadline,
+                            request.budget.max_model_call_seconds,
+                        ),
+                        metadata={"loop_strategy": request.strategy_name.value},
+                    ),
+                )
         return ToolObservationRef.from_observation(observation)
+
+    async def _wait_for_approval(
+        self,
+        approval_id: str,
+        *,
+        loop_deadline: float,
+        actor_id: str | None,
+    ) -> None:
+        assert self._approval_store is not None
+        try:
+            while True:
+                _raise_if_wall_time_exceeded(loop_deadline)
+                await self._approval_store.expire_stale(now=datetime.now(UTC))
+                approval = await self._approval_store.get_approval(approval_id)
+                if approval is None:
+                    raise RuntimeError("approval_not_found")
+                if approval.status.value == "granted":
+                    return
+                if approval.status.value != "pending":
+                    raise RuntimeError(f"approval_{approval.status.value}")
+                await asyncio.sleep(
+                    min(0.05, max(0.001, loop_deadline - asyncio.get_running_loop().time())),
+                )
+        except asyncio.CancelledError:
+            approval = await self._approval_store.get_approval(approval_id)
+            if approval is not None and approval.status.value == "pending":
+                await self._approval_store.cancel_approval(
+                    approval_id,
+                    actor_id=actor_id,
+                    reason="request cancelled",
+                )
+            raise
 
     async def _complete(
         self,
@@ -510,7 +622,46 @@ def _wall_time_expired(deadline: float) -> bool:
     return asyncio.get_running_loop().time() >= deadline
 
 
+_APPROVAL_STREAM_EVENT_TYPES = {
+    EventType.APPROVAL_REQUIRED,
+    EventType.APPROVAL_GRANTED,
+    EventType.APPROVAL_DENIED,
+    EventType.APPROVAL_EXPIRED,
+    EventType.APPROVAL_CANCELLED,
+}
+
+
 def _error_code(exc: Exception) -> str:
     if isinstance(exc, ToolProposalParseError):
         return "malformed_tool_proposal"
     return str(exc) or type(exc).__name__
+
+
+def _failed_stream_payload(
+    request: LoopExecutionRequest,
+    failed_event: EventEnvelope | None,
+) -> dict[str, Any]:
+    if failed_event is None:
+        return {
+            "request_id": request.request_id,
+            "event_id": None,
+            "error": {
+                "code": "tool_loop_failed",
+                "message": "tool loop failed",
+                "request_id": request.request_id,
+                "details": {},
+            },
+        }
+    error = failed_event.payload.get("error")
+    if not isinstance(error, dict):
+        error = {
+            "code": failed_event.payload.get("error_code") or failed_event.payload.get("error_type"),
+            "message": "tool loop failed",
+            "request_id": request.request_id,
+            "details": {},
+        }
+    return {
+        "request_id": request.request_id,
+        "event_id": failed_event.event_id,
+        "error": error,
+    }

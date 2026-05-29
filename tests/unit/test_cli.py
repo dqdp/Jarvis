@@ -173,6 +173,55 @@ class ServerCancelledStreamCliClient(FakeCliClient):
         }
 
 
+class ApprovalPromptCliClient(FakeCliClient):
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        approval_status: str = "pending",
+        deny_error: cli.CliUserError | None = None,
+    ) -> None:
+        super().__init__(base_url)
+        self.approval_status = approval_status
+        self.deny_error = deny_error
+
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        yield "approval.required", {
+            "approval_id": "approval-1",
+            "capability": "tool.safe",
+            "redacted_summary": "fake.echo(message)",
+            "status": self.approval_status,
+        }
+        yield "request.processing.failed", {
+            "error": {"code": "approval_denied", "message": "approval denied"},
+        }
+
+    async def get_approval(self, approval_id: str):
+        self.calls.append(("get_approval", approval_id))
+        return {
+            "approval_id": approval_id,
+            "status": self.approval_status,
+            "capability": "tool.safe",
+            "redacted_payload": {"summary": "fake.echo(message)"},
+        }
+
+    async def grant_approval(self, approval_id: str):
+        self.calls.append(("grant_approval", approval_id))
+        return {"approval_id": approval_id, "status": "granted"}
+
+    async def deny_approval(self, approval_id: str):
+        self.calls.append(("deny_approval", approval_id))
+        if self.deny_error is not None:
+            raise self.deny_error
+        return {"approval_id": approval_id, "status": "denied"}
+
+
+class InterruptingInput:
+    def readline(self) -> str:
+        raise KeyboardInterrupt
+
+
 class FailingHealthCliClient(FakeCliClient):
     async def health(self):
         self.calls.append(("health", None))
@@ -842,6 +891,131 @@ def test_parse_sse_blocks() -> None:
         ("token", {"delta": "A"}),
         ("request.processing.completed", {"request_id": "r"}),
     ]
+
+
+def test_cli_renders_approval_prompt() -> None:
+    client = ApprovalPromptCliClient("http://test")
+    stdout = StringIO()
+
+    asyncio.run(
+        cli.submit_and_stream_message(
+            client=client,
+            stdout=stdout,
+            stdin=StringIO("n\n"),
+            conversation_id="conversation-1",
+            content="use tool",
+            sensitivity="project",
+            client_message_id="client-approval",
+            assistant_prefix="assistant> ",
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert "approval> tool.safe wants to perform fake.echo(message)" in output
+    assert "approve? [y/N]" in output
+
+
+def test_empty_cli_approval_input_denies() -> None:
+    client = ApprovalPromptCliClient("http://test")
+
+    asyncio.run(
+        cli.submit_and_stream_message(
+            client=client,
+            stdout=StringIO(),
+            stdin=StringIO("\n"),
+            conversation_id="conversation-1",
+            content="use tool",
+            sensitivity="project",
+            client_message_id="client-approval",
+            assistant_prefix=None,
+        ),
+    )
+
+    assert ("deny_approval", "approval-1") in client.calls
+    assert ("grant_approval", "approval-1") not in client.calls
+
+
+def test_yes_cli_approval_input_grants() -> None:
+    client = ApprovalPromptCliClient("http://test")
+
+    asyncio.run(
+        cli.submit_and_stream_message(
+            client=client,
+            stdout=StringIO(),
+            stdin=StringIO("yes\n"),
+            conversation_id="conversation-1",
+            content="use tool",
+            sensitivity="project",
+            client_message_id="client-approval",
+            assistant_prefix=None,
+        ),
+    )
+
+    assert ("grant_approval", "approval-1") in client.calls
+    assert ("deny_approval", "approval-1") not in client.calls
+
+
+def test_cli_ctrl_c_denies_or_cancels_local_wait() -> None:
+    client = ApprovalPromptCliClient("http://test")
+
+    asyncio.run(
+        cli.submit_and_stream_message(
+            client=client,
+            stdout=StringIO(),
+            stdin=InterruptingInput(),
+            conversation_id="conversation-1",
+            content="use tool",
+            sensitivity="project",
+            client_message_id="client-approval",
+            assistant_prefix=None,
+        ),
+    )
+
+    assert ("deny_approval", "approval-1") in client.calls
+
+
+def test_cli_reports_expired_approval() -> None:
+    client = ApprovalPromptCliClient("http://test", approval_status="expired")
+    stdout = StringIO()
+
+    asyncio.run(
+        cli.submit_and_stream_message(
+            client=client,
+            stdout=stdout,
+            stdin=StringIO("yes\n"),
+            conversation_id="conversation-1",
+            content="use tool",
+            sensitivity="project",
+            client_message_id="client-approval",
+            assistant_prefix=None,
+        ),
+    )
+
+    assert "approval> expired" in stdout.getvalue()
+    assert ("grant_approval", "approval-1") not in client.calls
+
+
+def test_cli_reports_expired_approval_when_empty_deny_conflicts() -> None:
+    client = ApprovalPromptCliClient(
+        "http://test",
+        deny_error=cli.CliUserError("approval_expired: approval expired"),
+    )
+    stdout = StringIO()
+
+    asyncio.run(
+        cli.submit_and_stream_message(
+            client=client,
+            stdout=stdout,
+            stdin=StringIO("\n"),
+            conversation_id="conversation-1",
+            content="use tool",
+            sensitivity="project",
+            client_message_id="client-approval",
+            assistant_prefix=None,
+        ),
+    )
+
+    assert "approval> expired" in stdout.getvalue()
 
 
 def test_http_error_message_uses_api_error_payload() -> None:

@@ -28,6 +28,7 @@ from assistant_core.runtime.agent_runtime import AgentRuntime
 from assistant_core.runtime.loops import LoopStrategyRegistry, MemoryAugmentedAnswerLoop
 from assistant_core.runtime.loops.tool_react import ToolReactLoop
 from assistant_core.storage.conversation_store import PostgresConversationStore
+from assistant_core.storage.approval_store import PostgresApprovalStore
 from assistant_core.storage.database import create_database_engine
 from assistant_core.storage.event_log import PostgresEventLog
 from assistant_core.storage.memory_store import PostgresMemoryStore
@@ -67,6 +68,7 @@ def create_runtime_app(
     engine = create_database_engine(database_url)
     conversation_store = PostgresConversationStore(engine)
     event_log = PostgresEventLog(engine)
+    approval_store = PostgresApprovalStore(engine, event_log=event_log)
     policy = ConfigPolicyEngine(settings, event_log=event_log)
     invocation_repository = PostgresModelInvocationRepository(engine)
     router = ModelRouter(
@@ -101,6 +103,7 @@ def create_runtime_app(
         ),
         policy=policy,
         event_log=event_log,
+        approval_store=approval_store,
     )
     runtime = AgentRuntime(
         conversation_store=conversation_store,
@@ -122,6 +125,7 @@ def create_runtime_app(
                     model_router=router,
                     event_log=event_log,
                     tool_gateway=tool_gateway,
+                    approval_store=approval_store,
                 ),
             ],
         ),
@@ -140,6 +144,7 @@ def create_runtime_app(
         settings=settings,
         runtime=runtime,
         event_log=event_log,
+        approval_store=approval_store,
         lifespan=lifespan,
     )
     runtime_app = RuntimeApplication(app=app, engine=engine, settings=settings, runtime=runtime)

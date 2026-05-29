@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from assistant_core.domain.approvals import (
+    ApprovalConflict,
+    ApprovalNotFound,
+    ApprovalScope,
+    CreateApprovalCommand,
+)
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
 from assistant_core.domain.policy import CapabilityPolicyRequest, PolicyDecisionOutcome
 from assistant_core.domain.tools import (
@@ -15,6 +22,7 @@ from assistant_core.domain.tools import (
     ToolObservationStatus,
     ToolSpec,
 )
+from assistant_core.ports.approvals import ApprovalStorePort
 from assistant_core.ports.event_log import EventLogPort
 from assistant_core.ports.policy import PolicyPort
 from assistant_core.tools.registry import ToolAdapter, ToolRegistry
@@ -27,10 +35,12 @@ class ToolGateway:
         registry: ToolRegistry,
         policy: PolicyPort,
         event_log: EventLogPort,
+        approval_store: ApprovalStorePort | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy
         self._event_log = event_log
+        self._approval_store = approval_store
 
     async def list_tools(self) -> list[ToolSpec]:
         return self._registry.list_specs()
@@ -169,22 +179,60 @@ class ToolGateway:
             )
             return observation
 
+        if decision.outcome == PolicyDecisionOutcome.APPROVAL_REQUIRED and request.approval_id:
+            approved = await self._validate_approval(
+                request,
+                spec,
+                tool_call_id=tool_call_id,
+                policy_decision_id=decision.decision_id,
+            )
+            if isinstance(approved, ToolObservation):
+                await self._record_observation(
+                    request,
+                    approved,
+                    policy_decision_id=decision.decision_id,
+                )
+                return approved
+            await self._record_event(
+                EventType.TOOL_CALL_APPROVED,
+                request,
+                tool_call_id=tool_call_id,
+                payload={
+                    **_tool_event_payload(spec, policy_decision_id=decision.decision_id),
+                    "approval_id": request.approval_id,
+                },
+            )
+            await self._record_event(
+                EventType.TOOL_CALL_STARTED,
+                request,
+                tool_call_id=tool_call_id,
+                payload={
+                    **_tool_event_payload(spec, policy_decision_id=decision.decision_id),
+                    "approval_id": request.approval_id,
+                },
+            )
+            return await self._execute_adapter(
+                request,
+                adapter,
+                tool_call_id,
+                started_at,
+                policy_decision_id=decision.decision_id,
+            )
+
         if decision.outcome == PolicyDecisionOutcome.APPROVAL_REQUIRED:
+            approval_metadata = await self._create_approval_metadata(
+                request,
+                spec,
+                started_at=started_at,
+                policy_decision_id=decision.decision_id,
+            )
             observation = _empty_observation(
                 request,
                 ToolObservationStatus.APPROVAL_REQUIRED,
                 started_at,
                 tool_call_id=tool_call_id,
                 error={"code": decision.code, "message": decision.reason},
-            )
-            await self._record_event(
-                EventType.TOOL_CALL_DENIED,
-                request,
-                tool_call_id=tool_call_id,
-                payload=_tool_event_payload(
-                    spec,
-                    policy_decision_id=decision.decision_id,
-                ),
+                metadata=approval_metadata,
             )
             await self._record_observation(
                 request,
@@ -206,6 +254,77 @@ class ToolGateway:
             started_at,
             policy_decision_id=decision.decision_id,
         )
+
+    async def _create_approval_metadata(
+        self,
+        request: ToolCallRequest,
+        spec: ToolSpec,
+        *,
+        started_at: datetime,
+        policy_decision_id: str,
+    ) -> dict[str, Any]:
+        if self._approval_store is None:
+            return {}
+        approval = await self._approval_store.create_approval(
+            CreateApprovalCommand(
+                scope=_approval_scope(spec, request),
+                redacted_payload=_approval_payload(spec, request),
+                requested_by=request.user_id,
+                created_at=started_at,
+                metadata={
+                    "causation_event_id": request.causation_event_id,
+                    "policy_decision_id": policy_decision_id,
+                },
+            ),
+        )
+        return {
+            "approval_id": approval.approval_id,
+            "status": approval.status.value,
+            "expires_at": approval.expires_at.isoformat(),
+        }
+
+    async def _validate_approval(
+        self,
+        request: ToolCallRequest,
+        spec: ToolSpec,
+        *,
+        tool_call_id: str,
+        policy_decision_id: str,
+    ) -> ToolObservation | None:
+        started_at = datetime.now(UTC)
+        if self._approval_store is None:
+            return _empty_observation(
+                request,
+                ToolObservationStatus.DENIED,
+                started_at,
+                tool_call_id=tool_call_id,
+                error={
+                    "code": "approval_store_unavailable",
+                    "message": "approval store is not configured",
+                },
+            )
+        try:
+            await self._approval_store.consume_granted_approval(
+                request.approval_id or "",
+                scope=_approval_scope(spec, request),
+            )
+        except ApprovalNotFound:
+            return _empty_observation(
+                request,
+                ToolObservationStatus.DENIED,
+                started_at,
+                tool_call_id=tool_call_id,
+                error={"code": "approval_not_found", "message": "approval not found"},
+            )
+        except ApprovalConflict as exc:
+            return _empty_observation(
+                request,
+                ToolObservationStatus.DENIED,
+                started_at,
+                tool_call_id=tool_call_id,
+                error={"code": exc.code, "message": str(exc)},
+            )
+        return None
 
     async def _execute_adapter(
         self,
@@ -359,6 +478,7 @@ def _empty_observation(
     tool_call_id: str | None = None,
     tool_name: str | None = None,
     error: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> ToolObservation:
     completed_at = datetime.now(UTC)
     return ToolObservation(
@@ -374,6 +494,7 @@ def _empty_observation(
         completed_at=completed_at,
         duration_ms=max(0, int((completed_at - started_at).total_seconds() * 1000)),
         error=error,
+        metadata=metadata or {},
     )
 
 
@@ -447,6 +568,43 @@ def _tool_event_payload(
     if error_code is not None:
         payload["error_code"] = error_code
     return payload
+
+
+def _approval_scope(spec: ToolSpec, request: ToolCallRequest) -> ApprovalScope:
+    return ApprovalScope(
+        capability=spec.capability,
+        risk_classes=spec.risk_classes,
+        tool_name=spec.name,
+        user_id=request.user_id,
+        request_id=request.request_id,
+        conversation_id=request.conversation_id,
+        step_id=request.step_id,
+        project_namespace=request.project_namespace,
+        working_directory=request.working_directory,
+        sensitivity=request.sensitivity,
+        permission_mode=request.permission_mode,
+        argument_keys=tuple(sorted(request.arguments)),
+        arguments_hash=_arguments_hash(request.arguments),
+    )
+
+
+def _approval_payload(spec: ToolSpec, request: ToolCallRequest) -> dict[str, Any]:
+    return {
+        "tool_name": spec.name,
+        "capability": spec.capability.value,
+        "risk_classes": sorted(risk.value for risk in spec.risk_classes),
+        "argument_keys": sorted(request.arguments),
+    }
+
+
+def _arguments_hash(arguments: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        arguments,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _safe_tool_name(tool_name: str) -> str:

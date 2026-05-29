@@ -12,6 +12,7 @@ from assistant_core.domain.tools import (
     ToolObservationStatus,
     ToolSpec,
 )
+from assistant_core.approvals.in_memory import InMemoryApprovalStore
 from assistant_core.events.in_memory import InMemoryEventLog
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.tools.builtin import calculator_tool
@@ -56,6 +57,7 @@ def _request(
     sensitivity: Sensitivity = Sensitivity.PROJECT,
     step_id: str | None = None,
     causation_event_id: str | None = None,
+    approval_id: str | None = None,
 ) -> ToolCallRequest:
     return ToolCallRequest(
         tool_name=tool_name,
@@ -68,19 +70,23 @@ def _request(
         sensitivity=sensitivity,
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
+        approval_id=approval_id,
     )
 
 
 def _gateway(
     *adapters,
     policy: RecordingPolicy | None = None,
+    event_log: InMemoryEventLog | None = None,
+    approval_store: InMemoryApprovalStore | None = None,
 ) -> tuple[ToolGateway, RecordingPolicy]:
     effective_policy = policy or RecordingPolicy()
     return (
         ToolGateway(
             registry=ToolRegistry(list(adapters) or [fake_echo_tool()]),
             policy=effective_policy,
-            event_log=InMemoryEventLog(),
+            event_log=event_log or InMemoryEventLog(),
+            approval_store=approval_store,
         ),
         effective_policy,
     )
@@ -347,6 +353,72 @@ def test_approval_required_returns_observation_without_adapter_execution() -> No
 
     assert observation.status == ToolObservationStatus.APPROVAL_REQUIRED
     assert observation.error["code"] == "approval_required"
+    assert adapter.call_count == 0
+
+
+def test_toolgateway_returns_approval_required_without_execution() -> None:
+    event_log = InMemoryEventLog()
+    approval_store = InMemoryApprovalStore(event_log=event_log)
+    adapter = FakeToolAdapter(fake_echo_tool().spec, response="executed")
+    gateway, _policy = _gateway(
+        adapter,
+        policy=RecordingPolicy(PolicyDecisionOutcome.APPROVAL_REQUIRED),
+        event_log=event_log,
+        approval_store=approval_store,
+    )
+
+    observation = asyncio.run(gateway.invoke(_request()))
+    events = asyncio.run(event_log.query(EventFilter(request_id="req-tool-1")))
+
+    assert observation.status == ToolObservationStatus.APPROVAL_REQUIRED
+    assert observation.metadata["approval_id"]
+    assert adapter.call_count == 0
+    assert EventType.APPROVAL_REQUIRED in [event.event_type for event in events]
+
+
+def test_toolgateway_executes_after_matching_granted_approval() -> None:
+    event_log = InMemoryEventLog()
+    approval_store = InMemoryApprovalStore(event_log=event_log)
+    adapter = FakeToolAdapter(fake_echo_tool().spec, response="executed")
+    gateway, _policy = _gateway(
+        adapter,
+        policy=RecordingPolicy(PolicyDecisionOutcome.APPROVAL_REQUIRED),
+        event_log=event_log,
+        approval_store=approval_store,
+    )
+
+    first = asyncio.run(gateway.invoke(_request()))
+    approval_id = first.metadata["approval_id"]
+    asyncio.run(approval_store.grant_approval(approval_id, actor_id="user-tool-1"))
+    second = asyncio.run(gateway.invoke(_request(approval_id=approval_id)))
+    events = asyncio.run(event_log.query(EventFilter(request_id="req-tool-1")))
+
+    assert second.status == ToolObservationStatus.COMPLETED
+    assert second.content == "executed"
+    assert adapter.call_count == 1
+    assert EventType.TOOL_CALL_APPROVED in [event.event_type for event in events]
+
+
+def test_toolgateway_rejects_expired_or_mismatched_approval() -> None:
+    event_log = InMemoryEventLog()
+    approval_store = InMemoryApprovalStore(event_log=event_log)
+    adapter = FakeToolAdapter(fake_echo_tool().spec, response="executed")
+    gateway, _policy = _gateway(
+        adapter,
+        policy=RecordingPolicy(PolicyDecisionOutcome.APPROVAL_REQUIRED),
+        event_log=event_log,
+        approval_store=approval_store,
+    )
+
+    first = asyncio.run(gateway.invoke(_request()))
+    approval_id = first.metadata["approval_id"]
+    asyncio.run(approval_store.grant_approval(approval_id, actor_id="user-tool-1"))
+    mismatched = asyncio.run(
+        gateway.invoke(_request(arguments={"message": "changed"}, approval_id=approval_id)),
+    )
+
+    assert mismatched.status == ToolObservationStatus.DENIED
+    assert mismatched.error["code"] == "approval_scope_mismatch"
     assert adapter.call_count == 0
 
 

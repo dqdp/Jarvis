@@ -35,6 +35,7 @@ async def _reset_database(database_url: str) -> None:
     engine = create_database_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(text("drop table if exists approvals cascade"))
             await connection.execute(text("drop table if exists memory_embeddings cascade"))
             await connection.execute(text("drop table if exists memory_candidates cascade"))
             await connection.execute(text("drop table if exists memories cascade"))
@@ -173,6 +174,7 @@ def test_migrations_apply_cleanly() -> None:
     _run_test_migrations(database_url)
 
     assert asyncio.run(_scalar(database_url, "select to_regclass('public.events')")) == "events"
+    assert asyncio.run(_scalar(database_url, "select to_regclass('public.approvals')")) == "approvals"
     assert asyncio.run(
         _scalar(
             database_url,

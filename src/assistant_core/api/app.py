@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from assistant_core.config.settings import Settings
+from assistant_core.domain.approvals import ApprovalConflict, ApprovalNotFound
 from assistant_core.domain.conversations import (
     CreateConversationCommand,
     ListConversationsQuery,
@@ -66,6 +67,10 @@ class MemoryCreateBody(_StrictBody):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ApprovalDecisionBody(_StrictBody):
+    reason: str | None = None
+
+
 def create_app(
     *,
     conversation_store,
@@ -73,6 +78,7 @@ def create_app(
     settings: Settings,
     runtime=None,
     event_log=None,
+    approval_store=None,
     lifespan=None,
 ) -> FastAPI:
     app = FastAPI(title="Jarvis Assistant Core", version="0.0.0", lifespan=lifespan)
@@ -82,6 +88,7 @@ def create_app(
             conversation_store=conversation_store,
             event_log=event_log,
             settings=settings,
+            approval_store=approval_store,
         )
         if runtime is not None and event_log is not None
         else None
@@ -94,6 +101,14 @@ def create_app(
     @app.exception_handler(MemoryStoreError)
     async def _memory_store_error(_request: Request, exc: MemoryStoreError):
         return _error_response(400, "invalid_request", str(exc))
+
+    @app.exception_handler(ApprovalNotFound)
+    async def _approval_not_found(_request: Request, exc: ApprovalNotFound):
+        return _error_response(404, "not_found", str(exc))
+
+    @app.exception_handler(ApprovalConflict)
+    async def _approval_conflict(_request: Request, exc: ApprovalConflict):
+        return _error_response(409, exc.code, str(exc))
 
     @app.exception_handler(ValueError)
     async def _value_error(_request: Request, exc: ValueError):
@@ -213,6 +228,57 @@ def create_app(
         cancelled = await execution_manager.cancel(request_record.request_id)
         return _json_response(202, _request_payload(cancelled))
 
+    @app.get("/v1/approvals/{approval_id}")
+    async def get_approval(approval_id: str):
+        if approval_store is None:
+            return _error_response(404, "not_found", "approval store is not configured")
+        await approval_store.expire_stale(now=datetime.now(UTC))
+        approval = await approval_store.get_approval(approval_id)
+        if approval is None:
+            raise ApprovalNotFound("approval not found")
+        _ensure_approval_owner(approval, settings.app.default_user_id)
+        return _approval_payload(approval)
+
+    @app.post("/v1/approvals/{approval_id}/grant")
+    async def grant_approval(
+        approval_id: str,
+        body: ApprovalDecisionBody | None = Body(default=None),
+    ):
+        if approval_store is None:
+            return _error_response(404, "not_found", "approval store is not configured")
+        payload = body or ApprovalDecisionBody()
+        await approval_store.expire_stale(now=datetime.now(UTC))
+        existing = await approval_store.get_approval(approval_id)
+        if existing is None:
+            raise ApprovalNotFound("approval not found")
+        _ensure_approval_owner(existing, settings.app.default_user_id)
+        approval = await approval_store.grant_approval(
+            approval_id,
+            actor_id=settings.app.default_user_id,
+            reason=payload.reason,
+        )
+        return _approval_payload(approval)
+
+    @app.post("/v1/approvals/{approval_id}/deny")
+    async def deny_approval(
+        approval_id: str,
+        body: ApprovalDecisionBody | None = Body(default=None),
+    ):
+        if approval_store is None:
+            return _error_response(404, "not_found", "approval store is not configured")
+        payload = body or ApprovalDecisionBody()
+        await approval_store.expire_stale(now=datetime.now(UTC))
+        existing = await approval_store.get_approval(approval_id)
+        if existing is None:
+            raise ApprovalNotFound("approval not found")
+        _ensure_approval_owner(existing, settings.app.default_user_id)
+        approval = await approval_store.deny_approval(
+            approval_id,
+            actor_id=settings.app.default_user_id,
+            reason=payload.reason,
+        )
+        return _approval_payload(approval)
+
     @app.post("/v1/memories")
     async def post_memory(body: MemoryCreateBody):
         sensitivity = body.sensitivity or _namespace_default_sensitivity(settings, body.namespace)
@@ -284,11 +350,20 @@ def _runtime_request_metadata(body: MessageCreateBody) -> dict[str, str]:
 
 
 class _RequestExecutionManager:
-    def __init__(self, *, runtime, conversation_store, event_log, settings: Settings) -> None:
+    def __init__(
+        self,
+        *,
+        runtime,
+        conversation_store,
+        event_log,
+        settings: Settings,
+        approval_store=None,
+    ) -> None:
         self._runtime = runtime
         self._conversation_store = conversation_store
         self._event_log = event_log
         self._settings = settings
+        self._approval_store = approval_store
         self._tasks: dict[str, asyncio.Task] = {}
         self._events: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         self._conditions: dict[str, asyncio.Condition] = {}
@@ -313,11 +388,20 @@ class _RequestExecutionManager:
             raise KeyError("request not found")
         if request_record.status in _TERMINAL_REQUEST_STATUSES:
             return request_record
-        cancelled = await self._mark_cancelled(request_record)
+        if self._approval_store is not None:
+            await self._approval_store.cancel_pending_for_request(
+                request_record.request_id,
+                actor_id=self._settings.app.default_user_id,
+                reason="request cancelled",
+            )
         task = self._tasks.get(request_id)
         if task is not None and not task.done():
             task.cancel()
             await asyncio.wait({task}, timeout=0.1)
+        refreshed = await self._conversation_store.get_assistant_request(request_id)
+        if refreshed is not None and refreshed.status in _TERMINAL_REQUEST_STATUSES:
+            return refreshed
+        cancelled = await self._mark_cancelled(request_record)
         return cancelled
 
     async def stream(self, request_id: str):
@@ -563,6 +647,11 @@ _STREAM_REPLAY_EVENT_TYPES = {
     EventType.REQUEST_PROCESSING_COMPLETED.value,
     EventType.REQUEST_PROCESSING_FAILED.value,
     EventType.REQUEST_PROCESSING_CANCELLED.value,
+    EventType.APPROVAL_REQUIRED.value,
+    EventType.APPROVAL_GRANTED.value,
+    EventType.APPROVAL_DENIED.value,
+    EventType.APPROVAL_EXPIRED.value,
+    EventType.APPROVAL_CANCELLED.value,
 }
 _PUBLIC_STREAM_FIELDS = {
     "token": ("request_id", "delta"),
@@ -592,6 +681,21 @@ _PUBLIC_STREAM_FIELDS = {
     ),
     EventType.REQUEST_PROCESSING_FAILED.value: ("request_id", "event_id", "error"),
     EventType.REQUEST_PROCESSING_CANCELLED.value: ("request_id", "event_id", "error"),
+    EventType.APPROVAL_REQUIRED.value: (
+        "request_id",
+        "event_id",
+        "approval_id",
+        "status",
+        "capability",
+        "risk_classes",
+        "tool_name",
+        "redacted_summary",
+        "expires_at",
+    ),
+    EventType.APPROVAL_GRANTED.value: ("request_id", "event_id", "approval_id", "status"),
+    EventType.APPROVAL_DENIED.value: ("request_id", "event_id", "approval_id", "status"),
+    EventType.APPROVAL_EXPIRED.value: ("request_id", "event_id", "approval_id", "status"),
+    EventType.APPROVAL_CANCELLED.value: ("request_id", "event_id", "approval_id", "status"),
 }
 
 
@@ -875,6 +979,44 @@ def _request_payload(request) -> dict[str, Any]:
             else {"code": request.error_code, "message": request.error_message}
         ),
     }
+
+
+def _approval_payload(approval) -> dict[str, Any]:
+    return {
+        "approval_id": approval.approval_id,
+        "status": approval.status.value,
+        "capability": approval.capability.value,
+        "risk_classes": sorted(risk.value for risk in approval.risk_classes),
+        "scope": {
+            "tool_name": approval.scope.tool_name,
+            "request_id": approval.scope.request_id,
+            "conversation_id": approval.scope.conversation_id,
+            "step_id": approval.scope.step_id,
+            "project_namespace": approval.scope.project_namespace,
+            "working_directory": _redacted_scope_value(approval.scope.working_directory),
+            "sensitivity": approval.scope.sensitivity.value,
+            "permission_mode": approval.scope.permission_mode,
+            "argument_keys": list(approval.scope.argument_keys),
+        },
+        "redacted_payload": approval.redacted_payload,
+        "created_at": approval.created_at,
+        "expires_at": approval.expires_at,
+        "granted_at": approval.granted_at,
+        "denied_at": approval.denied_at,
+        "cancelled_at": approval.cancelled_at,
+        "used_at": approval.used_at,
+    }
+
+
+def _ensure_approval_owner(approval, user_id: str) -> None:
+    if approval.requested_by != user_id:
+        raise ApprovalConflict("approval belongs to another user", code="approval_subject_mismatch")
+
+
+def _redacted_scope_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return "<redacted>"
 
 
 def _memory_payload(memory) -> dict[str, Any]:
