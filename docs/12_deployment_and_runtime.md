@@ -106,7 +106,8 @@ make cli ARGS='chat Ответь ровно одним словом: OK'
 
 Running `make cli` without `ARGS`, or `make cli ARGS='chat'`, opens an
 interactive terminal chat shell. Normal input is sent to the current
-conversation. Slash commands are handled client-side:
+conversation. Typing `/` in a TTY shows the available slash commands before
+submission. Slash commands are handled client-side:
 
 ```text
 /help
@@ -120,10 +121,9 @@ During streaming, Ctrl-C interrupts the local CLI and sends best-effort
 `POST /v1/requests/{request_id}/cancel` to the daemon. The local Ollama profile
 also caps chat output at 1024 tokens to bound runaway generations.
 
-On Unix TTY, the interactive shell uses `readline`, so Up/Down browse
-in-session input history. History is intentionally not persisted to disk by
-default to avoid storing raw prompts. `/memory add` payloads and `secret`
-sensitivity sessions are not added to readline history.
+On Unix TTY, Up/Down browse in-session input history. History is intentionally
+not persisted to disk by default to avoid storing raw prompts. `/memory add`
+payloads and `secret` sensitivity sessions are not added to input history.
 
 ## 6. Restart
 

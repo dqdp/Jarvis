@@ -144,14 +144,15 @@ embedding model is `embeddinggemma:latest`.
 Interactive CLI shell verification was added after the first CLI pass. Running
 `make cli` without `ARGS`, or `make cli ARGS='chat'`, opens a terminal chat
 session with `/help`, `/new`, `/memory add`, `/memory list` and `/exit`.
+Typing `/` in a TTY shows the available slash commands before submission.
 The CLI also cancels the server request on stream interruption, and the local
 Ollama dogfood profile now uses `qwen3.5:9b` with `max_output_tokens` capped at
 1024 to bound runaway generations.
 The Ollama adapter also sends repeat-penalty options and cuts off repeated-line
 loops before a local model can stream the same sentence until the token cap.
-The interactive shell uses Unix `readline` on TTY for Up/Down in-session input
-history without persisting raw prompts to disk. `/memory add` payloads and
-`secret` sensitivity sessions are excluded from readline history.
+The interactive shell supports Up/Down in-session input history without
+persisting raw prompts to disk. `/memory add` payloads and `secret` sensitivity
+sessions are excluded from input history.
 
 The final consistency pass also verifies that `DeterministicContextAssembler`
 includes assembled context sections in provider-neutral model messages,

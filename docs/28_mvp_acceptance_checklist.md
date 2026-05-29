@@ -135,9 +135,11 @@ pgvector remains tracked as an adapter-level follow-up, not an MVP blocker.
   verification through the HTTP API.
 - [x] CLI has an interactive terminal chat shell with conversation reset and
   manual memory commands.
+- [x] Typing `/` in a Unix TTY chat shell shows the available slash commands
+  before submission.
 - [x] CLI supports Unix TTY Up/Down in-session input history without persisted
   raw prompt history; `/memory add` payloads and `secret` sessions are excluded
-  from readline history.
+  from input history.
 
 ---
 

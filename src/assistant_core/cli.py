@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 import json
 import sys
 from dataclasses import dataclass
@@ -19,6 +20,24 @@ DEFAULT_SENSITIVITY = "project"
 REQUEST_TIMEOUT_SECONDS = 60.0
 STREAM_CONNECT_TIMEOUT_SECONDS = 5.0
 STREAM_READ_TIMEOUT_SECONDS = 180.0
+ARROW_UP = "\x1b[A"
+ARROW_DOWN = "\x1b[B"
+
+
+@dataclass(frozen=True)
+class SlashCommand:
+    usage: str
+    description: str
+
+
+SLASH_COMMANDS = (
+    SlashCommand("/help", "Show this help."),
+    SlashCommand("/new [title]", "Start a new conversation."),
+    SlashCommand("/memory add TEXT", "Save manual memory."),
+    SlashCommand("/memory list", "List manual memories."),
+    SlashCommand("/exit", "Quit."),
+    SlashCommand("/quit", "Quit."),
+)
 
 
 class JarvisClient(Protocol):
@@ -320,23 +339,115 @@ class InteractiveLineReader:
         return line
 
 
+class TerminalInteractiveLineReader:
+    def __init__(
+        self,
+        *,
+        stdin: TextIO,
+        stdout: TextIO,
+        should_add_history: Callable[[str], bool] | None = None,
+        raw_mode: bool = True,
+    ) -> None:
+        self._stdin = stdin
+        self._stdout = stdout
+        self._should_add_history = should_add_history or (lambda _line: True)
+        self._history: list[str] = []
+        self._raw_mode = raw_mode
+
+    def readline(self, prompt: str) -> str | None:
+        with _terminal_input_mode(self._stdin, enabled=self._raw_mode):
+            return self._readline(prompt)
+
+    def _readline(self, prompt: str) -> str | None:
+        buffer = ""
+        draft = ""
+        history_index = len(self._history)
+        slash_menu_shown = False
+
+        self._stdout.write(prompt)
+        self._stdout.flush()
+
+        while True:
+            char = self._stdin.read(1)
+            if char == "":
+                return buffer if buffer else None
+            if char in {"\n", "\r"}:
+                self._stdout.write("\n")
+                self._stdout.flush()
+                self._add_history(buffer)
+                return buffer
+            if char == "\x03":
+                raise KeyboardInterrupt
+            if char == "\x04":
+                if not buffer:
+                    self._stdout.write("\n")
+                    self._stdout.flush()
+                    return None
+                continue
+            if char in {"\x7f", "\b"}:
+                if buffer:
+                    buffer = buffer[:-1]
+                    self._redraw(prompt, buffer)
+                continue
+            if char == "\x1b":
+                sequence = char + self._stdin.read(2)
+                if sequence == ARROW_UP:
+                    if self._history and history_index > 0:
+                        if history_index == len(self._history):
+                            draft = buffer
+                        history_index -= 1
+                        buffer = self._history[history_index]
+                        self._redraw(prompt, buffer)
+                    continue
+                if sequence == ARROW_DOWN:
+                    if history_index < len(self._history):
+                        history_index += 1
+                        buffer = draft if history_index == len(self._history) else self._history[history_index]
+                        self._redraw(prompt, buffer)
+                    continue
+                continue
+
+            if history_index != len(self._history):
+                history_index = len(self._history)
+                draft = ""
+            buffer += char
+            self._stdout.write(char)
+            self._stdout.flush()
+            if buffer == "/" and not slash_menu_shown:
+                slash_menu_shown = True
+                self._stdout.write("\n")
+                write_slash_command_menu(self._stdout, prefix=buffer)
+                self._redraw(prompt, buffer)
+
+    def _redraw(self, prompt: str, text: str) -> None:
+        self._stdout.write(f"\r\x1b[2K{prompt}{text}")
+        self._stdout.flush()
+
+    def _add_history(self, line: str) -> None:
+        if line.strip() and self._should_add_history(line):
+            self._history.append(line)
+
+
 def create_interactive_line_reader(
     *,
     stdin: TextIO,
     stdout: TextIO,
     sensitivity: str = DEFAULT_SENSITIVITY,
-) -> InteractiveLineReader:
-    readline_module = _load_readline_module() if _is_tty(stdin, stdout) else None
-    input_func = input if readline_module is not None else None
+) -> InteractiveLineReader | TerminalInteractiveLineReader:
+    should_add_history = lambda line: _should_add_interactive_history(
+        line,
+        sensitivity=sensitivity,
+    )
+    if _is_tty(stdin, stdout):
+        return TerminalInteractiveLineReader(
+            stdin=stdin,
+            stdout=stdout,
+            should_add_history=should_add_history,
+        )
     return InteractiveLineReader(
         stdin=stdin,
         stdout=stdout,
-        input_func=input_func,
-        readline_module=readline_module,
-        should_add_history=lambda line: _should_add_interactive_history(
-            line,
-            sensitivity=sensitivity,
-        ),
+        should_add_history=should_add_history,
     )
 
 
@@ -359,7 +470,7 @@ async def run_interactive_chat(
 
     stdout.write("Jarvis CLI\n")
     stdout.write(f"Connected to {base_url}\n")
-    stdout.write("Type /help for commands, /exit to quit.\n\n")
+    stdout.write("Type / to show commands, /exit to quit.\n\n")
     stdout.write("Use Up/Down for in-session history; history is not saved to disk.\n\n")
 
     while True:
@@ -424,17 +535,31 @@ async def run_interactive_chat(
 
 
 def write_interactive_help(stdout: TextIO) -> None:
+    longest = max(len(command.usage) for command in SLASH_COMMANDS)
     stdout.write(
         "Commands:\n"
-        "  /help             Show this help.\n"
-        "  /new [title]      Start a new conversation.\n"
-        "  /memory add TEXT  Save manual memory.\n"
-        "  /memory list      List manual memories.\n"
-        "  /exit             Quit.\n"
+    )
+    for command in SLASH_COMMANDS:
+        stdout.write(f"  {command.usage:<{longest}}  {command.description}\n")
+    stdout.write(
         "\n"
         "Keys:\n"
         "  Up/Down           Browse in-session input history on Unix TTY.\n"
     )
+
+
+def write_slash_command_menu(stdout: TextIO, *, prefix: str) -> None:
+    matching_commands = [
+        command
+        for command in SLASH_COMMANDS
+        if command.usage.startswith(prefix) or prefix == "/"
+    ]
+    if not matching_commands:
+        return
+    longest = max(len(command.usage) for command in matching_commands)
+    stdout.write("commands>\n")
+    for command in matching_commands:
+        stdout.write(f"  {command.usage:<{longest}}  {command.description}\n")
 
 
 async def write_memory_list(*, client: JarvisClient, stdout: TextIO) -> None:
@@ -575,19 +700,37 @@ def _trim_readline_history(readline_module: ReadlineModule, target_length: int |
             return
 
 
+@contextmanager
+def _terminal_input_mode(stdin: TextIO, *, enabled: bool) -> Iterator[None]:
+    if not enabled:
+        yield
+        return
+    try:
+        file_descriptor = stdin.fileno()
+    except Exception:
+        yield
+        return
+
+    try:
+        import termios
+        import tty
+    except ImportError:
+        yield
+        return
+
+    original_attrs = termios.tcgetattr(file_descriptor)
+    try:
+        tty.setcbreak(file_descriptor)
+        yield
+    finally:
+        termios.tcsetattr(file_descriptor, termios.TCSADRAIN, original_attrs)
+
+
 def _is_tty(stdin: TextIO, stdout: TextIO) -> bool:
     return bool(
         getattr(stdin, "isatty", lambda: False)()
         and getattr(stdout, "isatty", lambda: False)()
     )
-
-
-def _load_readline_module() -> ReadlineModule | None:
-    try:
-        import readline
-    except ImportError:
-        return None
-    return readline
 
 
 def main(argv: list[str] | None = None) -> None:

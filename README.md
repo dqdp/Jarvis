@@ -268,7 +268,7 @@ Future architecture-changing changes still require the relevant ADR update.
   repeated-line loops before they run to the full token cap.
 - `make models-list`, `make models-pull` and `make cli ARGS='...'` were added
   for local operation.
-- `make cli` now opens an interactive chat shell with `/help`, `/new`,
-  `/memory add`, `/memory list` and `/exit`.
-- Interactive CLI input uses Unix `readline` on TTY, so Up/Down browse
-  in-session history without persisting raw prompts to disk.
+- `make cli` now opens an interactive chat shell; typing `/` in a TTY shows the
+  available slash commands before submission.
+- Interactive CLI input supports Up/Down in-session history without persisting
+  raw prompts to disk.

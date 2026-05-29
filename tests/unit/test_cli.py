@@ -121,6 +121,52 @@ class RemovableFakeReadline(FakeReadline):
         del self.history[index]
 
 
+def test_terminal_line_reader_shows_slash_commands_when_slash_is_typed() -> None:
+    stdin = StringIO("/help\n")
+    stdout = StringIO()
+    reader = cli.TerminalInteractiveLineReader(
+        stdin=stdin,
+        stdout=stdout,
+        raw_mode=False,
+    )
+
+    assert reader.readline("jarvis> ") == "/help"
+
+    output = stdout.getvalue()
+    assert "jarvis> /" in output
+    assert "commands>" in output
+    assert "/help" in output
+    assert "/memory list" in output
+    assert output.rstrip().endswith("jarvis> /help")
+
+
+def test_terminal_line_reader_uses_in_session_arrow_history() -> None:
+    stdin = StringIO("first message\n\x1b[A\n")
+    stdout = StringIO()
+    reader = cli.TerminalInteractiveLineReader(
+        stdin=stdin,
+        stdout=stdout,
+        raw_mode=False,
+    )
+
+    assert reader.readline("jarvis> ") == "first message"
+    assert reader.readline("jarvis> ") == "first message"
+
+
+def test_terminal_line_reader_filters_sensitive_history() -> None:
+    stdin = StringIO("/memory add private fact\n\x1b[Aplain\n")
+    stdout = StringIO()
+    reader = cli.TerminalInteractiveLineReader(
+        stdin=stdin,
+        stdout=stdout,
+        raw_mode=False,
+        should_add_history=lambda line: not line.startswith("/memory add"),
+    )
+
+    assert reader.readline("jarvis> ") == "/memory add private fact"
+    assert reader.readline("jarvis> ") == "plain"
+
+
 def test_cli_chat_creates_conversation_and_streams_tokens() -> None:
     stdout = StringIO()
     clients: list[FakeCliClient] = []
@@ -311,7 +357,7 @@ def test_cli_without_subcommand_starts_interactive_chat() -> None:
     assert exit_code == 0
     output = stdout.getvalue()
     assert "Jarvis CLI" in output
-    assert "Type /help for commands" in output
+    assert "Type / to show commands" in output
     assert "Use Up/Down for in-session history" in output
     assert "assistant> OK\n" in output
     assert output.rstrip().endswith("bye")
