@@ -1,8 +1,8 @@
 # Personal Assistant Runtime — Phase 1 MVP Documentation Package
 
-Версия: implemented baseline v22
+Версия: `mvp-0.1`
 Дата: 2026-05-29
-Статус: **Phase 1 Core Daemon MVP implemented and acceptance-reviewed in the local TDD harness**.
+Статус: **Phase 1 Core Daemon MVP complete. Post-MVP Alpha work is now active.**
 
 ## Назначение
 
@@ -65,6 +65,8 @@ docs/
   28_mvp_acceptance_checklist.md
   29_hardening_review_notes.md
   30_mvp_implementation_archive.md
+  31_mvp_release_notes.md
+  32_known_limitations.md
 ```
 
 ## ADR Index
@@ -209,9 +211,10 @@ docs/adr/
 
 ## Current package status
 
-This package has been used for the initial TDD implementation through Slice 19.
-The repository now contains the Phase 1 Core Daemon MVP contracts, adapters,
-runtime workflow, API surface, SSE stream and acceptance tests.
+The Phase 1 Core Daemon MVP is complete as `mvp-0.1`. The repository contains
+the MVP contracts, adapters, runtime workflow, API surface, SSE stream, local
+Ollama dogfood profile, CLI and acceptance tests. New work should be treated as
+post-MVP Alpha scope unless it fixes the MVP baseline.
 
 Implementation notes:
 

@@ -2,7 +2,8 @@
 
 ## Status
 
-Implemented MVP baseline, Slice 00 through Slice 19.
+Implemented MVP baseline, Slice 00 through Slice 19. Formal release:
+`mvp-0.1`.
 
 Date: 2026-05-29
 

@@ -6,9 +6,9 @@ This checklist defines what must be true before Phase 1 Core Daemon can be consi
 
 It is intentionally implementation-facing and should be used by coding agents during final acceptance review.
 
-Status: completed for the local TDD MVP baseline on 2026-05-29. The API adapter
-uses FastAPI. Switching the current PostgreSQL array retrieval adapter to
-pgvector remains tracked as an adapter-level follow-up, not an MVP blocker.
+Status: complete for `mvp-0.1` on 2026-05-29. The API adapter uses FastAPI.
+Switching the current PostgreSQL array retrieval adapter to pgvector remains
+tracked as an adapter-level follow-up, not an MVP blocker.
 
 ---
 
