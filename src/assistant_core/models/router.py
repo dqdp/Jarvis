@@ -66,7 +66,7 @@ class ModelRouter:
     async def chat(self, request: ChatModelRequest) -> ChatModelResponse:
         profile = self._profile(request.profile)
         await self._authorize(profile, request.sensitivity, request.request_id, request.conversation_id)
-        provider = self._provider(profile.provider)
+        provider = self._provider(profile.provider, profile_name=request.profile)
         invocation = await self._start_invocation(
             profile,
             request,
@@ -91,7 +91,7 @@ class ModelRouter:
     ) -> AsyncIterator[ModelStreamEvent]:
         profile = self._profile(request.profile)
         await self._authorize(profile, request.sensitivity, request.request_id, request.conversation_id)
-        provider = self._provider(profile.provider)
+        provider = self._provider(profile.provider, profile_name=request.profile)
         invocation = await self._start_invocation(
             profile,
             request,
@@ -126,7 +126,7 @@ class ModelRouter:
     ) -> StructuredModelResponse:
         profile = self._profile(request.profile)
         await self._authorize(profile, request.sensitivity, None, None)
-        provider = self._provider(profile.provider)
+        provider = self._provider(profile.provider, profile_name=request.profile)
         invocation = await self._start_invocation(
             profile,
             request,
@@ -166,7 +166,7 @@ class ModelRouter:
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         profile = self._profile(request.profile)
         await self._authorize(profile, request.sensitivity, None, None)
-        provider = self._provider(profile.provider)
+        provider = self._provider(profile.provider, profile_name=request.profile)
         invocation = await self._start_invocation(
             profile,
             request,
@@ -203,7 +203,9 @@ class ModelRouter:
             raise ModelProviderError(f"unknown model profile: {name}")
         return profile
 
-    def _provider(self, name: str) -> Any:
+    def _provider(self, name: str, *, profile_name: str | None = None) -> Any:
+        if profile_name is not None and profile_name in self._providers:
+            return self._providers[profile_name]
         provider = self._providers.get(name)
         if provider is None:
             raise ModelProviderError(f"provider is not registered: {name}")

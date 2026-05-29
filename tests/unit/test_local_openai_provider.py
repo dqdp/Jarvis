@@ -5,11 +5,12 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from assistant_core.config.settings import ConfigLoader
 from assistant_core.domain.messages import ChatMessage, MessageRole, TextPart
-from assistant_core.domain.models import ChatModelRequest
+from assistant_core.domain.models import ChatModelRequest, EmbeddingRequest
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.models.local_openai import LocalOpenAICompatibleProviderAdapter
 from assistant_core.models.router import ModelProviderError
@@ -63,6 +64,10 @@ class FakeOpenAITransport:
 
 def _profile():
     return ConfigLoader(Path("config")).load("test").model_profiles["local_main"]
+
+
+def _embedding_profile():
+    return ConfigLoader(Path("config")).load("test").model_profiles["local_embedding"]
 
 
 def _request() -> ChatModelRequest:
@@ -123,6 +128,61 @@ def test_local_openai_provider_stream_normalization() -> None:
     assert asyncio.run(scenario()) == ["A", "B"]
 
 
+def test_local_openai_provider_builds_embedding_request() -> None:
+    async def scenario():
+        transport = FakeOpenAITransport(
+            response={
+                "data": [
+                    {"embedding": [0.1, 0.2]},
+                    {"embedding": [0.3, 0.4]},
+                ],
+            },
+        )
+        adapter = LocalOpenAICompatibleProviderAdapter(
+            profile=_embedding_profile(),
+            transport=transport,
+        )
+        response = await adapter.embed(
+            EmbeddingRequest(
+                profile="local_embedding",
+                texts=["hello", "world"],
+                sensitivity=Sensitivity.PROJECT,
+            ),
+        )
+        return response, transport.requests[0]
+
+    response, recorded = asyncio.run(scenario())
+
+    assert response.vectors == [[0.1, 0.2], [0.3, 0.4]]
+    assert recorded["url"] == "http://inference-node:8001/embeddings"
+    assert recorded["timeout_seconds"] == 30
+    assert recorded["payload"] == {
+        "model": "qwen3-embedding-0.6b",
+        "input": ["hello", "world"],
+    }
+
+
+def test_local_openai_provider_rejects_embedding_cardinality_mismatch() -> None:
+    async def scenario() -> None:
+        transport = FakeOpenAITransport(
+            response={"data": [{"embedding": [0.1, 0.2]}]},
+        )
+        adapter = LocalOpenAICompatibleProviderAdapter(
+            profile=_embedding_profile(),
+            transport=transport,
+        )
+        await adapter.embed(
+            EmbeddingRequest(
+                profile="local_embedding",
+                texts=["hello", "world"],
+                sensitivity=Sensitivity.PROJECT,
+            ),
+        )
+
+    with pytest.raises(ModelProviderError, match="embedding count mismatch"):
+        asyncio.run(scenario())
+
+
 def test_local_openai_provider_timeout_maps_to_model_error() -> None:
     async def scenario() -> None:
         transport = FakeOpenAITransport(error=TimeoutError("timed out"))
@@ -130,4 +190,14 @@ def test_local_openai_provider_timeout_maps_to_model_error() -> None:
         await adapter.chat(_request())
 
     with pytest.raises(ModelProviderError):
+        asyncio.run(scenario())
+
+
+def test_local_openai_httpx_timeout_uses_timeout_error_message() -> None:
+    async def scenario() -> None:
+        transport = FakeOpenAITransport(error=httpx.ReadTimeout("read timed out"))
+        adapter = LocalOpenAICompatibleProviderAdapter(profile=_profile(), transport=transport)
+        await adapter.chat(_request())
+
+    with pytest.raises(ModelProviderError, match="local OpenAI-compatible provider timed out"):
         asyncio.run(scenario())

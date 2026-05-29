@@ -27,6 +27,20 @@ def test_test_config_validates() -> None:
     assert settings.app.environment == "test"
 
 
+def test_ollama_config_uses_local_models_and_endpoints() -> None:
+    settings = load_settings("ollama")
+
+    assert settings.model_profiles["local_main"].provider == "ollama"
+    assert settings.model_profiles["local_main"].model == "qwen3.5:4b"
+    assert settings.model_profiles["local_structured"].model == "qwen3.5:4b"
+    assert settings.model_profiles["local_embedding"].model == "embeddinggemma:latest"
+    assert settings.model_profiles["local_main"].max_output_tokens == 1024
+    assert settings.model_profiles["local_structured"].max_output_tokens == 1024
+    assert settings.model_profiles["local_main"].endpoint == "http://127.0.0.1:11434"
+    assert settings.model_profiles["local_embedding"].endpoint == "http://127.0.0.1:11434"
+    assert settings.model_profiles["cloud_reasoning"].enabled is False
+
+
 def test_env_override_nested_keys_apply_with_jarvis_prefix(monkeypatch) -> None:
     monkeypatch.setenv("JARVIS_API__PORT", "9090")
 

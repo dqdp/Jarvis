@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+import os
+from pathlib import Path
+from typing import Protocol
+
+from fastapi import FastAPI
+
+from assistant_core.api.app import create_app
+from assistant_core.config.settings import ConfigLoader, Settings
+from assistant_core.context_assembly.deterministic import DeterministicContextAssembler
+from assistant_core.models.embedding_port import ModelRouterEmbeddingPort
+from assistant_core.models.local_openai import (
+    HttpxOpenAICompatibleTransport,
+    LocalOpenAICompatibleProviderAdapter,
+    OpenAICompatibleTransport,
+)
+from assistant_core.models.ollama import (
+    HttpxOllamaTransport,
+    OllamaProviderAdapter,
+    OllamaTransport,
+)
+from assistant_core.models.router import ModelRouter
+from assistant_core.policy.engine import ConfigPolicyEngine
+from assistant_core.runtime.agent_runtime import AgentRuntime
+from assistant_core.storage.conversation_store import PostgresConversationStore
+from assistant_core.storage.database import create_database_engine
+from assistant_core.storage.event_log import PostgresEventLog
+from assistant_core.storage.memory_store import PostgresMemoryStore
+from assistant_core.storage.migrations import run_migrations
+from assistant_core.storage.model_invocations import PostgresModelInvocationRepository
+
+
+class AsyncDisposable(Protocol):
+    async def dispose(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class RuntimeApplication:
+    app: FastAPI
+    engine: AsyncDisposable
+    settings: Settings
+
+    async def dispose(self) -> None:
+        await self.engine.dispose()
+
+
+def create_runtime_app(
+    *,
+    database_url: str,
+    settings: Settings,
+    providers: dict[str, object] | None = None,
+    run_database_migrations: bool = False,
+) -> RuntimeApplication:
+    if run_database_migrations:
+        run_migrations(database_url)
+
+    engine = create_database_engine(database_url)
+    policy = ConfigPolicyEngine(settings)
+    conversation_store = PostgresConversationStore(engine)
+    event_log = PostgresEventLog(engine)
+    invocation_repository = PostgresModelInvocationRepository(engine)
+    router = ModelRouter(
+        settings=settings,
+        policy=policy,
+        invocation_repository=invocation_repository,
+        providers=providers if providers is not None else build_local_providers(settings),
+        event_log=event_log,
+    )
+    memory_store = PostgresMemoryStore(
+        engine=engine,
+        settings=settings,
+        policy=policy,
+        embedding_port=ModelRouterEmbeddingPort(router=router, profile="local_embedding"),
+    )
+    runtime = AgentRuntime(
+        conversation_store=conversation_store,
+        context_assembler=DeterministicContextAssembler(
+            conversation_store=conversation_store,
+            memory_read=memory_store,
+            event_log=event_log,
+            policy=policy,
+        ),
+        model_router=router,
+        event_log=event_log,
+        settings=settings,
+    )
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            await engine.dispose()
+
+    app = create_app(
+        conversation_store=conversation_store,
+        memory_store=memory_store,
+        settings=settings,
+        runtime=runtime,
+        event_log=event_log,
+        lifespan=lifespan,
+    )
+    runtime_app = RuntimeApplication(app=app, engine=engine, settings=settings)
+    app.state.runtime_application = runtime_app
+
+    return runtime_app
+
+
+def build_local_providers(
+    settings: Settings,
+    *,
+    transport: OpenAICompatibleTransport | None = None,
+    ollama_transport: OllamaTransport | None = None,
+) -> dict[str, object]:
+    local_transport = transport or HttpxOpenAICompatibleTransport()
+    local_ollama_transport = ollama_transport or HttpxOllamaTransport()
+    providers: dict[str, object] = {}
+    for profile_name, profile in settings.model_profiles.items():
+        if not profile.enabled or profile.cloud:
+            continue
+        if profile.provider in {"local_openai_compatible", "local_embedding"}:
+            providers[profile_name] = LocalOpenAICompatibleProviderAdapter(
+                profile=profile,
+                transport=local_transport,
+            )
+        elif profile.provider == "ollama":
+            providers[profile_name] = OllamaProviderAdapter(
+                profile=profile,
+                transport=local_ollama_transport,
+            )
+    return providers
+
+
+def create_asgi_app() -> FastAPI:
+    config_dir = Path(os.environ.get("JARVIS_CONFIG_DIR", "config"))
+    profile = os.environ.get("JARVIS_CONFIG_PROFILE", "default")
+    database_url = os.environ["DATABASE_URL"]
+    settings = ConfigLoader(config_dir).load(profile)
+    run_startup_migrations = _env_bool(os.environ.get("JARVIS_RUN_MIGRATIONS_ON_STARTUP"))
+    return create_runtime_app(
+        database_url=database_url,
+        settings=settings,
+        run_database_migrations=run_startup_migrations,
+    ).app
+
+
+def _env_bool(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}

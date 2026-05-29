@@ -18,7 +18,7 @@ from assistant_core.domain.models import (
 from assistant_core.models.router import ModelProviderError
 
 
-class OpenAICompatibleTransport(Protocol):
+class OllamaTransport(Protocol):
     async def post_json(
         self,
         url: str,
@@ -34,7 +34,7 @@ class OpenAICompatibleTransport(Protocol):
     ) -> AsyncIterator[dict[str, Any]]: ...
 
 
-class HttpxOpenAICompatibleTransport:
+class HttpxOllamaTransport:
     async def post_json(
         self,
         url: str,
@@ -56,20 +56,17 @@ class HttpxOpenAICompatibleTransport:
             async with client.stream("POST", url, json=payload) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
+                    if not line:
                         continue
-                    raw = line.removeprefix("data:").strip()
-                    if not raw or raw == "[DONE]":
-                        break
-                    yield json.loads(raw)
+                    yield json.loads(line)
 
 
-class LocalOpenAICompatibleProviderAdapter:
+class OllamaProviderAdapter:
     def __init__(
         self,
         *,
         profile: ModelProfileConfig,
-        transport: OpenAICompatibleTransport,
+        transport: OllamaTransport,
     ) -> None:
         self._profile = profile
         self._transport = transport
@@ -83,7 +80,7 @@ class LocalOpenAICompatibleProviderAdapter:
                 self._profile.timeout_seconds,
             )
         except (TimeoutError, httpx.TimeoutException) as exc:
-            raise ModelProviderError("local OpenAI-compatible provider timed out") from exc
+            raise ModelProviderError("Ollama provider timed out") from exc
         except ModelProviderError:
             raise
         except Exception as exc:
@@ -104,7 +101,7 @@ class LocalOpenAICompatibleProviderAdapter:
                 if token:
                     yield token
         except (TimeoutError, httpx.TimeoutException) as exc:
-            raise ModelProviderError("local OpenAI-compatible provider timed out") from exc
+            raise ModelProviderError("Ollama provider timed out") from exc
         except ModelProviderError:
             raise
         except Exception as exc:
@@ -119,7 +116,7 @@ class LocalOpenAICompatibleProviderAdapter:
                 self._profile.timeout_seconds,
             )
         except (TimeoutError, httpx.TimeoutException) as exc:
-            raise ModelProviderError("local OpenAI-compatible provider timed out") from exc
+            raise ModelProviderError("Ollama provider timed out") from exc
         except ModelProviderError:
             raise
         except Exception as exc:
@@ -134,12 +131,12 @@ class LocalOpenAICompatibleProviderAdapter:
         }
         try:
             response = await self._transport.post_json(
-                self._embedding_url(),
+                self._embed_url(),
                 payload,
                 self._profile.timeout_seconds,
             )
         except (TimeoutError, httpx.TimeoutException) as exc:
-            raise ModelProviderError("local OpenAI-compatible provider timed out") from exc
+            raise ModelProviderError("Ollama provider timed out") from exc
         except ModelProviderError:
             raise
         except Exception as exc:
@@ -160,22 +157,26 @@ class LocalOpenAICompatibleProviderAdapter:
             "model": self._profile.model,
             "messages": [_message_payload(message) for message in messages],
             "stream": stream,
+            "think": False,
         }
+        options: dict[str, Any] = {}
         if self._profile.temperature is not None:
-            payload["temperature"] = self._profile.temperature
+            options["temperature"] = self._profile.temperature
         if self._profile.max_output_tokens is not None:
-            payload["max_tokens"] = self._profile.max_output_tokens
+            options["num_predict"] = self._profile.max_output_tokens
+        if options:
+            payload["options"] = options
         return payload
 
     def _chat_url(self) -> str:
         if not self._profile.endpoint:
-            raise ModelProviderError("local OpenAI-compatible endpoint is not configured")
-        return f"{self._profile.endpoint.rstrip('/')}/chat/completions"
+            raise ModelProviderError("Ollama endpoint is not configured")
+        return f"{self._profile.endpoint.rstrip('/')}/api/chat"
 
-    def _embedding_url(self) -> str:
+    def _embed_url(self) -> str:
         if not self._profile.endpoint:
-            raise ModelProviderError("local OpenAI-compatible endpoint is not configured")
-        return f"{self._profile.endpoint.rstrip('/')}/embeddings"
+            raise ModelProviderError("Ollama endpoint is not configured")
+        return f"{self._profile.endpoint.rstrip('/')}/api/embed"
 
 
 def _message_payload(message: ChatMessage) -> dict[str, str]:
@@ -187,41 +188,43 @@ def _message_payload(message: ChatMessage) -> dict[str, str]:
 
 def _extract_chat_content(response: dict[str, Any]) -> str:
     try:
-        content = response["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ModelProviderError("invalid local OpenAI-compatible chat response") from exc
+        content = response["message"]["content"]
+    except (KeyError, TypeError) as exc:
+        raise ModelProviderError("invalid Ollama chat response") from exc
     if not isinstance(content, str):
-        raise ModelProviderError("invalid local OpenAI-compatible chat content")
+        raise ModelProviderError("invalid Ollama chat content")
     return content
 
 
 def _extract_stream_delta(chunk: dict[str, Any]) -> str | None:
-    try:
-        delta = chunk["choices"][0].get("delta", {})
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ModelProviderError("invalid local OpenAI-compatible stream chunk") from exc
-    content = delta.get("content")
+    if "error" in chunk:
+        error = chunk["error"]
+        if not isinstance(error, str):
+            raise ModelProviderError("invalid Ollama stream error")
+        raise ModelProviderError(error)
+
+    message = chunk.get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
     if content is None:
         return None
     if not isinstance(content, str):
-        raise ModelProviderError("invalid local OpenAI-compatible stream delta")
+        raise ModelProviderError("invalid Ollama stream delta")
     return content
 
 
 def _extract_embeddings(response: dict[str, Any]) -> list[list[float]]:
-    try:
-        items = response["data"]
-    except KeyError as exc:
-        raise ModelProviderError("invalid local OpenAI-compatible embedding response") from exc
-    if not isinstance(items, list):
-        raise ModelProviderError("invalid local OpenAI-compatible embedding response")
+    embeddings = response.get("embeddings")
+    if not isinstance(embeddings, list):
+        raise ModelProviderError("invalid Ollama embedding response")
 
     vectors: list[list[float]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            raise ModelProviderError("invalid local OpenAI-compatible embedding item")
-        vector = item.get("embedding")
-        if not isinstance(vector, list) or not all(isinstance(value, int | float) for value in vector):
-            raise ModelProviderError("invalid local OpenAI-compatible embedding vector")
+    for vector in embeddings:
+        if not isinstance(vector, list) or not all(
+            isinstance(value, int | float)
+            for value in vector
+        ):
+            raise ModelProviderError("invalid Ollama embedding vector")
         vectors.append([float(value) for value in vector])
     return vectors

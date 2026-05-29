@@ -1,0 +1,28 @@
+model_profiles:
+  local_main:
+    provider: ollama
+    model: qwen3.5:4b
+    endpoint: http://127.0.0.1:11434
+    timeout_seconds: 120
+    max_input_tokens: 12000
+    max_output_tokens: 1024
+    temperature: 0.3
+    supports_streaming: true
+
+  local_structured:
+    provider: ollama
+    model: qwen3.5:4b
+    endpoint: http://127.0.0.1:11434
+    timeout_seconds: 60
+    max_input_tokens: 8000
+    max_output_tokens: 1024
+    temperature: 0.0
+
+  local_embedding:
+    provider: ollama
+    model: embeddinggemma:latest
+    endpoint: http://127.0.0.1:11434
+    dimension: 768
+    timeout_seconds: 30
+    batch_size: 32
+    retry: 1

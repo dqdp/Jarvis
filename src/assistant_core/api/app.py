@@ -67,8 +67,9 @@ def create_app(
     settings: Settings,
     runtime=None,
     event_log=None,
+    lifespan=None,
 ) -> FastAPI:
-    app = FastAPI(title="Jarvis Assistant Core", version="0.0.0")
+    app = FastAPI(title="Jarvis Assistant Core", version="0.0.0", lifespan=lifespan)
     execution_manager = (
         _RequestExecutionManager(
             runtime=runtime,

@@ -18,6 +18,9 @@ dependencies = [
   "uvicorn>=0.32",
 ]
 
+[project.scripts]
+jarvis = "assistant_core.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

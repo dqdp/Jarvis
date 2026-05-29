@@ -1,9 +1,31 @@
 PYTHON ?= .venv/bin/python
 PYTEST ?= $(PYTHON) -m pytest
+UVICORN ?= $(PYTHON) -m uvicorn
+APP_PYTHONPATH ?= src
+DATABASE_URL ?= postgresql+asyncpg://jarvis:jarvis@127.0.0.1:5432/jarvis
+CONFIG_PROFILE ?= default
+OLLAMA_CHAT_MODEL ?= qwen3.5:4b
+OLLAMA_EMBED_MODEL ?= embeddinggemma:latest
 TEST_DATABASE_URL ?= postgresql+asyncpg://jarvis:jarvis@127.0.0.1:55432/jarvis_test
 TEST_COMPOSE ?= docker compose -f infra/compose/test-postgres.yml
 
-.PHONY: test test-unit test-contract test-integration test-golden test-architecture test-e2e test-db-up test-db-down
+.PHONY: migrate run cli models-list models-pull test test-unit test-contract test-integration test-golden test-architecture test-e2e test-db-up test-db-down
+
+migrate:
+	PYTHONPATH=$(APP_PYTHONPATH) DATABASE_URL=$(DATABASE_URL) $(PYTHON) -m assistant_core.storage.migrations
+
+run:
+	PYTHONPATH=$(APP_PYTHONPATH) DATABASE_URL=$(DATABASE_URL) JARVIS_CONFIG_PROFILE=$(CONFIG_PROFILE) $(UVICORN) assistant_core.app_factory:create_asgi_app --factory --host 127.0.0.1 --port 8080
+
+cli:
+	PYTHONPATH=$(APP_PYTHONPATH) $(PYTHON) -m assistant_core.cli $(ARGS)
+
+models-list:
+	ollama list
+
+models-pull:
+	ollama pull $(OLLAMA_CHAT_MODEL)
+	ollama pull $(OLLAMA_EMBED_MODEL)
 
 test: test-unit test-contract test-integration test-golden test-architecture test-e2e
 

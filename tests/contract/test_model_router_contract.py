@@ -55,6 +55,7 @@ async def _truncate_model_invocations(database_url: str) -> None:
 @pytest.fixture
 def model_repo():
     database_url = _database_url()
+    assert_test_database_url(database_url)
     run_migrations(database_url)
     asyncio.run(_truncate_model_invocations(database_url))
     engine = create_database_engine(database_url)
@@ -240,6 +241,25 @@ def test_chat_creates_model_invocation(model_repo) -> None:
     assert invocations[0].purpose == "chat"
     assert invocations[0].status == "completed"
     assert invocations[0].streaming is False
+
+
+def test_profile_specific_provider_overrides_shared_provider(model_repo) -> None:
+    async def scenario():
+        shared_provider = FakeModelProvider(chat_response="shared")
+        profile_provider = FakeModelProvider(chat_response="profile")
+        router = _router(
+            model_repo,
+            model_provider=shared_provider,
+            extra_providers={"local_main": profile_provider},
+        )
+        response = await router.chat(_chat_request(profile="local_main"))
+        return response, shared_provider, profile_provider
+
+    response, shared_provider, profile_provider = asyncio.run(scenario())
+
+    assert response.text == "profile"
+    assert shared_provider.chat_calls == 0
+    assert profile_provider.chat_calls == 1
 
 
 def test_stream_chat_emits_normalized_tokens(model_repo) -> None:
