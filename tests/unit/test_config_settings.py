@@ -164,6 +164,49 @@ def test_shell_read_limits_must_be_positive(monkeypatch, env_name: str, value: s
         load_settings("default")
 
 
+def test_system_diagnostics_capabilities_configured() -> None:
+    settings = load_settings("default")
+    diagnostics = settings.capabilities["tool.system.read"]
+
+    assert diagnostics["allowed_roots"] == [str(PROJECT_ROOT)]
+    assert diagnostics["max_output_bytes"] > 0
+    assert diagnostics["max_lines"] > 0
+    assert diagnostics["timeout_seconds"] > 0
+    assert set(diagnostics["enabled_families"]) == {
+        "process",
+        "resources",
+        "hardware",
+        "network",
+        "sensors",
+    }
+
+
+def test_system_diagnostics_allowed_roots_must_be_explicit(monkeypatch) -> None:
+    monkeypatch.setenv("JARVIS_CAPABILITIES__TOOL.SYSTEM.READ__ALLOWED_ROOTS", "[]")
+
+    with pytest.raises(ConfigError):
+        load_settings("default")
+
+
+@pytest.mark.parametrize(
+    ("env_name", "value"),
+    [
+        ("JARVIS_CAPABILITIES__TOOL.SYSTEM.READ__MAX_OUTPUT_BYTES", "0"),
+        ("JARVIS_CAPABILITIES__TOOL.SYSTEM.READ__MAX_LINES", "0"),
+        ("JARVIS_CAPABILITIES__TOOL.SYSTEM.READ__TIMEOUT_SECONDS", "0"),
+    ],
+)
+def test_system_diagnostics_limits_must_be_positive(
+    monkeypatch,
+    env_name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv(env_name, value)
+
+    with pytest.raises(ConfigError):
+        load_settings("default")
+
+
 def test_local_model_endpoint_must_not_be_external(monkeypatch) -> None:
     monkeypatch.setenv("JARVIS_MODEL_PROFILES__LOCAL_MAIN__ENDPOINT", "https://api.openai.com/v1")
 

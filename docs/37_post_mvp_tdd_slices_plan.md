@@ -1566,6 +1566,8 @@ test_allows_uptime
 test_allows_df
 test_allows_du_inside_workspace
 test_denies_du_outside_workspace
+test_denies_secret_like_cwd
+test_denies_du_secret_like_path
 test_allows_macos_top_snapshot
 test_allows_macos_vm_stat
 test_allows_macos_sysctl_selected_keys
@@ -1574,6 +1576,7 @@ test_allows_linux_free
 test_allows_linux_lscpu
 test_allows_linux_lshw
 test_allows_network_diagnostics_selected_flags
+test_denies_linux_ifconfig_to_match_platform_allowlist
 test_denies_interactive_diagnostics
 test_denies_kill_sudo_and_system_mutations
 test_denies_network_clients
@@ -1595,8 +1598,14 @@ test_system_diagnostics_tool_returns_bounded_stdout
 test_system_diagnostics_tool_truncates_large_output_with_metadata
 test_system_diagnostics_tool_times_out
 test_system_diagnostics_tool_redacts_process_command_line_secrets
+test_system_diagnostics_tool_redacts_auth_flags_and_key_values
 test_system_diagnostics_tool_redacts_network_sensitive_output
+test_system_diagnostics_tool_redacts_credential_urls
+test_sensor_command_stdout_returns_normalized_snapshot
+test_nvidia_smi_temperature_query_returns_sensor_snapshot
+test_powermetrics_permission_required_returns_unavailable_snapshot
 test_sensor_backend_unavailable_returns_unavailable_observation
+test_sensor_backend_snapshot_is_normalized
 test_system_diagnostics_tool_emits_audit_events
 test_system_diagnostics_tool_returns_denied_observation_without_execution
 ```
@@ -1701,7 +1710,7 @@ uptime
 df
 du inside allowlisted workspace roots
 macOS: top -l 1, vm_stat, sysctl selected keys, netstat, ifconfig, lsof
-Linux: top -b -n 1, free, lscpu, lshw, ss/netstat, ip addr, lsof, nvidia-smi
+Linux: top -b -n 1, free, lscpu, lshw, ss/netstat, ip addr, lsof
 ```
 
 Temperature and sensor diagnostics:
@@ -1710,7 +1719,7 @@ Temperature and sensor diagnostics:
 macOS: powermetrics --samplers smc -n 1 if available without sudo
 Linux: sensors
 Linux: read-only /sys/class/thermal/thermal_zone*/temp adapter
-Linux GPU: nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits
+Linux GPU temperature: nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits
 ```
 
 Sensor readings should normalize to Celsius when possible and include source

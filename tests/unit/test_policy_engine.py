@@ -24,6 +24,7 @@ from assistant_core.policy.engine import ConfigPolicyEngine
 
 
 pytestmark = pytest.mark.unit
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _engine() -> ConfigPolicyEngine:
@@ -294,6 +295,93 @@ def test_shell_destructive_is_denied() -> None:
     assert decision.code == "destructive_action_denied"
 
 
+def test_system_diagnostics_capabilities_are_declared() -> None:
+    assert {
+        Capability.TOOL_SYSTEM_READ_PROCESS.value,
+        Capability.TOOL_SYSTEM_READ_RESOURCES.value,
+        Capability.TOOL_SYSTEM_READ_HARDWARE.value,
+        Capability.TOOL_SYSTEM_READ_NETWORK.value,
+        Capability.TOOL_SYSTEM_READ_SENSORS.value,
+    } == {
+        "tool.system.read.process",
+        "tool.system.read.resources",
+        "tool.system.read.hardware",
+        "tool.system.read.network",
+        "tool.system.read.sensors",
+    }
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [
+        Capability.TOOL_SYSTEM_READ_PROCESS,
+        Capability.TOOL_SYSTEM_READ_RESOURCES,
+        Capability.TOOL_SYSTEM_READ_HARDWARE,
+        Capability.TOOL_SYSTEM_READ_NETWORK,
+        Capability.TOOL_SYSTEM_READ_SENSORS,
+    ],
+)
+def test_developer_local_allows_system_diagnostics(capability: Capability) -> None:
+    decision = asyncio.run(
+        _engine().evaluate_capability_request(
+            CapabilityPolicyRequest(
+                capability=capability,
+                risk_classes=frozenset({RiskClass.READ_ONLY}),
+                sensitivity=Sensitivity.INFRA,
+                working_directory=str(Path.cwd()),
+            ),
+        ),
+    )
+
+    assert decision.outcome == PolicyDecisionOutcome.ALLOW
+    assert decision.code == "allowed_system_diagnostics"
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [
+        Capability.TOOL_SYSTEM_READ_PROCESS,
+        Capability.TOOL_SYSTEM_READ_RESOURCES,
+        Capability.TOOL_SYSTEM_READ_HARDWARE,
+        Capability.TOOL_SYSTEM_READ_NETWORK,
+        Capability.TOOL_SYSTEM_READ_SENSORS,
+    ],
+)
+def test_locked_down_requires_approval_for_system_diagnostics(capability: Capability) -> None:
+    decision = asyncio.run(
+        _engine().evaluate_capability_request(
+            CapabilityPolicyRequest(
+                capability=capability,
+                risk_classes=frozenset({RiskClass.READ_ONLY}),
+                sensitivity=Sensitivity.INFRA,
+                permission_mode=PermissionMode.LOCKED_DOWN,
+                working_directory=str(Path.cwd()),
+            ),
+        ),
+    )
+
+    assert decision.outcome == PolicyDecisionOutcome.APPROVAL_REQUIRED
+    assert decision.code == "approval_required_for_system_diagnostics"
+
+
+def test_developer_local_denies_system_diagnostics_outside_allowed_workspace() -> None:
+    outside = Path.cwd().parent
+
+    decision = asyncio.run(
+        _engine().evaluate_capability_request(
+            CapabilityPolicyRequest(
+                capability=Capability.TOOL_SYSTEM_READ_PROCESS,
+                risk_classes=frozenset({RiskClass.READ_ONLY}),
+                sensitivity=Sensitivity.INFRA,
+                working_directory=str(outside),
+            ),
+        ),
+    )
+
+    assert decision.outcome == PolicyDecisionOutcome.DENY
+    assert decision.code == "outside_allowed_workspace"
+
+
 def test_locked_down_requires_approval_for_shell_read() -> None:
     decision = asyncio.run(
         _engine().evaluate_capability_request(
@@ -328,8 +416,8 @@ def test_developer_local_allows_shell_read_inside_allowed_workspace() -> None:
 
 
 def test_shell_read_allowed_roots_are_not_process_cwd_relative(monkeypatch) -> None:
-    monkeypatch.chdir(Path.cwd().parent)
-    engine = ConfigPolicyEngine(ConfigLoader(Path.cwd() / "Jarvis" / "config").load("test"))
+    monkeypatch.chdir(PROJECT_ROOT.parent)
+    engine = ConfigPolicyEngine(ConfigLoader(PROJECT_ROOT / "config").load("test"))
 
     decision = asyncio.run(
         engine.evaluate_capability_request(
@@ -344,7 +432,7 @@ def test_shell_read_allowed_roots_are_not_process_cwd_relative(monkeypatch) -> N
 
     assert decision.outcome == PolicyDecisionOutcome.DENY
     assert decision.code == "outside_allowed_workspace"
-    assert str(Path.cwd() / "Jarvis") in decision.scope["allowed_roots"]
+    assert str(PROJECT_ROOT) in decision.scope["allowed_roots"]
 
 
 def test_developer_local_denies_shell_read_outside_allowed_workspace() -> None:

@@ -164,6 +164,11 @@ permissions:
       content.retrieve: approval_required
       context.inspect: allow
       tool.shell.read: approval_required
+      tool.system.read.process: approval_required
+      tool.system.read.resources: approval_required
+      tool.system.read.hardware: approval_required
+      tool.system.read.network: approval_required
+      tool.system.read.sensors: approval_required
       tool.shell.write: deny
       tool.shell.network: deny
       tool.shell.destructive: deny
@@ -173,6 +178,11 @@ permissions:
       content.retrieve: allow
       context.inspect: allow
       tool.shell.read: allow
+      tool.system.read.process: allow
+      tool.system.read.resources: allow
+      tool.system.read.hardware: allow
+      tool.system.read.network: allow
+      tool.system.read.sensors: allow
       tool.shell.write: approval_required
       tool.shell.network: deny
       tool.shell.destructive: deny
@@ -183,6 +193,11 @@ permissions:
       content.retrieve: allow
       context.inspect: allow
       tool.shell.read: allow
+      tool.system.read.process: allow
+      tool.system.read.resources: allow
+      tool.system.read.hardware: allow
+      tool.system.read.network: allow
+      tool.system.read.sensors: allow
       tool.shell.write: approval_required
       task.schedule: approval_required
       task.background: approval_required
@@ -193,6 +208,12 @@ capabilities:
   tool.shell.read:
     allowed_roots: ["."]
     max_output_bytes: 20000
+    timeout_seconds: 10
+  tool.system.read:
+    allowed_roots: ["."]
+    enabled_families: [process, resources, hardware, network, sensors]
+    max_output_bytes: 20000
+    max_lines: 200
     timeout_seconds: 10
 
 privacy:

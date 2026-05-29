@@ -157,6 +157,10 @@ class ConfigPolicyEngine:
             root_decision = self._shell_read_scope_decision(request, mode, scope)
             if root_decision is not None:
                 return root_decision
+        if capability in _SYSTEM_DIAGNOSTICS_CAPABILITIES:
+            root_decision = self._system_diagnostics_scope_decision(request, mode, scope)
+            if root_decision is not None:
+                return root_decision
 
         if action is None:
             return _capability_deny(
@@ -278,6 +282,62 @@ class ConfigPolicyEngine:
             return _capability_approval(
                 "approval_required_for_shell_read",
                 "shell read requires approval in this permission mode",
+                request,
+                mode,
+                scope,
+            )
+        return None
+
+    def _system_diagnostics_scope_decision(
+        self,
+        request: CapabilityPolicyRequest,
+        mode: PermissionMode,
+        scope: dict[str, object],
+    ) -> PolicyDecision | None:
+        allowed_roots = _allowed_system_diagnostics_roots(self._settings)
+        scope["allowed_roots"] = [str(root) for root in allowed_roots]
+        if request.working_directory is None:
+            return _capability_deny(
+                "working_directory_required",
+                "working directory is required for system diagnostics",
+                request,
+                mode,
+                scope,
+            )
+        try:
+            working_directory = Path(request.working_directory).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            scope["working_directory"] = "<redacted>"
+            return _capability_deny(
+                "invalid_working_directory",
+                "working directory is invalid",
+                request,
+                mode,
+                scope,
+            )
+        if not working_directory.exists() or not working_directory.is_dir():
+            scope["working_directory"] = "<redacted>"
+            return _capability_deny(
+                "working_directory_not_found",
+                "working directory must be an existing directory",
+                request,
+                mode,
+                scope,
+            )
+        scope["working_directory"] = _stable_metadata_or_redacted(str(working_directory))
+        if not _is_inside_any_root(working_directory, allowed_roots):
+            return _capability_deny(
+                "outside_allowed_workspace",
+                "working directory is outside allowed workspace roots",
+                request,
+                mode,
+                scope,
+            )
+        action = self._configured_action(mode, request.capability)
+        if action == PolicyDecisionOutcome.APPROVAL_REQUIRED:
+            return _capability_approval(
+                "approval_required_for_system_diagnostics",
+                "system diagnostics requires approval in this permission mode",
                 request,
                 mode,
                 scope,
@@ -461,6 +521,12 @@ def _allowed_shell_roots(settings: Settings) -> list[Path]:
     return [Path(root).expanduser().resolve() for root in roots]
 
 
+def _allowed_system_diagnostics_roots(settings: Settings) -> list[Path]:
+    config = settings.capabilities["tool.system.read"]
+    roots = config["allowed_roots"]
+    return [Path(root).expanduser().resolve() for root in roots]
+
+
 def _is_inside_any_root(path: Path, roots: list[Path]) -> bool:
     return any(path == root or root in path.parents for root in roots)
 
@@ -470,6 +536,8 @@ def _allow_code(capability: Capability) -> str:
         return "allowed_safe_tool"
     if capability == Capability.TOOL_SHELL_READ:
         return "allowed_shell_read"
+    if capability in _SYSTEM_DIAGNOSTICS_CAPABILITIES:
+        return "allowed_system_diagnostics"
     if capability == Capability.CONTENT_RETRIEVE:
         return "allowed_content_retrieve"
     if capability == Capability.CONTEXT_INSPECT:
@@ -482,6 +550,8 @@ def _approval_code(capability: Capability) -> str:
         return "approval_required_for_write"
     if capability == Capability.TOOL_SHELL_READ:
         return "approval_required_for_shell_read"
+    if capability in _SYSTEM_DIAGNOSTICS_CAPABILITIES:
+        return "approval_required_for_system_diagnostics"
     return "approval_required"
 
 
@@ -493,6 +563,17 @@ def _deny_code(capability: Capability) -> str:
     if capability == Capability.TOOL_SHELL_NETWORK:
         return "network_denied_by_default"
     return "capability_denied"
+
+
+_SYSTEM_DIAGNOSTICS_CAPABILITIES = frozenset(
+    {
+        Capability.TOOL_SYSTEM_READ_PROCESS,
+        Capability.TOOL_SYSTEM_READ_RESOURCES,
+        Capability.TOOL_SYSTEM_READ_HARDWARE,
+        Capability.TOOL_SYSTEM_READ_NETWORK,
+        Capability.TOOL_SYSTEM_READ_SENSORS,
+    },
+)
 
 
 _SENSITIVE_KEY_MARKERS = (

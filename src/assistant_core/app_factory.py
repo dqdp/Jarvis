@@ -39,6 +39,7 @@ from assistant_core.tools.fake import fake_echo_tool, fake_fail_tool, fake_timeo
 from assistant_core.tools.gateway import ToolGateway
 from assistant_core.tools.registry import ToolRegistry
 from assistant_core.tools.shell_read import project_shell_read_tool_from_config
+from assistant_core.tools.system_diagnostics import system_diagnostics_tools_from_config
 
 
 class AsyncDisposable(Protocol):
@@ -101,6 +102,7 @@ def create_runtime_app(
                 calculator_tool(),
                 daemon_status_tool(),
                 project_shell_read_tool_from_config(settings.capabilities),
+                *system_diagnostics_tools_from_config(settings.capabilities),
             ],
         ),
         policy=policy,

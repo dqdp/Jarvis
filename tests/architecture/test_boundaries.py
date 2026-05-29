@@ -397,6 +397,20 @@ def test_tool_react_loop_does_not_import_shell_mcp_or_integration_adapters() -> 
     )
 
 
+def test_agent_runtime_does_not_import_diagnostics_adapters() -> None:
+    _assert_no_import_prefixes(
+        [SRC_ROOT / "runtime" / "agent_runtime.py"],
+        {"assistant_core.tools.system_diagnostics"},
+    )
+
+
+def test_loop_strategies_do_not_import_diagnostics_adapters() -> None:
+    _assert_no_import_prefixes(
+        _python_files("runtime/loops"),
+        {"assistant_core.tools.system_diagnostics"},
+    )
+
+
 def test_agent_runtime_does_not_import_subprocess() -> None:
     _assert_no_import_prefixes([SRC_ROOT / "runtime" / "agent_runtime.py"], {"subprocess"})
 
@@ -405,9 +419,12 @@ def test_loop_strategies_do_not_import_subprocess() -> None:
     _assert_no_import_prefixes(_python_files("runtime/loops"), {"subprocess"})
 
 
-def test_only_shell_adapter_executes_subprocess() -> None:
+def test_only_shell_or_diagnostics_adapter_executes_subprocess() -> None:
     offenders: list[str] = []
-    allowed = SRC_ROOT / "tools" / "shell_read.py"
+    allowed = {
+        SRC_ROOT / "tools" / "shell_read.py",
+        SRC_ROOT / "tools" / "system_diagnostics.py",
+    }
     for path in SRC_ROOT.rglob("*.py"):
         source = path.read_text(encoding="utf-8")
         imported = _imported_modules(path)
@@ -416,13 +433,23 @@ def test_only_shell_adapter_executes_subprocess() -> None:
             or "asyncio.subprocess" in imported
             or "create_subprocess_exec" in source
         )
-        if uses_subprocess and path != allowed:
+        if uses_subprocess and path not in allowed:
             offenders.append(str(path.relative_to(PROJECT_ROOT)))
 
     assert offenders == []
 
 
 def test_toolgateway_consults_policy_before_shell_execution() -> None:
+    gateway_path = SRC_ROOT / "tools" / "gateway.py"
+    source = gateway_path.read_text(encoding="utf-8")
+
+    policy_index = source.index("evaluate_capability_request")
+    execute_index = source.index("_execute_adapter(")
+
+    assert policy_index < execute_index
+
+
+def test_toolgateway_consults_policy_before_diagnostics_execution() -> None:
     gateway_path = SRC_ROOT / "tools" / "gateway.py"
     source = gateway_path.read_text(encoding="utf-8")
 

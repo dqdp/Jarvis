@@ -308,6 +308,118 @@ def test_runtime_app_factory_registers_project_shell_read_tool() -> None:
     assert EventType.TOOL_SHELL_COMPLETED in event_types
 
 
+def test_runtime_app_factory_registers_system_diagnostics_tool() -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        runtime_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            providers={
+                "local_structured": FakeModelProvider(
+                    structured_text_responses=[
+                        json.dumps(
+                            {
+                                "action": "tool_call",
+                                "tool_name": "tool.system.read.process",
+                                "arguments": {
+                                    "argv": ["kill", "123"],
+                                    "cwd": str(Path.cwd()),
+                                },
+                            },
+                        ),
+                    ],
+                ),
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        try:
+            conversation_store = PostgresConversationStore(runtime_app.engine)
+            event_log = PostgresEventLog(runtime_app.engine)
+            conversation = await conversation_store.create_conversation(
+                CreateConversationCommand(
+                    user_id=settings.app.default_user_id,
+                    title="factory system diagnostics tool loop",
+                    active_project_namespace="project.personal_assistant",
+                ),
+            )
+            submission = await conversation_store.submit_user_message(
+                MessageSubmissionCommand(
+                    conversation_id=conversation.conversation_id,
+                    client_message_id="client-factory-system-diagnostics-loop",
+                    content="use diagnostics",
+                    sensitivity=Sensitivity.INFRA,
+                ),
+            )
+            try:
+                await runtime_app.runtime.run_turn(
+                    RuntimeTurnCommand(
+                        request_id=submission.request.request_id,
+                        conversation_id=submission.request.conversation_id,
+                        user_message_id=submission.user_message.message_id,
+                        user_id=settings.app.default_user_id,
+                        user_input=submission.user_message.content,
+                        active_project_namespace=conversation.active_project_namespace,
+                        model_profile="local_structured",
+                        loop_strategy=LoopStrategyName.TOOL_REACT_LOOP.value,
+                        permission_mode="developer_local",
+                    ),
+                )
+            except RuntimeError:
+                pass
+            events = await event_log.query(EventFilter(request_id=submission.request.request_id))
+            return [event.event_type for event in events]
+        finally:
+            await runtime_app.dispose()
+
+    event_types = asyncio.run(scenario())
+
+    assert EventType.TOOL_SYSTEM_DIAGNOSTICS_DENIED in event_types
+
+
+def test_runtime_app_factory_registers_all_enabled_system_diagnostics_tools() -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        settings = ConfigLoader(Path("config")).load("test")
+        runtime_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            providers={
+                "local_structured": FakeModelProvider(),
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        try:
+            registry = runtime_app.runtime._loop_strategy_registry
+            tool_loop = registry.get(LoopStrategyName.TOOL_REACT_LOOP)
+            tool_gateway = tool_loop._tool_gateway
+            tools = await tool_gateway.list_tools()
+            return {tool.name for tool in tools}
+        finally:
+            await runtime_app.dispose()
+
+    tool_names = asyncio.run(scenario())
+
+    assert {
+        "tool.system.read.process",
+        "tool.system.read.resources",
+        "tool.system.read.hardware",
+        "tool.system.read.network",
+        "tool.system.read.sensors",
+    }.issubset(tool_names)
+
+
 def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
     database_url = _database_url()
     assert_test_database_url(database_url)

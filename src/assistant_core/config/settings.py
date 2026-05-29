@@ -352,6 +352,29 @@ def _validate(settings: Settings) -> None:
         if not isinstance(value, int) or value <= 0:
             raise ConfigError(f"capabilities.tool.shell.read.{key} must be a positive integer")
 
+    system_read = settings.capabilities.get("tool.system.read")
+    if not isinstance(system_read, dict):
+        raise ConfigError("capabilities.tool.system.read must be configured")
+    system_allowed_roots = system_read.get("allowed_roots")
+    if (
+        not isinstance(system_allowed_roots, list)
+        or not system_allowed_roots
+        or not all(isinstance(root, str) and root for root in system_allowed_roots)
+    ):
+        raise ConfigError("capabilities.tool.system.read.allowed_roots must be non-empty")
+    enabled_families = system_read.get("enabled_families")
+    valid_families = {"process", "resources", "hardware", "network", "sensors"}
+    if (
+        not isinstance(enabled_families, list)
+        or not enabled_families
+        or not all(isinstance(family, str) and family in valid_families for family in enabled_families)
+    ):
+        raise ConfigError("capabilities.tool.system.read.enabled_families must be valid")
+    for key in ("max_output_bytes", "max_lines", "timeout_seconds"):
+        value = system_read.get(key)
+        if not isinstance(value, int) or value <= 0:
+            raise ConfigError(f"capabilities.tool.system.read.{key} must be a positive integer")
+
 
 def _normalize_capabilities(
     capabilities: dict[str, Any],
@@ -369,6 +392,17 @@ def _normalize_capabilities(
         else:
             shell_read["allowed_roots"] = roots
         normalized["tool.shell.read"] = shell_read
+    system_read = dict(normalized.get("tool.system.read", {}))
+    if system_read:
+        roots = system_read.get("allowed_roots", [])
+        if isinstance(roots, list) and all(isinstance(root, str) for root in roots):
+            system_read["allowed_roots"] = [
+                _normalize_config_path(root, project_root)
+                for root in roots
+            ]
+        else:
+            system_read["allowed_roots"] = roots
+        normalized["tool.system.read"] = system_read
     return normalized
 
 

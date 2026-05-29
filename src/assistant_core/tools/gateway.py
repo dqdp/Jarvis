@@ -144,16 +144,17 @@ class ToolGateway:
             return observation
 
         request = _with_effective_working_directory(request, spec)
-        shell_classification = await self._classify_tool_if_supported(adapter, request)
-        if shell_classification is not None:
+        tool_classification = await self._classify_tool_if_supported(adapter, request)
+        classified_event_type = _classified_event_type(spec)
+        if tool_classification is not None and classified_event_type is not None:
             await self._record_event(
-                EventType.TOOL_SHELL_CLASSIFIED,
+                classified_event_type,
                 request,
                 tool_call_id=tool_call_id,
-                payload=_shell_event_payload(
+                payload=_audited_tool_event_payload(
                     spec,
-                    shell_classification.metadata,
-                    error_code=None if shell_classification.allowed else shell_classification.code,
+                    tool_classification.metadata,
+                    error_code=None if tool_classification.allowed else tool_classification.code,
                 ),
                 sensitivity=_tool_output_sensitivity(request, spec),
             )
@@ -187,14 +188,15 @@ class ToolGateway:
                 error={"code": decision.code, "message": decision.reason},
                 sensitivity=_tool_output_sensitivity(request, spec),
             )
-            if shell_classification is not None:
+            denied_event_type = _denied_event_type(spec)
+            if tool_classification is not None and denied_event_type is not None:
                 await self._record_event(
-                    EventType.TOOL_SHELL_DENIED,
+                    denied_event_type,
                     request,
                     tool_call_id=tool_call_id,
-                    payload=_shell_event_payload(
+                    payload=_audited_tool_event_payload(
                         spec,
-                        shell_classification.metadata,
+                        tool_classification.metadata,
                         policy_decision_id=decision.decision_id,
                         error_code=decision.code,
                         policy_outcome=decision.outcome.value,
@@ -218,33 +220,35 @@ class ToolGateway:
             )
             return observation
 
-        if shell_classification is not None and not shell_classification.allowed:
+        if tool_classification is not None and not tool_classification.allowed:
             observation = _empty_observation(
                 request,
                 ToolObservationStatus.DENIED,
                 started_at,
                 tool_call_id=tool_call_id,
                 error={
-                    "code": shell_classification.code,
-                    "message": shell_classification.reason,
+                    "code": tool_classification.code,
+                    "message": tool_classification.reason,
                 },
-                metadata=shell_classification.metadata,
+                metadata=tool_classification.metadata,
                 sensitivity=_tool_output_sensitivity(request, spec),
             )
-            await self._record_event(
-                EventType.TOOL_SHELL_DENIED,
-                request,
-                tool_call_id=tool_call_id,
-                payload=_shell_event_payload(
-                    spec,
-                    shell_classification.metadata,
-                    policy_decision_id=decision.decision_id,
-                    error_code=shell_classification.code,
-                    policy_outcome=decision.outcome.value,
-                    duration_ms=observation.duration_ms,
-                ),
-                sensitivity=_tool_output_sensitivity(request, spec),
-            )
+            denied_event_type = _denied_event_type(spec)
+            if denied_event_type is not None:
+                await self._record_event(
+                    denied_event_type,
+                    request,
+                    tool_call_id=tool_call_id,
+                    payload=_audited_tool_event_payload(
+                        spec,
+                        tool_classification.metadata,
+                        policy_decision_id=decision.decision_id,
+                        error_code=tool_classification.code,
+                        policy_outcome=decision.outcome.value,
+                        duration_ms=observation.duration_ms,
+                    ),
+                    sensitivity=_tool_output_sensitivity(request, spec),
+                )
             await self._record_event(
                 EventType.TOOL_CALL_DENIED,
                 request,
@@ -252,7 +256,7 @@ class ToolGateway:
                 payload=_tool_event_payload(
                     spec,
                     policy_decision_id=decision.decision_id,
-                    error_code=shell_classification.code,
+                    error_code=tool_classification.code,
                 ),
             )
             await self._record_observation(
@@ -300,9 +304,9 @@ class ToolGateway:
                 tool_call_id,
                 started_at,
                 policy_decision_id=decision.decision_id,
-                shell_metadata=(
-                    shell_classification.metadata
-                    if shell_classification is not None
+                tool_metadata=(
+                    tool_classification.metadata
+                    if tool_classification is not None
                     else None
                 ),
                 policy_outcome=decision.outcome.value,
@@ -343,8 +347,8 @@ class ToolGateway:
             tool_call_id,
             started_at,
             policy_decision_id=decision.decision_id,
-            shell_metadata=(
-                shell_classification.metadata if shell_classification is not None else None
+            tool_metadata=(
+                tool_classification.metadata if tool_classification is not None else None
             ),
             policy_outcome=decision.outcome.value,
         )
@@ -445,20 +449,21 @@ class ToolGateway:
         tool_call_id: str,
         started_at: datetime,
         policy_decision_id: str,
-        shell_metadata: dict[str, Any] | None = None,
+        tool_metadata: dict[str, Any] | None = None,
         policy_outcome: str | None = None,
     ) -> ToolObservation:
         timeout_seconds = _effective_timeout(request, adapter.spec)
         max_output_bytes = _effective_max_output(request, adapter.spec)
         try:
-            if shell_metadata is not None:
+            started_event_type = _started_event_type(adapter.spec)
+            if tool_metadata is not None and started_event_type is not None:
                 await self._record_event(
-                    EventType.TOOL_SHELL_STARTED,
+                    started_event_type,
                     request,
                     tool_call_id=tool_call_id,
-                    payload=_shell_event_payload(
+                    payload=_audited_tool_event_payload(
                         adapter.spec,
-                        shell_metadata,
+                        tool_metadata,
                         policy_decision_id=policy_decision_id,
                         policy_outcome=policy_outcome,
                     ),
@@ -469,7 +474,7 @@ class ToolGateway:
                 timeout=timeout_seconds,
             )
         except ToolExecutionDenied as exc:
-            metadata = shell_metadata or exc.metadata
+            metadata = tool_metadata or exc.metadata
             observation = _empty_observation(
                 request,
                 ToolObservationStatus.DENIED,
@@ -479,12 +484,13 @@ class ToolGateway:
                 metadata=metadata,
                 sensitivity=_tool_output_sensitivity(request, adapter.spec),
             )
-            if _is_shell_spec(adapter.spec):
+            denied_event_type = _denied_event_type(adapter.spec)
+            if denied_event_type is not None:
                 await self._record_event(
-                    EventType.TOOL_SHELL_DENIED,
+                    denied_event_type,
                     request,
                     tool_call_id=tool_call_id,
-                    payload=_shell_event_payload(
+                    payload=_audited_tool_event_payload(
                         adapter.spec,
                         metadata,
                         policy_decision_id=policy_decision_id,
@@ -528,14 +534,15 @@ class ToolGateway:
                     policy_decision_id=policy_decision_id,
                 ),
             )
-            if _is_shell_spec(adapter.spec):
+            timeout_event_type = _timeout_event_type(adapter.spec)
+            if timeout_event_type is not None:
                 await self._record_event(
-                    EventType.TOOL_SHELL_TIMEOUT,
+                    timeout_event_type,
                     request,
                     tool_call_id=tool_call_id,
-                    payload=_shell_event_payload(
+                    payload=_audited_tool_event_payload(
                         adapter.spec,
-                        shell_metadata or {},
+                        tool_metadata or {},
                         policy_decision_id=policy_decision_id,
                         error_code="tool_timeout",
                         policy_outcome=policy_outcome,
@@ -568,14 +575,15 @@ class ToolGateway:
                     error_code="tool_failed",
                 ),
             )
-            if _is_shell_spec(adapter.spec):
+            failed_event_type = _failed_event_type(adapter.spec)
+            if failed_event_type is not None:
                 await self._record_event(
-                    EventType.TOOL_SHELL_FAILED,
+                    failed_event_type,
                     request,
                     tool_call_id=tool_call_id,
-                    payload=_shell_event_payload(
+                    payload=_audited_tool_event_payload(
                         adapter.spec,
-                        shell_metadata or {},
+                        tool_metadata or {},
                         policy_decision_id=policy_decision_id,
                         error_code="tool_failed",
                         policy_outcome=policy_outcome,
@@ -608,15 +616,16 @@ class ToolGateway:
                 "output_bytes": observation.output_bytes,
             },
         )
-        if _is_shell_spec(adapter.spec):
+        completed_event_type = _completed_event_type(adapter.spec)
+        if completed_event_type is not None:
             await self._record_event(
-                EventType.TOOL_SHELL_COMPLETED,
+                completed_event_type,
                 request,
                 tool_call_id=tool_call_id,
-                payload=_shell_event_payload(
+                payload=_audited_tool_event_payload(
                     adapter.spec,
                     {
-                        **(shell_metadata or {}),
+                        **(tool_metadata or {}),
                         **observation.metadata,
                     },
                     policy_decision_id=policy_decision_id,
@@ -626,15 +635,35 @@ class ToolGateway:
                 ),
                 sensitivity=_tool_output_sensitivity(request, adapter.spec),
             )
-            if observation.truncated:
+            if _is_system_diagnostics_spec(adapter.spec) and observation.metadata.get("unavailable") is True:
                 await self._record_event(
-                    EventType.TOOL_SHELL_OUTPUT_TRUNCATED,
+                    EventType.TOOL_SYSTEM_DIAGNOSTICS_UNAVAILABLE,
                     request,
                     tool_call_id=tool_call_id,
-                    payload=_shell_event_payload(
+                    payload=_audited_tool_event_payload(
                         adapter.spec,
                         {
-                            **(shell_metadata or {}),
+                            **(tool_metadata or {}),
+                            **observation.metadata,
+                        },
+                        policy_decision_id=policy_decision_id,
+                        policy_outcome=policy_outcome,
+                        observation=observation,
+                        duration_ms=observation.duration_ms,
+                    ),
+                    sensitivity=_tool_output_sensitivity(request, adapter.spec),
+                )
+            if observation.truncated:
+                output_truncated_event_type = _output_truncated_event_type(adapter.spec)
+                assert output_truncated_event_type is not None
+                await self._record_event(
+                    output_truncated_event_type,
+                    request,
+                    tool_call_id=tool_call_id,
+                    payload=_audited_tool_event_payload(
+                        adapter.spec,
+                        {
+                            **(tool_metadata or {}),
                             **observation.metadata,
                         },
                         policy_decision_id=policy_decision_id,
@@ -830,9 +859,9 @@ def _tool_event_payload(
     return payload
 
 
-def _shell_event_payload(
+def _audited_tool_event_payload(
     spec: ToolSpec,
-    shell_metadata: dict[str, Any],
+    tool_metadata: dict[str, Any],
     *,
     policy_decision_id: str | None = None,
     error_code: str | None = None,
@@ -842,17 +871,20 @@ def _shell_event_payload(
 ) -> dict[str, Any]:
     safe_metadata = {
         key: value
-        for key, value in shell_metadata.items()
+        for key, value in tool_metadata.items()
         if key
         in {
             "argv",
             "cwd",
             "exit_code",
             "family",
+            "platform",
             "raw_stderr_bytes",
             "raw_stdout_bytes",
+            "source",
             "stderr_truncated",
             "stdout_truncated",
+            "unavailable",
         }
     }
     payload: dict[str, Any] = {
@@ -880,6 +912,8 @@ def _tool_output_sensitivity(request: ToolCallRequest, spec: ToolSpec) -> Sensit
 def _tool_output_sensitivity_floor(spec: ToolSpec) -> Sensitivity:
     if spec.capability == Capability.TOOL_SHELL_READ:
         return Sensitivity.PROJECT
+    if spec.capability in _SYSTEM_DIAGNOSTICS_CAPABILITIES:
+        return Sensitivity.INFRA
     return Sensitivity.PUBLIC
 
 
@@ -891,11 +925,85 @@ def _is_shell_spec(spec: ToolSpec) -> bool:
     return spec.capability == Capability.TOOL_SHELL_READ
 
 
+def _is_system_diagnostics_spec(spec: ToolSpec) -> bool:
+    return spec.capability in _SYSTEM_DIAGNOSTICS_CAPABILITIES
+
+
+def _classified_event_type(spec: ToolSpec) -> EventType | None:
+    if _is_shell_spec(spec):
+        return EventType.TOOL_SHELL_CLASSIFIED
+    if _is_system_diagnostics_spec(spec):
+        return EventType.TOOL_SYSTEM_DIAGNOSTICS_CLASSIFIED
+    return None
+
+
+def _denied_event_type(spec: ToolSpec) -> EventType | None:
+    if _is_shell_spec(spec):
+        return EventType.TOOL_SHELL_DENIED
+    if _is_system_diagnostics_spec(spec):
+        return EventType.TOOL_SYSTEM_DIAGNOSTICS_DENIED
+    return None
+
+
+def _started_event_type(spec: ToolSpec) -> EventType | None:
+    if _is_shell_spec(spec):
+        return EventType.TOOL_SHELL_STARTED
+    if _is_system_diagnostics_spec(spec):
+        return EventType.TOOL_SYSTEM_DIAGNOSTICS_STARTED
+    return None
+
+
+def _completed_event_type(spec: ToolSpec) -> EventType | None:
+    if _is_shell_spec(spec):
+        return EventType.TOOL_SHELL_COMPLETED
+    if _is_system_diagnostics_spec(spec):
+        return EventType.TOOL_SYSTEM_DIAGNOSTICS_COMPLETED
+    return None
+
+
+def _failed_event_type(spec: ToolSpec) -> EventType | None:
+    if _is_shell_spec(spec):
+        return EventType.TOOL_SHELL_FAILED
+    if _is_system_diagnostics_spec(spec):
+        return EventType.TOOL_SYSTEM_DIAGNOSTICS_FAILED
+    return None
+
+
+def _timeout_event_type(spec: ToolSpec) -> EventType | None:
+    if _is_shell_spec(spec):
+        return EventType.TOOL_SHELL_TIMEOUT
+    if _is_system_diagnostics_spec(spec):
+        return EventType.TOOL_SYSTEM_DIAGNOSTICS_TIMEOUT
+    return None
+
+
+def _output_truncated_event_type(spec: ToolSpec) -> EventType | None:
+    if _is_shell_spec(spec):
+        return EventType.TOOL_SHELL_OUTPUT_TRUNCATED
+    if _is_system_diagnostics_spec(spec):
+        return EventType.TOOL_SYSTEM_DIAGNOSTICS_OUTPUT_TRUNCATED
+    return None
+
+
+_SYSTEM_DIAGNOSTICS_CAPABILITIES = frozenset(
+    {
+        Capability.TOOL_SYSTEM_READ_PROCESS,
+        Capability.TOOL_SYSTEM_READ_RESOURCES,
+        Capability.TOOL_SYSTEM_READ_HARDWARE,
+        Capability.TOOL_SYSTEM_READ_NETWORK,
+        Capability.TOOL_SYSTEM_READ_SENSORS,
+    },
+)
+
+
 def _with_effective_working_directory(
     request: ToolCallRequest,
     spec: ToolSpec,
 ) -> ToolCallRequest:
-    if request.working_directory is not None or spec.capability != Capability.TOOL_SHELL_READ:
+    if request.working_directory is not None or spec.capability not in {
+        Capability.TOOL_SHELL_READ,
+        *_SYSTEM_DIAGNOSTICS_CAPABILITIES,
+    }:
         return request
     cwd = request.arguments.get("cwd")
     if isinstance(cwd, str) and cwd:

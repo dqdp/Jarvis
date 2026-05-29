@@ -187,7 +187,6 @@ ss selected read-only flags
 netstat selected read-only flags
 ip addr
 lsof selected read-only flags
-nvidia-smi
 ```
 
 Temperature and sensor diagnostics:
@@ -196,7 +195,7 @@ Temperature and sensor diagnostics:
 macOS: powermetrics --samplers smc -n 1 when available without sudo
 Linux: sensors
 Linux: read-only /sys/class/thermal/thermal_zone*/temp adapter
-Linux GPU: nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits
+Linux GPU temperature: nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits
 ```
 
 Sensor diagnostics are one-shot snapshots. They must not poll indefinitely,
@@ -368,6 +367,14 @@ tool.shell.completed
 tool.shell.failed
 tool.shell.timeout
 tool.shell.output_truncated
+tool.system.diagnostics.classified
+tool.system.diagnostics.denied
+tool.system.diagnostics.started
+tool.system.diagnostics.completed
+tool.system.diagnostics.failed
+tool.system.diagnostics.timeout
+tool.system.diagnostics.output_truncated
+tool.system.diagnostics.unavailable
 ```
 
 Event payloads must include:
@@ -392,6 +399,11 @@ JSON rather than returning raw replacement text under a JSON content type.
 Shell observations and shell-specific event envelopes are at least
 `project` sensitivity even when the user turn that initiated the command is
 `public`, because command output and working directories are project-scoped.
+
+System diagnostics observations and diagnostics-specific event envelopes are at
+least `infra` sensitivity even when the initiating user turn is lower
+sensitivity, because process, network, resource and sensor state describe local
+infrastructure.
 
 ## Testing requirements
 
@@ -427,6 +439,8 @@ allowed network diagnostics with redaction
 allowed temperature sensor snapshot
 temperature readings normalized to Celsius when possible
 missing sensor backend returns unavailable without failing the whole flow
+process and network credential URLs are redacted before model context
+secret-like diagnostics cwd/path arguments are denied
 sudo or privilege-required sensor command is denied
 sensor write paths are denied
 long-running sensor polling is denied
@@ -443,8 +457,8 @@ Architecture tests must ensure:
 ```text
 AgentRuntime does not import subprocess
 LoopStrategy implementations do not import subprocess
-only shell adapters execute subprocess
-ToolGateway consults PolicyPort before shell execution
+only shell or diagnostics adapters execute subprocess
+ToolGateway consults PolicyPort before shell or diagnostics execution
 ```
 
 CI must use fake shell/diagnostics adapters where host state would make tests
