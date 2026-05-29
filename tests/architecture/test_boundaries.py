@@ -263,7 +263,11 @@ def test_no_shell_adapter_package_required_for_pm01() -> None:
 
 def test_runtime_does_not_import_tool_or_shell_adapters() -> None:
     _assert_no_import_prefixes(
-        _python_files("runtime"),
+        [
+            path
+            for path in _python_files("runtime")
+            if path.name != "tool_react.py"
+        ],
         {
             "assistant_core.toolgateway",
             "assistant_core.tools",
@@ -355,5 +359,36 @@ def test_memory_augmented_answer_loop_does_not_import_toolgateway() -> None:
         {
             "assistant_core.tools",
             "assistant_core.ports.tools",
+        },
+    )
+
+
+def test_tool_react_loop_uses_toolgateway_port_not_adapters() -> None:
+    loop_path = SRC_ROOT / "runtime" / "loops" / "tool_react.py"
+    assert loop_path.is_file()
+    imported = _imported_modules(loop_path)
+
+    assert "assistant_core.ports.tools" in imported
+    _assert_no_import_prefixes(
+        [loop_path],
+        {
+            "assistant_core.tools.fake",
+            "assistant_core.tools.builtin",
+            "assistant_core.tools.gateway",
+            "assistant_core.tools.registry",
+        },
+    )
+
+
+def test_tool_react_loop_does_not_import_shell_mcp_or_integration_adapters() -> None:
+    loop_path = SRC_ROOT / "runtime" / "loops" / "tool_react.py"
+    assert loop_path.is_file()
+    _assert_no_import_prefixes(
+        [loop_path],
+        {
+            "assistant_core.tools.shell",
+            "assistant_core.mcp",
+            "assistant_core.integrations",
+            "subprocess",
         },
     )

@@ -24,6 +24,7 @@ from assistant_core.domain.conversations import (
 )
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
 from assistant_core.domain.memory import ArchiveMemoryCommand, CreateMemoryCommand, MemoryType
+from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.ports.conversation_store import (
@@ -48,6 +49,9 @@ class MessageCreateBody(_StrictBody):
     client_message_id: str = Field(min_length=1)
     content: str = Field(min_length=1)
     sensitivity: Sensitivity = Sensitivity.PERSONAL
+    model_profile: str | None = Field(default=None, min_length=1)
+    loop_strategy: str | None = Field(default=None, min_length=1)
+    permission_mode: PermissionMode | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -154,6 +158,7 @@ def create_app(
                 content=body.content,
                 sensitivity=body.sensitivity,
                 metadata=body.metadata,
+                request_metadata=_runtime_request_metadata(body),
             ),
         )
         if execution_manager is not None:
@@ -267,6 +272,17 @@ async def _archive_memory(memory_store, *, memory_id: str, reason: str):
     return _memory_lifecycle_payload(memory)
 
 
+def _runtime_request_metadata(body: MessageCreateBody) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    if body.model_profile is not None:
+        metadata["model_profile"] = body.model_profile
+    if body.loop_strategy is not None:
+        metadata["loop_strategy"] = body.loop_strategy
+    if body.permission_mode is not None:
+        metadata["permission_mode"] = body.permission_mode.value
+    return metadata
+
+
 class _RequestExecutionManager:
     def __init__(self, *, runtime, conversation_store, event_log, settings: Settings) -> None:
         self._runtime = runtime
@@ -331,7 +347,7 @@ class _RequestExecutionManager:
                     async for item in _event_log_stream(self._event_log, request_record):
                         yield item
                 elif not _has_terminal_event(buffered[:index]):
-                    yield _terminal_sse(request_record)
+                    yield await _terminal_sse_from_log(self._event_log, request_record)
                 return
 
             task = self._tasks.get(request_id)
@@ -421,6 +437,9 @@ class _RequestExecutionManager:
             user_input=user_message.content,
             active_project_namespace=conversation.active_project_namespace,
             current_message_sensitivity=user_message.sensitivity,
+            model_profile=request_record.metadata.get("model_profile", "local_main"),
+            loop_strategy=request_record.metadata.get("loop_strategy", "memory_augmented_answer"),
+            permission_mode=request_record.metadata.get("permission_mode"),
         )
 
     async def _mark_cancelled(self, request_record):
@@ -652,6 +671,13 @@ async def _event_log_stream(event_log, request_record):
 
 async def _terminal_event_stream(request_record):
     yield _terminal_sse(request_record)
+
+
+async def _terminal_sse_from_log(event_log, request_record) -> str:
+    for event in reversed(await event_log.query(EventFilter(request_id=request_record.request_id))):
+        if event.event_type.value in _TERMINAL_EVENT_TYPES:
+            return _event_sse(event)
+    return _terminal_sse(request_record)
 
 
 def _terminal_sse(request_record) -> str:

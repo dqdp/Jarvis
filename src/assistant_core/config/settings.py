@@ -112,6 +112,8 @@ class RuntimeBudgetConfig:
     allow_cloud: bool
     allow_tools: bool
     allow_autonomous_memory_write: bool
+    max_steps: int = 1
+    max_consecutive_failures: int = 1
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ from assistant_core.domain.loops import (
     LoopStrategyName,
     UnknownLoopStrategy,
 )
+from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.ports.context_assembler import ContextAssemblerPort
 from assistant_core.ports.conversation_store import ConversationStorePort
@@ -29,6 +30,7 @@ class RuntimeTurnCommand:
     current_message_sensitivity: Sensitivity = Sensitivity.PROJECT
     model_profile: str = "local_main"
     loop_strategy: str = LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value
+    permission_mode: PermissionMode | str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,4 +109,5 @@ class AgentRuntime:
             strategy_name=strategy_name,
             budget=LoopBudget.from_runtime_budget(budget_config),
             correlation_id=command.request_id,
+            permission_mode=command.permission_mode,
         )

@@ -31,6 +31,9 @@ class StructuredModelRequest:
     messages: list[ChatMessage]
     schema: dict[str, Any]
     sensitivity: Sensitivity
+    request_id: str | None = None
+    conversation_id: str | None = None
+    context_manifest_id: str | None = None
 
 
 @dataclass(frozen=True)

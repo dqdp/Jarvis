@@ -125,6 +125,19 @@ runtime_budgets:
     allow_cloud: false
     allow_tools: false
     allow_autonomous_memory_write: false
+  tool_react_loop:
+    max_steps: 4
+    max_model_calls: 4
+    max_tool_calls: 2
+    max_wall_time_seconds: 60
+    max_context_assembly_seconds: 10
+    max_memory_retrieval_seconds: 5
+    max_model_call_seconds: 60
+    max_output_tokens: 2048
+    max_consecutive_failures: 1
+    allow_cloud: false
+    allow_tools: true
+    allow_autonomous_memory_write: false
 
 policy:
   cloud_models_enabled: false

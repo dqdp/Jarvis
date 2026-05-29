@@ -78,6 +78,7 @@ class ToolCallRequest:
     request_id: str | None = None
     conversation_id: str | None = None
     correlation_id: str | None = None
+    causation_event_id: str | None = None
     step_id: str | None = None
     user_id: str | None = None
     project_namespace: str | None = None

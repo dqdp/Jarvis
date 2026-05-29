@@ -343,6 +343,32 @@ def test_client_message_id_conflict_different_content(store) -> None:
         asyncio.run(scenario())
 
 
+def test_client_message_id_conflict_different_request_metadata(store) -> None:
+    async def scenario():
+        conversation = await _conversation(store)
+        await store.submit_user_message(
+            MessageSubmissionCommand(
+                conversation_id=conversation.conversation_id,
+                client_message_id="client-conflict-metadata",
+                content="same content",
+                sensitivity=Sensitivity.PROJECT,
+                request_metadata={"loop_strategy": "memory_augmented_answer"},
+            ),
+        )
+        await store.submit_user_message(
+            MessageSubmissionCommand(
+                conversation_id=conversation.conversation_id,
+                client_message_id="client-conflict-metadata",
+                content="same content",
+                sensitivity=Sensitivity.PROJECT,
+                request_metadata={"loop_strategy": "tool_react_loop"},
+            ),
+        )
+
+    with pytest.raises(ClientMessageIdConflict):
+        asyncio.run(scenario())
+
+
 def test_client_message_id_is_copied_to_event_idempotency_key(store) -> None:
     async def scenario():
         conversation = await _conversation(store)

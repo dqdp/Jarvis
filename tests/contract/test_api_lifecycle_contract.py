@@ -479,6 +479,40 @@ def test_conflicting_client_message_id_returns_409(app_parts) -> None:
     assert payload["error"]["code"] == "conflict"
 
 
+def test_conflicting_client_message_id_with_different_runtime_options_returns_409(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        path = f"/v1/conversations/{conversation['conversation_id']}/messages"
+        await _request(
+            app_parts,
+            "POST",
+            path,
+            {
+                "client_message_id": "client-conflict-runtime-options",
+                "content": "same",
+                "sensitivity": "project",
+                "loop_strategy": "memory_augmented_answer",
+            },
+        )
+        return await _request(
+            app_parts,
+            "POST",
+            path,
+            {
+                "client_message_id": "client-conflict-runtime-options",
+                "content": "same",
+                "sensitivity": "project",
+                "loop_strategy": "tool_react_loop",
+                "model_profile": "local_structured",
+            },
+        )
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 409
+    assert payload["error"]["code"] == "conflict"
+
+
 def test_standard_error_format(app_parts) -> None:
     status, payload = asyncio.run(_request(app_parts, "GET", "/v1/requests/not-a-uuid"))
 

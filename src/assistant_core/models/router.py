@@ -125,7 +125,12 @@ class ModelRouter:
         request: StructuredModelRequest,
     ) -> StructuredModelResponse:
         profile = self._profile(request.profile)
-        await self._authorize(profile, request.sensitivity, None, None)
+        await self._authorize(
+            profile,
+            request.sensitivity,
+            request.request_id,
+            request.conversation_id,
+        )
         provider = self._provider(profile.provider, profile_name=request.profile)
         invocation = await self._start_invocation(
             profile,

@@ -23,6 +23,7 @@ from assistant_core.domain.loops import LoopExecutionResult, LoopStatus, LoopStr
 from assistant_core.domain.memory import MemoryQuery
 from assistant_core.domain.messages import ChatMessage, MessageRole, TextPart
 from assistant_core.domain.models import ChatModelResponse
+from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.events.in_memory import InMemoryEventLog
@@ -392,6 +393,7 @@ def test_agent_runtime_delegates_to_strategy_registry() -> None:
                 user_id="user-1",
                 user_input="hello",
                 active_project_namespace="project.personal_assistant",
+                permission_mode=PermissionMode.LOCKED_DOWN,
             ),
         )
         return result, registry, strategy
@@ -401,6 +403,7 @@ def test_agent_runtime_delegates_to_strategy_registry() -> None:
     assert result.response_text == "delegated answer"
     assert registry.selected_names == [LoopStrategyName.MEMORY_AUGMENTED_ANSWER]
     assert strategy.requests[0].budget.max_tool_calls == 0
+    assert strategy.requests[0].permission_mode == PermissionMode.LOCKED_DOWN
 
 
 def test_strategy_uses_context_assembler_model_router_policy_and_stores_ports(runtime_parts) -> None:

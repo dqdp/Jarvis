@@ -25,12 +25,18 @@ from assistant_core.models.ollama import (
 from assistant_core.models.router import ModelRouter
 from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.runtime.agent_runtime import AgentRuntime
+from assistant_core.runtime.loops import LoopStrategyRegistry, MemoryAugmentedAnswerLoop
+from assistant_core.runtime.loops.tool_react import ToolReactLoop
 from assistant_core.storage.conversation_store import PostgresConversationStore
 from assistant_core.storage.database import create_database_engine
 from assistant_core.storage.event_log import PostgresEventLog
 from assistant_core.storage.memory_store import PostgresMemoryStore
 from assistant_core.storage.migrations import run_migrations
 from assistant_core.storage.model_invocations import PostgresModelInvocationRepository
+from assistant_core.tools.builtin import calculator_tool, daemon_status_tool, datetime_now_tool
+from assistant_core.tools.fake import fake_echo_tool, fake_fail_tool, fake_timeout_tool
+from assistant_core.tools.gateway import ToolGateway
+from assistant_core.tools.registry import ToolRegistry
 
 
 class AsyncDisposable(Protocol):
@@ -42,6 +48,7 @@ class RuntimeApplication:
     app: FastAPI
     engine: AsyncDisposable
     settings: Settings
+    runtime: AgentRuntime
 
     async def dispose(self) -> None:
         await self.engine.dispose()
@@ -58,9 +65,9 @@ def create_runtime_app(
         run_migrations(database_url)
 
     engine = create_database_engine(database_url)
-    policy = ConfigPolicyEngine(settings)
     conversation_store = PostgresConversationStore(engine)
     event_log = PostgresEventLog(engine)
+    policy = ConfigPolicyEngine(settings, event_log=event_log)
     invocation_repository = PostgresModelInvocationRepository(engine)
     router = ModelRouter(
         settings=settings,
@@ -75,17 +82,49 @@ def create_runtime_app(
         policy=policy,
         embedding_port=ModelRouterEmbeddingPort(router=router, profile="local_embedding"),
     )
+    context_assembler = DeterministicContextAssembler(
+        conversation_store=conversation_store,
+        memory_read=memory_store,
+        event_log=event_log,
+        policy=policy,
+    )
+    tool_gateway = ToolGateway(
+        registry=ToolRegistry(
+            [
+                fake_echo_tool(),
+                fake_fail_tool(),
+                fake_timeout_tool(),
+                datetime_now_tool(),
+                calculator_tool(),
+                daemon_status_tool(),
+            ],
+        ),
+        policy=policy,
+        event_log=event_log,
+    )
     runtime = AgentRuntime(
         conversation_store=conversation_store,
-        context_assembler=DeterministicContextAssembler(
-            conversation_store=conversation_store,
-            memory_read=memory_store,
-            event_log=event_log,
-            policy=policy,
-        ),
+        context_assembler=context_assembler,
         model_router=router,
         event_log=event_log,
         settings=settings,
+        loop_strategy_registry=LoopStrategyRegistry(
+            [
+                MemoryAugmentedAnswerLoop(
+                    conversation_store=conversation_store,
+                    context_assembler=context_assembler,
+                    model_router=router,
+                    event_log=event_log,
+                ),
+                ToolReactLoop(
+                    conversation_store=conversation_store,
+                    context_assembler=context_assembler,
+                    model_router=router,
+                    event_log=event_log,
+                    tool_gateway=tool_gateway,
+                ),
+            ],
+        ),
     )
 
     @asynccontextmanager
@@ -103,7 +142,7 @@ def create_runtime_app(
         event_log=event_log,
         lifespan=lifespan,
     )
-    runtime_app = RuntimeApplication(app=app, engine=engine, settings=settings)
+    runtime_app = RuntimeApplication(app=app, engine=engine, settings=settings, runtime=runtime)
     app.state.runtime_application = runtime_app
 
     return runtime_app

@@ -270,6 +270,7 @@ class PostgresConversationStore:
                         connection,
                         existing_message,
                         content_hash,
+                        command.request_metadata,
                     )
 
                 request_id = command.request_id or _new_id()
@@ -293,6 +294,7 @@ class PostgresConversationStore:
                         conversation_id=command.conversation_id,
                         user_message_id=message.message_id,
                         client_message_id=command.client_message_id,
+                        metadata=command.request_metadata,
                     ),
                 )
                 event = await insert_event(
@@ -313,6 +315,7 @@ class PostgresConversationStore:
                     connection,
                     existing_message,
                     _content_hash(command.content),
+                    command.request_metadata,
                 )
 
         return MessageSubmission(user_message=message, request=request)
@@ -454,6 +457,7 @@ async def _idempotent_submission_from_existing(
     connection: AsyncConnection,
     existing_message: Mapping[str, Any],
     content_hash: str,
+    request_metadata: dict[str, Any],
 ) -> MessageSubmission:
     message = _row_to_message(existing_message)
     if message.content_hash != content_hash:
@@ -461,6 +465,10 @@ async def _idempotent_submission_from_existing(
             "client_message_id was already used with different content",
         )
     request = await _select_request_by_user_message(connection, message.message_id)
+    if dict(request["metadata"]) != request_metadata:
+        raise ClientMessageIdConflict(
+            "client_message_id was already used with different runtime options",
+        )
     return MessageSubmission(
         user_message=message,
         request=_row_to_request(request),

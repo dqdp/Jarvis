@@ -5,11 +5,14 @@ from enum import StrEnum
 from typing import Any
 
 from assistant_core.domain.conversations import ConversationMessage
+from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
+from assistant_core.domain.tools import ToolObservation, ToolObservationStatus
 
 
 class LoopStrategyName(StrEnum):
     MEMORY_AUGMENTED_ANSWER = "memory_augmented_answer"
+    TOOL_REACT_LOOP = "tool_react_loop"
 
 
 class LoopStatus(StrEnum):
@@ -18,8 +21,17 @@ class LoopStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class LoopStepStatus(StrEnum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class UnknownLoopStrategy(ValueError):
     """Raised when a requested loop strategy is not registered."""
+
+
+class ToolProposalParseError(ValueError):
+    """Raised when model output cannot be converted into a safe tool proposal."""
 
 
 @dataclass(frozen=True)
@@ -35,13 +47,13 @@ class LoopBudget:
     @classmethod
     def from_runtime_budget(cls, budget: Any) -> LoopBudget:
         return cls(
-            max_steps=1,
+            max_steps=getattr(budget, "max_steps", 1),
             max_model_calls=budget.max_model_calls,
             max_tool_calls=budget.max_tool_calls,
             max_wall_time_seconds=budget.max_wall_time_seconds,
             max_context_assembly_seconds=budget.max_context_assembly_seconds,
             max_model_call_seconds=budget.max_model_call_seconds,
-            max_consecutive_failures=1,
+            max_consecutive_failures=getattr(budget, "max_consecutive_failures", 1),
         )
 
     def __post_init__(self) -> None:
@@ -67,6 +79,7 @@ class LoopExecutionRequest:
     strategy_name: LoopStrategyName | str
     budget: LoopBudget
     correlation_id: str | None = None
+    permission_mode: PermissionMode | str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -89,6 +102,11 @@ class LoopExecutionRequest:
             raise ValueError("budget is required")
         if not isinstance(self.current_message_sensitivity, Sensitivity):
             raise ValueError("current_message_sensitivity is required")
+        if self.permission_mode is not None and not isinstance(
+            self.permission_mode,
+            PermissionMode,
+        ):
+            object.__setattr__(self, "permission_mode", PermissionMode(self.permission_mode))
 
 
 @dataclass(frozen=True)
@@ -100,6 +118,7 @@ class LoopExecutionResult:
     used_tool_calls: int
     context_manifest_refs: tuple[str, ...]
     degraded: bool
+    tool_observation_refs: tuple[ToolObservationRef, ...] = ()
     error: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
@@ -113,6 +132,85 @@ class LoopExecutionResult:
 class LoopStreamEvent:
     event_type: str
     data: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ToolProposal:
+    action: str
+    tool_name: str | None = None
+    arguments: dict[str, Any] = field(default_factory=dict)
+    final_answer: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.action not in {"tool_call", "final_answer"}:
+            raise ToolProposalParseError("unsupported tool proposal action")
+        if self.action == "tool_call":
+            if not self.tool_name:
+                raise ToolProposalParseError("tool_call requires tool_name")
+            if not isinstance(self.arguments, dict):
+                raise ToolProposalParseError("tool_call arguments must be a mapping")
+        if self.action == "final_answer" and not self.final_answer:
+            raise ToolProposalParseError("final_answer requires final_answer")
+
+
+@dataclass(frozen=True)
+class ToolObservationRef:
+    tool_call_id: str
+    tool_name: str
+    status: ToolObservationStatus | str
+    content: str
+    content_type: str
+    sensitivity: Sensitivity
+    truncated: bool = False
+    error_code: str | None = None
+
+    @classmethod
+    def from_observation(cls, observation: ToolObservation) -> ToolObservationRef:
+        return cls(
+            tool_call_id=observation.tool_call_id,
+            tool_name=observation.tool_name,
+            status=observation.status,
+            content=observation.content,
+            content_type=observation.content_type,
+            sensitivity=observation.sensitivity,
+            truncated=observation.truncated,
+            error_code=observation.error["code"] if observation.error else None,
+        )
+
+    def __post_init__(self) -> None:
+        if not self.tool_call_id:
+            raise ValueError("tool_call_id is required")
+        if not self.tool_name:
+            raise ValueError("tool_name is required")
+        if not isinstance(self.status, ToolObservationStatus):
+            object.__setattr__(self, "status", ToolObservationStatus(self.status))
+        if not isinstance(self.sensitivity, Sensitivity):
+            object.__setattr__(self, "sensitivity", Sensitivity(self.sensitivity))
+
+
+@dataclass(frozen=True)
+class LoopStep:
+    step_id: str
+    step_index: int
+    status: LoopStepStatus
+    action: str
+    tool_call_id: str | None = None
+    error_code: str | None = None
+
+
+def parse_tool_proposal(value: dict[str, Any]) -> ToolProposal:
+    if not isinstance(value, dict):
+        raise ToolProposalParseError("tool proposal must be a mapping")
+    action = value.get("action")
+    if action == "final_answer":
+        return ToolProposal(action="final_answer", final_answer=value.get("final_answer"))
+    if action == "tool_call":
+        return ToolProposal(
+            action="tool_call",
+            tool_name=value.get("tool_name"),
+            arguments=value.get("arguments", {}),
+        )
+    raise ToolProposalParseError("unsupported tool proposal action")
 
 
 def _require_positive(name: str, value: int) -> None:

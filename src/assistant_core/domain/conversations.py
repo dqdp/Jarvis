@@ -124,6 +124,7 @@ class MessageSubmissionCommand:
     message_id: str | None = None
     request_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    request_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

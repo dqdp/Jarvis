@@ -11,7 +11,15 @@ import pytest
 from sqlalchemy import text
 
 from assistant_core.config.settings import ConfigLoader
+from assistant_core.domain.conversations import CreateConversationCommand, MessageSubmissionCommand
+from assistant_core.domain.events import EventType
+from assistant_core.domain.loops import LoopStrategyName
+from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.models.fake_provider import FakeEmbeddingProvider, FakeModelProvider
+from assistant_core.ports.event_log import EventFilter
+from assistant_core.runtime.agent_runtime import RuntimeTurnCommand
+from assistant_core.storage.conversation_store import PostgresConversationStore
+from assistant_core.storage.event_log import PostgresEventLog
 from assistant_core.storage.database import assert_test_database_url, create_database_engine
 from assistant_core.storage.migrations import run_migrations
 
@@ -56,6 +64,18 @@ def _sse_events(raw: str) -> list[str]:
         for block in raw.strip().split("\n\n")
         if block
     ]
+
+
+def _sse_event_payloads(raw: str) -> list[tuple[str, dict[str, Any]]]:
+    events = []
+    for block in raw.strip().split("\n\n"):
+        if not block:
+            continue
+        lines = block.splitlines()
+        event_type = lines[0].removeprefix("event: ")
+        data = json.loads(lines[1].removeprefix("data: "))
+        events.append((event_type, data))
+    return events
 
 
 def test_runtime_app_factory_builds_dogfood_app_with_fake_providers() -> None:
@@ -141,3 +161,150 @@ def test_runtime_app_factory_builds_dogfood_app_with_fake_providers() -> None:
     assert request_status["status"] == "completed"
     assert stream_calls == 1
     assert embed_calls == 1
+
+
+def test_runtime_app_factory_registers_tool_react_loop() -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        runtime_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            providers={
+                "local_structured": FakeModelProvider(
+                    structured_text_responses=[
+                        json.dumps(
+                            {
+                                "action": "tool_call",
+                                "tool_name": "fake.echo",
+                                "arguments": {"message": "factory"},
+                            },
+                        ),
+                        json.dumps({"action": "final_answer", "final_answer": "factory"}),
+                    ],
+                ),
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        try:
+            conversation_store = PostgresConversationStore(runtime_app.engine)
+            event_log = PostgresEventLog(runtime_app.engine)
+            conversation = await conversation_store.create_conversation(
+                CreateConversationCommand(
+                    user_id=settings.app.default_user_id,
+                    title="factory tool loop",
+                    active_project_namespace="project.personal_assistant",
+                ),
+            )
+            submission = await conversation_store.submit_user_message(
+                MessageSubmissionCommand(
+                    conversation_id=conversation.conversation_id,
+                    client_message_id="client-factory-tool-loop",
+                    content="use fake echo",
+                    sensitivity=Sensitivity.PROJECT,
+                ),
+            )
+            result = await runtime_app.runtime.run_turn(
+                RuntimeTurnCommand(
+                    request_id=submission.request.request_id,
+                    conversation_id=submission.request.conversation_id,
+                    user_message_id=submission.user_message.message_id,
+                    user_id=settings.app.default_user_id,
+                    user_input=submission.user_message.content,
+                    active_project_namespace=conversation.active_project_namespace,
+                    model_profile="local_structured",
+                    loop_strategy=LoopStrategyName.TOOL_REACT_LOOP.value,
+                ),
+            )
+            events = await event_log.query(EventFilter(request_id=submission.request.request_id))
+            return result, [event.event_type for event in events]
+        finally:
+            await runtime_app.dispose()
+
+    result, event_types = asyncio.run(scenario())
+
+    assert result.response_text == "factory"
+    assert EventType.TOOL_CALL_COMPLETED in event_types
+    assert EventType.POLICY_CAPABILITY_DECISION_RECORDED in event_types
+
+
+def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        runtime_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            providers={
+                "local_structured": FakeModelProvider(
+                    structured_text_responses=[
+                        json.dumps(
+                            {
+                                "action": "tool_call",
+                                "tool_name": "fake.echo",
+                                "arguments": {"message": "api"},
+                            },
+                        ),
+                        json.dumps({"action": "final_answer", "final_answer": "api"}),
+                    ],
+                ),
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        try:
+            app = runtime_app.app
+            _, conversation_raw = await _request(
+                app,
+                "POST",
+                "/v1/conversations",
+                {"title": "factory api", "active_project_namespace": "project.personal_assistant"},
+            )
+            conversation = json.loads(conversation_raw)
+            status_code, message_raw = await _request(
+                app,
+                "POST",
+                f"/v1/conversations/{conversation['conversation_id']}/messages",
+                {
+                    "client_message_id": "client-factory-api-tool-loop",
+                    "content": "use fake echo",
+                    "sensitivity": "project",
+                    "model_profile": "local_structured",
+                    "loop_strategy": LoopStrategyName.TOOL_REACT_LOOP.value,
+                    "permission_mode": "developer_local",
+                },
+            )
+            submitted = json.loads(message_raw)
+            _, stream_raw = await _request(
+                app,
+                "GET",
+                f"/v1/requests/{submitted['request_id']}/stream",
+            )
+            event_log = PostgresEventLog(runtime_app.engine)
+            events = await event_log.query(EventFilter(request_id=submitted["request_id"]))
+            return (
+                status_code,
+                _sse_events(stream_raw),
+                _sse_event_payloads(stream_raw),
+                [event.event_type for event in events],
+            )
+        finally:
+            await runtime_app.dispose()
+
+    status_code, stream_events, stream_payloads, event_types = asyncio.run(scenario())
+
+    assert status_code == 202
+    assert stream_events[-1] == "request.processing.completed"
+    assert stream_payloads[-1][1]["event_id"]
+    assert EventType.TOOL_CALL_COMPLETED in event_types

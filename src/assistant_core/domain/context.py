@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from assistant_core.domain.loops import ToolObservationRef
 from assistant_core.domain.messages import ChatMessage
 from assistant_core.domain.sensitivity import Sensitivity
 
@@ -21,6 +22,7 @@ class ContextAssemblyRequest:
     causation_event_id: str | None = None
     max_messages: int | None = None
     max_input_tokens: int | None = None
+    tool_observation_refs: tuple[ToolObservationRef, ...] = ()
 
 
 @dataclass(frozen=True)

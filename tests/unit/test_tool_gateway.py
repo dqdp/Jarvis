@@ -54,6 +54,8 @@ def _request(
     timeout_seconds: float | None = None,
     max_output_bytes: int | None = None,
     sensitivity: Sensitivity = Sensitivity.PROJECT,
+    step_id: str | None = None,
+    causation_event_id: str | None = None,
 ) -> ToolCallRequest:
     return ToolCallRequest(
         tool_name=tool_name,
@@ -61,6 +63,8 @@ def _request(
         request_id="req-tool-1",
         conversation_id="conv-tool-1",
         user_id="user-tool-1",
+        step_id=step_id,
+        causation_event_id=causation_event_id,
         sensitivity=sensitivity,
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
@@ -413,3 +417,27 @@ def test_completed_events_include_policy_linkage_and_tool_risk_metadata() -> Non
     assert completed.payload["capability"] == Capability.TOOL_SAFE.value
     assert completed.payload["risk_classes"] == [RiskClass.SAFE.value]
     assert observation.payload["policy_decision_id"] == completed.payload["policy_decision_id"]
+
+
+def test_tool_events_include_step_linkage_and_causation() -> None:
+    event_log = InMemoryEventLog()
+    gateway = ToolGateway(
+        registry=ToolRegistry([fake_echo_tool()]),
+        policy=RecordingPolicy(),
+        event_log=event_log,
+    )
+
+    asyncio.run(
+        gateway.invoke(
+            _request(
+                arguments={"message": "hello"},
+                step_id="step-1",
+                causation_event_id="agent-step-started-1",
+            ),
+        ),
+    )
+    events = asyncio.run(event_log.query(EventFilter(request_id="req-tool-1")))
+
+    assert events
+    assert {event.causation_id for event in events} == {"agent-step-started-1"}
+    assert {event.payload["step_id"] for event in events} == {"step-1"}

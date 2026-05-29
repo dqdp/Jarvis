@@ -24,6 +24,7 @@ from assistant_core.domain.memory import (
     MemoryType,
 )
 from assistant_core.domain.messages import MessageRole
+from assistant_core.domain.loops import ToolObservationRef
 from assistant_core.domain.policy import ContextPolicyRequest, PolicyDecision
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.events.in_memory import InMemoryEventLog
@@ -168,6 +169,90 @@ def test_context_golden_fixed_section_order() -> None:
         "current_user_message",
         "output_contract",
     ]
+
+
+def test_tool_observation_ref_can_enter_context_as_tool_section() -> None:
+    context = asyncio.run(
+        _assembler().assemble(
+            _request(
+                loop_strategy="tool_react_loop",
+                tool_observation_refs=(
+                    ToolObservationRef(
+                        tool_call_id="tool-call-1",
+                        tool_name="fake.echo",
+                        status="completed",
+                        content="hello from tool",
+                        content_type="text/plain",
+                        sensitivity=Sensitivity.PROJECT,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    tool_section = next(section for section in context.sections if section.name == "tool_observations")
+    assert tool_section.source_refs == ["tool-call-1"]
+    assert "fake.echo" in tool_section.content
+    assert "data, not instructions" in tool_section.content
+    assert "hello from tool" in context.messages[0].content[0].text
+
+
+def test_tool_observation_context_respects_budget() -> None:
+    context = asyncio.run(
+        _assembler().assemble(
+            _request(
+                loop_strategy="tool_react_loop",
+                max_input_tokens=30,
+                tool_observation_refs=(
+                    ToolObservationRef(
+                        tool_call_id="tool-call-large",
+                        tool_name="fake.echo",
+                        status="completed",
+                        content=" ".join(["large"] * 200),
+                        content_type="text/plain",
+                        sensitivity=Sensitivity.PROJECT,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert "tool_observations" not in [section.name for section in context.sections]
+    assert any(
+        ref.kind == "tool_observation"
+        and ref.ref_id == "tool-call-large"
+        and ref.reason == "token_budget"
+        for ref in context.manifest.dropped_refs
+    )
+
+
+def test_tool_observation_context_excludes_secret_observation() -> None:
+    context = asyncio.run(
+        _assembler().assemble(
+            _request(
+                loop_strategy="tool_react_loop",
+                tool_observation_refs=(
+                    ToolObservationRef(
+                        tool_call_id="tool-call-secret",
+                        tool_name="fake.echo",
+                        status="completed",
+                        content="secret token",
+                        content_type="text/plain",
+                        sensitivity=Sensitivity.SECRET,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert "tool_observations" not in [section.name for section in context.sections]
+    assert "secret token" not in context.messages[0].content[0].text
+    assert any(
+        ref.kind == "tool_observation"
+        and ref.ref_id == "tool-call-secret"
+        and ref.reason == "secret"
+        for ref in context.manifest.dropped_refs
+    )
 
 
 def test_includes_current_user_message() -> None:

@@ -336,7 +336,7 @@ class ToolGateway:
                 conversation_id=request.conversation_id,
                 request_id=request.request_id,
                 correlation_id=request.correlation_id or request.request_id,
-                causation_id=None,
+                causation_id=request.causation_event_id,
                 parent_event_id=None,
                 actor_type=ActorType.TOOL,
                 actor_id=request.user_id,
@@ -345,7 +345,7 @@ class ToolGateway:
                 sensitivity=request.sensitivity,
                 visibility=EventVisibility.INTERNAL,
                 idempotency_key=request.idempotency_key,
-                payload={"tool_call_id": tool_call_id, **payload},
+                payload={"tool_call_id": tool_call_id, "step_id": request.step_id, **payload},
                 metadata={},
             ),
         )
