@@ -6,16 +6,24 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from assistant_core.domain.context import (
     AssembledContext,
     ContextAssemblyRequest,
+    ContextContentHitRef,
     ContextDroppedRef,
     ContextManifest,
     ContextSection,
 )
 from assistant_core.domain.conversations import ConversationMessage, RecentMessagesQuery
+from assistant_core.domain.content_retrieval import ContentHit, ContentRetrievalQuery
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
 from assistant_core.domain.loops import ToolObservationRef
 from assistant_core.domain.memory import MemoryHit, MemoryQuery
 from assistant_core.domain.messages import ChatMessage, MessageRole, TextPart
-from assistant_core.domain.policy import ContextPolicyRequest, PolicyDecision
+from assistant_core.domain.policy import (
+    Capability,
+    CapabilityPolicyRequest,
+    ContextPolicyRequest,
+    PolicyDecision,
+    RiskClass,
+)
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.ports.event_log import EventLogPort
 from assistant_core.ports.memory import MemoryRetrievalError
@@ -28,6 +36,7 @@ SECTION_ORDER = [
     "user_preferences",
     "working_style",
     "project_or_environment_memory",
+    "relevant_project_documentation",
     "recent_conversation",
     "tool_observations",
     "current_user_message",
@@ -48,6 +57,7 @@ PROMPT_MESSAGE_SECTION_NAMES = {
     "user_preferences",
     "working_style",
     "project_or_environment_memory",
+    "relevant_project_documentation",
     "tool_observations",
     "output_contract",
 }
@@ -63,11 +73,13 @@ class DeterministicContextAssembler:
         *,
         conversation_store,
         memory_read,
+        content_retrieval=None,
         event_log: EventLogPort,
         policy: PolicyPort,
     ) -> None:
         self._conversation_store = conversation_store
         self._memory_read = memory_read
+        self._content_retrieval = content_retrieval
         self._event_log = event_log
         self._policy = policy
 
@@ -103,6 +115,15 @@ class DeterministicContextAssembler:
         if memory_event is None:
             memory_event = await self._record_memory_retrieved(request, memory_hits)
 
+        raw_content_hits: list[ContentHit] = []
+        if self._content_retrieval is not None:
+            raw_content_hits = await self._retrieve_content_hits(request, dropped_refs)
+        content_hits = await self._filter_content_hits_by_policy(
+            request,
+            raw_content_hits,
+            dropped_refs,
+        )
+
         recent_messages = await self._conversation_store.load_recent_messages(
             RecentMessagesQuery(conversation_id=request.conversation_id, limit=1000),
         )
@@ -123,11 +144,18 @@ class DeterministicContextAssembler:
             dropped_refs,
         )
 
-        sections = _build_sections(request, recent_messages, memory_hits, tool_observation_refs)
-        recent_messages, sections, tool_observation_refs = _apply_token_budget(
+        sections = _build_sections(
             request,
             recent_messages,
             memory_hits,
+            content_hits,
+            tool_observation_refs,
+        )
+        recent_messages, content_hits, sections, tool_observation_refs = _apply_token_budget(
+            request,
+            recent_messages,
+            memory_hits,
+            content_hits,
             tool_observation_refs,
             sections,
             dropped_refs,
@@ -151,6 +179,7 @@ class DeterministicContextAssembler:
             sections,
             recent_messages,
             memory_hits,
+            content_hits,
             tool_observation_refs,
             dropped_refs,
             token_estimate,
@@ -201,6 +230,75 @@ class DeterministicContextAssembler:
                 continue
             kept.append(ref)
         return kept
+
+    async def _filter_content_hits_by_policy(
+        self,
+        request: ContextAssemblyRequest,
+        hits: list[ContentHit],
+        dropped_refs: list[ContextDroppedRef],
+    ) -> list[ContentHit]:
+        kept: list[ContentHit] = []
+        for hit in hits:
+            source_ref = f"content:{hit.chunk_id}"
+            decision = await self._policy.evaluate_context_inclusion(
+                ContextPolicyRequest(source_ref=source_ref, sensitivity=hit.sensitivity),
+            )
+            await self._record_policy_decision(
+                request,
+                source_ref=source_ref,
+                decision=decision,
+                sensitivity=hit.sensitivity,
+            )
+            if not decision.allowed:
+                dropped_refs.append(
+                    ContextDroppedRef(
+                        kind="content",
+                        ref_id=hit.chunk_id,
+                        reason=_dropped_reason(hit.sensitivity, decision),
+                    ),
+                )
+                continue
+            kept.append(hit)
+        return kept
+
+    async def _retrieve_content_hits(
+        self,
+        request: ContextAssemblyRequest,
+        dropped_refs: list[ContextDroppedRef],
+    ) -> list[ContentHit]:
+        decision = await self._policy.evaluate_capability_request(
+            CapabilityPolicyRequest(
+                capability=Capability.CONTENT_RETRIEVE,
+                risk_classes=frozenset({RiskClass.READ_ONLY}),
+                sensitivity=request.current_message_sensitivity,
+                permission_mode=request.permission_mode,
+                user_id=request.user_id,
+                conversation_id=request.conversation_id,
+                request_id=request.request_id,
+                project_namespace=request.active_project_namespace,
+                redacted_payload={"query_source": "current_user_message"},
+            ),
+        )
+        if not decision.allowed:
+            dropped_refs.append(
+                ContextDroppedRef(
+                    kind="content",
+                    ref_id="*",
+                    reason=decision.code,
+                ),
+            )
+            return []
+        return await self._content_retrieval.retrieve(
+            ContentRetrievalQuery(
+                text=request.current_user_message,
+                limit=4,
+                sensitivity=request.current_message_sensitivity,
+                request_id=request.request_id,
+                conversation_id=request.conversation_id,
+                correlation_id=request.request_id,
+                causation_id=request.causation_event_id,
+            ),
+        )
 
     async def _filter_memory_hits_by_policy(
         self,
@@ -302,7 +400,7 @@ class DeterministicContextAssembler:
                 actor_id=None,
                 source_component="context_assembler",
                 source_node=None,
-                sensitivity=_max_sensitivity(request, [], memory_hits, []),
+                sensitivity=_max_sensitivity(request, [], memory_hits, [], []),
                 visibility=EventVisibility.INTERNAL,
                 idempotency_key=None,
                 payload={
@@ -416,6 +514,17 @@ class DeterministicContextAssembler:
                     "section_names": manifest.section_names,
                     "used_message_ids": manifest.used_message_ids,
                     "used_memory_ids": manifest.used_memory_ids,
+                    "used_content_refs": [
+                        {
+                            "source_id": ref.source_id,
+                            "chunk_id": ref.chunk_id,
+                            "citation": ref.citation,
+                            "score": ref.score,
+                            "sensitivity": ref.sensitivity.value,
+                            "content_hash": ref.content_hash,
+                        }
+                        for ref in manifest.used_content_refs
+                    ],
                     "token_estimate": manifest.token_estimate,
                     "dropped_refs": [
                         {"kind": ref.kind, "ref_id": ref.ref_id, "reason": ref.reason}
@@ -476,12 +585,13 @@ def _apply_token_budget(
     request: ContextAssemblyRequest,
     recent_messages: list[ConversationMessage],
     memory_hits: list[MemoryHit],
+    content_hits: list[ContentHit],
     tool_observation_refs: list[ToolObservationRef],
     sections: list[ContextSection],
     dropped_refs: list[ContextDroppedRef],
-) -> tuple[list[ConversationMessage], list[ContextSection], list[ToolObservationRef]]:
+) -> tuple[list[ConversationMessage], list[ContentHit], list[ContextSection], list[ToolObservationRef]]:
     if request.max_input_tokens is None:
-        return recent_messages, sections, tool_observation_refs
+        return recent_messages, content_hits, sections, tool_observation_refs
 
     current_messages = [_chat_message(message) for message in recent_messages]
     current_messages.append(
@@ -491,6 +601,23 @@ def _apply_token_budget(
             sensitivity=request.current_message_sensitivity,
         ),
     )
+    if content_hits and _context_token_estimate(sections, current_messages) > request.max_input_tokens:
+        for hit in content_hits:
+            dropped_refs.append(
+                ContextDroppedRef(
+                    kind="content",
+                    ref_id=hit.chunk_id,
+                    reason="token_budget",
+                ),
+            )
+        content_hits = []
+        sections = _build_sections(
+            request,
+            recent_messages,
+            memory_hits,
+            content_hits,
+            tool_observation_refs,
+        )
     if (
         tool_observation_refs
         and _context_token_estimate(sections, current_messages) > request.max_input_tokens
@@ -504,13 +631,25 @@ def _apply_token_budget(
                 ),
             )
         tool_observation_refs = []
-        sections = _build_sections(request, recent_messages, memory_hits, tool_observation_refs)
+        sections = _build_sections(
+            request,
+            recent_messages,
+            memory_hits,
+            content_hits,
+            tool_observation_refs,
+        )
     while recent_messages and _context_token_estimate(sections, current_messages) > request.max_input_tokens:
         dropped = recent_messages.pop(0)
         dropped_refs.append(
             ContextDroppedRef(kind="message", ref_id=dropped.message_id, reason="token_budget"),
         )
-        sections = _build_sections(request, recent_messages, memory_hits, tool_observation_refs)
+        sections = _build_sections(
+            request,
+            recent_messages,
+            memory_hits,
+            content_hits,
+            tool_observation_refs,
+        )
         current_messages = [_chat_message(message) for message in recent_messages]
         current_messages.append(
             ChatMessage(
@@ -519,13 +658,14 @@ def _apply_token_budget(
                 sensitivity=request.current_message_sensitivity,
             ),
         )
-    return recent_messages, sections, tool_observation_refs
+    return recent_messages, content_hits, sections, tool_observation_refs
 
 
 def _build_sections(
     request: ContextAssemblyRequest,
     recent_messages: list[ConversationMessage],
     memory_hits: list[MemoryHit],
+    content_hits: list[ContentHit],
     tool_observation_refs: list[ToolObservationRef],
 ) -> list[ContextSection]:
     user_preferences = [hit for hit in memory_hits if hit.memory.namespace == "user.preferences"]
@@ -548,6 +688,7 @@ def _build_sections(
         "user_preferences": _memory_content(user_preferences),
         "working_style": _memory_content(working_style),
         "project_or_environment_memory": _memory_content(project_memory),
+        "relevant_project_documentation": _content_hit_content(content_hits),
         "recent_conversation": "\n".join(
             f"{message.role.value}: {message.content}" for message in recent_messages
         ),
@@ -563,6 +704,7 @@ def _build_sections(
         "user_preferences": [hit.memory.id for hit in user_preferences],
         "working_style": [hit.memory.id for hit in working_style],
         "project_or_environment_memory": [hit.memory.id for hit in project_memory],
+        "relevant_project_documentation": [hit.chunk_id for hit in content_hits],
         "recent_conversation": [message.message_id for message in recent_messages],
         "tool_observations": [ref.tool_call_id for ref in tool_observation_refs],
     }
@@ -574,7 +716,10 @@ def _build_sections(
             source_refs=source_refs.get(name, []),
         )
         for name in SECTION_ORDER
-        if name != "tool_observations" or contents[name].strip()
+        if (
+            name not in {"tool_observations", "relevant_project_documentation"}
+            or contents[name].strip()
+        )
     ]
 
 
@@ -591,6 +736,22 @@ def _tool_observation_content(refs: list[ToolObservationRef]) -> str:
 
 def _memory_content(hits: list[MemoryHit]) -> str:
     return "\n".join(hit.memory.content for hit in hits)
+
+
+def _content_hit_content(hits: list[ContentHit]) -> str:
+    if not hits:
+        return ""
+    blocks = ["Relevant Project Documentation"]
+    for hit in hits:
+        blocks.append(
+            "\n".join(
+                [
+                    f"- {hit.title} ({hit.citation.format()}, score={hit.score:.3f})",
+                    hit.content,
+                ],
+            ),
+        )
+    return "\n\n".join(blocks)
 
 
 def _chat_message(message: ConversationMessage) -> ChatMessage:
@@ -635,6 +796,7 @@ def _manifest(
     sections: list[ContextSection],
     recent_messages: list[ConversationMessage],
     memory_hits: list[MemoryHit],
+    content_hits: list[ContentHit],
     tool_observation_refs: list[ToolObservationRef],
     dropped_refs: list[ContextDroppedRef],
     token_estimate: int,
@@ -643,11 +805,13 @@ def _manifest(
 ) -> ContextManifest:
     used_message_ids = [message.message_id for message in recent_messages]
     used_memory_ids = [hit.memory.id for hit in memory_hits]
+    content_refs = [_content_hit_ref(hit) for hit in content_hits]
     tool_observation_ids = [ref.tool_call_id for ref in tool_observation_refs]
     sources_by_sensitivity = _sources_by_sensitivity(
         request,
         recent_messages,
         memory_hits,
+        content_hits,
         tool_observation_refs,
     )
     return ContextManifest(
@@ -658,6 +822,7 @@ def _manifest(
                     request.request_id,
                     used_message_ids,
                     used_memory_ids,
+                    [ref.chunk_id for ref in content_refs],
                     tool_observation_ids,
                 ),
             ),
@@ -677,11 +842,13 @@ def _manifest(
             request,
             recent_messages,
             memory_hits,
+            content_hits,
             tool_observation_refs,
         ),
         sources_by_sensitivity=sources_by_sensitivity,
         degraded=degraded,
         full_prompt_stored=False,
+        used_content_refs=content_refs,
     )
 
 
@@ -689,6 +856,7 @@ def _sources_by_sensitivity(
     request: ContextAssemblyRequest,
     messages: list[ConversationMessage],
     memory_hits: list[MemoryHit],
+    content_hits: list[ContentHit],
     tool_observation_refs: list[ToolObservationRef],
 ) -> dict[str, list[str]]:
     sources: dict[str, list[str]] = {
@@ -698,6 +866,8 @@ def _sources_by_sensitivity(
         sources.setdefault(message.sensitivity.value, []).append(message.message_id)
     for hit in memory_hits:
         sources.setdefault(hit.memory.sensitivity.value, []).append(hit.memory.id)
+    for hit in content_hits:
+        sources.setdefault(hit.sensitivity.value, []).append(hit.chunk_id)
     for ref in tool_observation_refs:
         sources.setdefault(ref.sensitivity.value, []).append(ref.tool_call_id)
     return sources
@@ -707,12 +877,26 @@ def _context_manifest_seed(
     request_id: str,
     used_message_ids: list[str],
     used_memory_ids: list[str],
+    used_content_chunk_ids: list[str],
     tool_observation_ids: list[str],
 ) -> str:
     seed = f"jarvis-context:{request_id}:{used_message_ids}:{used_memory_ids}"
+    if used_content_chunk_ids:
+        seed = f"{seed}:{used_content_chunk_ids}"
     if tool_observation_ids:
         return f"{seed}:{tool_observation_ids}"
     return seed
+
+
+def _content_hit_ref(hit: ContentHit) -> ContextContentHitRef:
+    return ContextContentHitRef(
+        source_id=hit.source_id,
+        chunk_id=hit.chunk_id,
+        citation=hit.citation.format(),
+        score=hit.score,
+        sensitivity=hit.sensitivity,
+        content_hash=hit.content_hash,
+    )
 
 
 def _dropped_reason(sensitivity: Sensitivity, decision: PolicyDecision) -> str:
@@ -725,11 +909,13 @@ def _max_sensitivity(
     request: ContextAssemblyRequest,
     messages: list[ConversationMessage],
     memory_hits: list[MemoryHit],
+    content_hits: list[ContentHit],
     tool_observation_refs: list[ToolObservationRef],
 ) -> Sensitivity:
     values = [request.current_message_sensitivity]
     values.extend(message.sensitivity for message in messages)
     values.extend(hit.memory.sensitivity for hit in memory_hits)
+    values.extend(hit.sensitivity for hit in content_hits)
     values.extend(ref.sensitivity for ref in tool_observation_refs)
     return max(values, key=lambda value: SENSITIVITY_ORDER[value])
 

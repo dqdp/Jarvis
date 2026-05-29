@@ -5,6 +5,7 @@ from typing import Any
 
 from assistant_core.domain.loops import ToolObservationRef
 from assistant_core.domain.messages import ChatMessage
+from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
 
 
@@ -20,9 +21,17 @@ class ContextAssemblyRequest:
     current_message_sensitivity: Sensitivity = Sensitivity.PROJECT
     current_user_message_id: str | None = None
     causation_event_id: str | None = None
+    permission_mode: PermissionMode | str | None = None
     max_messages: int | None = None
     max_input_tokens: int | None = None
     tool_observation_refs: tuple[ToolObservationRef, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.permission_mode is not None and not isinstance(
+            self.permission_mode,
+            PermissionMode,
+        ):
+            object.__setattr__(self, "permission_mode", PermissionMode(self.permission_mode))
 
 
 @dataclass(frozen=True)
@@ -38,6 +47,16 @@ class ContextSection:
     content: str
     token_estimate: int
     source_refs: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ContextContentHitRef:
+    source_id: str
+    chunk_id: str
+    citation: str
+    score: float
+    sensitivity: Sensitivity
+    content_hash: str
 
 
 @dataclass(frozen=True)
@@ -58,6 +77,7 @@ class ContextManifest:
     sources_by_sensitivity: dict[str, list[str]]
     degraded: bool
     full_prompt_stored: bool = False
+    used_content_refs: list[ContextContentHitRef] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

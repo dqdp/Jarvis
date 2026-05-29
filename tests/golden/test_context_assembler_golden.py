@@ -14,6 +14,12 @@ from assistant_core.context_assembly.deterministic import (
 )
 from assistant_core.domain.context import ContextAssemblyRequest
 from assistant_core.domain.conversations import ConversationMessage, RecentMessagesQuery
+from assistant_core.domain.content_retrieval import (
+    ContentCitation,
+    ContentHit,
+    ContentRetrievalQuery,
+    ContentSourceType,
+)
 from assistant_core.domain.events import EventType
 from assistant_core.domain.memory import (
     IndexingStatus,
@@ -25,7 +31,14 @@ from assistant_core.domain.memory import (
 )
 from assistant_core.domain.messages import MessageRole
 from assistant_core.domain.loops import ToolObservationRef
-from assistant_core.domain.policy import ContextPolicyRequest, PolicyDecision
+from assistant_core.domain.policy import (
+    Capability,
+    CapabilityPolicyRequest,
+    ContextPolicyRequest,
+    PermissionMode,
+    PolicyDecision,
+    PolicyDecisionOutcome,
+)
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.events.in_memory import InMemoryEventLog
 from assistant_core.ports.memory import MemoryRetrievalError
@@ -56,10 +69,33 @@ class FakeMemoryRead:
         return self.hits
 
 
+class FakeContentRetrieval:
+    def __init__(self, hits: list[ContentHit]) -> None:
+        self.hits = hits
+        self.queries: list[ContentRetrievalQuery] = []
+
+    async def retrieve(self, query: ContentRetrievalQuery) -> list[ContentHit]:
+        self.queries.append(query)
+        return self.hits
+
+
 class FakePolicy:
-    def __init__(self, *, deny_sensitivity: set[Sensitivity] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        deny_sensitivity: set[Sensitivity] | None = None,
+        capability_decision: PolicyDecision | None = None,
+    ) -> None:
         self.deny_sensitivity = deny_sensitivity or {Sensitivity.SECRET}
+        self.capability_decision = capability_decision or PolicyDecision(
+            True,
+            "allowed_content_retrieve",
+            "content retrieval is allowed",
+            outcome=PolicyDecisionOutcome.ALLOW,
+            capability=Capability.CONTENT_RETRIEVE,
+        )
         self.context_requests: list[ContextPolicyRequest] = []
+        self.capability_requests: list[CapabilityPolicyRequest] = []
 
     async def evaluate_model_request(self, request):
         return PolicyDecision(True, "allowed", "model request is allowed")
@@ -72,6 +108,10 @@ class FakePolicy:
         if request.sensitivity in self.deny_sensitivity:
             return PolicyDecision(False, "sensitivity_denied", "sensitivity is denied")
         return PolicyDecision(True, "allowed", "context source is allowed")
+
+    async def evaluate_capability_request(self, request: CapabilityPolicyRequest):
+        self.capability_requests.append(request)
+        return self.capability_decision
 
 
 def _request(**overrides) -> ContextAssemblyRequest:
@@ -140,17 +180,47 @@ def _memory(
     )
 
 
+def _content_hit(
+    label: str,
+    *,
+    content: str | None = None,
+    sensitivity: Sensitivity = Sensitivity.PROJECT,
+) -> ContentHit:
+    return ContentHit(
+        source_id=f"src-{label}",
+        chunk_id=f"chunk-{label}",
+        source_type=ContentSourceType.PROJECT_DOC,
+        source_path=Path(f"docs/{label}.md"),
+        title=f"{label.title()} Guide",
+        content=content or f"{label} project docs",
+        score=0.88,
+        citation=ContentCitation(
+            path=Path(f"docs/{label}.md"),
+            line_start=1,
+            line_end=3,
+            heading_path=[f"{label.title()} Guide"],
+        ),
+        sensitivity=sensitivity,
+        content_hash=f"sha256:{label}",
+        metadata={},
+    )
+
+
 def _assembler(
     *,
     messages: list[ConversationMessage] | None = None,
     memories: list[MemoryHit] | None = None,
+    content_hits: list[ContentHit] | None = None,
+    content_retrieval: FakeContentRetrieval | None = None,
     memory_fails: bool = False,
     event_log: InMemoryEventLog | None = None,
     policy: FakePolicy | None = None,
 ) -> DeterministicContextAssembler:
+    retrieval = content_retrieval or FakeContentRetrieval(content_hits or [])
     return DeterministicContextAssembler(
         conversation_store=FakeConversationStore(messages or []),
         memory_read=FakeMemoryRead(memories or [], fail=memory_fails),
+        content_retrieval=retrieval,
         event_log=event_log or InMemoryEventLog(),
         policy=policy or FakePolicy(),
     )
@@ -394,6 +464,139 @@ def test_context_manifest_contains_used_refs() -> None:
     assert context.manifest.used_memory_ids == ["mem-project"]
 
 
+def test_context_assembler_includes_content_hits_in_separate_section() -> None:
+    context = asyncio.run(
+        _assembler(content_hits=[_content_hit("guide", content="Project docs say use citations.")])
+        .assemble(_request()),
+    )
+
+    section = _section(context, "relevant_project_documentation")
+    prompt_text = context.messages[0].content[0].text
+    assert "Relevant Project Documentation" in section.content
+    assert "Project docs say use citations." in section.content
+    assert "docs/guide.md:1-3" in section.content
+    assert "[relevant_project_documentation]" in prompt_text
+
+
+def test_content_retrieval_respects_content_retrieve_capability() -> None:
+    retrieval = FakeContentRetrieval([_content_hit("guide")])
+    policy = FakePolicy(
+        capability_decision=PolicyDecision(
+            False,
+            "approval_required",
+            "content retrieval requires approval",
+            outcome=PolicyDecisionOutcome.APPROVAL_REQUIRED,
+            capability=Capability.CONTENT_RETRIEVE,
+            permission_mode=PermissionMode.LOCKED_DOWN,
+        ),
+    )
+
+    context = asyncio.run(
+        _assembler(content_retrieval=retrieval, policy=policy).assemble(
+            _request(permission_mode=PermissionMode.LOCKED_DOWN),
+        ),
+    )
+
+    assert retrieval.queries == []
+    assert "relevant_project_documentation" not in context.manifest.section_names
+    assert any(
+        ref.kind == "content"
+        and ref.ref_id == "*"
+        and ref.reason == "approval_required"
+        for ref in context.manifest.dropped_refs
+    )
+    assert policy.capability_requests[0].capability is Capability.CONTENT_RETRIEVE
+    assert policy.capability_requests[0].permission_mode is PermissionMode.LOCKED_DOWN
+
+
+def test_content_retrieval_query_uses_current_message_sensitivity() -> None:
+    retrieval = FakeContentRetrieval([_content_hit("guide")])
+
+    asyncio.run(
+        _assembler(content_retrieval=retrieval).assemble(
+            _request(current_message_sensitivity=Sensitivity.PERSONAL),
+        ),
+    )
+
+    assert retrieval.queries[0].sensitivity is Sensitivity.PERSONAL
+
+
+def test_context_assembler_keeps_memory_hits_and_content_hits_separate() -> None:
+    context = asyncio.run(
+        _assembler(
+            memories=[MemoryHit(memory=_memory("project"), score=0.9)],
+            content_hits=[_content_hit("guide", content="docs-only fact")],
+        ).assemble(_request()),
+    )
+
+    memory_section = _section(context, "project_or_environment_memory")
+    content_section = _section(context, "relevant_project_documentation")
+    assert "project memory" in memory_section.content
+    assert "docs-only fact" not in memory_section.content
+    assert "docs-only fact" in content_section.content
+    assert "project memory" not in content_section.content
+
+
+def test_context_manifest_records_content_hit_refs() -> None:
+    context = asyncio.run(
+        _assembler(content_hits=[_content_hit("guide")]).assemble(_request()),
+    )
+
+    assert len(context.manifest.used_content_refs) == 1
+    ref = context.manifest.used_content_refs[0]
+    assert ref.source_id == "src-guide"
+    assert ref.chunk_id == "chunk-guide"
+    assert ref.citation == "docs/guide.md:1-3"
+    assert ref.score == 0.88
+    assert ref.sensitivity is Sensitivity.PROJECT
+    assert ref.content_hash == "sha256:guide"
+
+
+def test_content_hits_respect_token_budget() -> None:
+    context = asyncio.run(
+        _assembler(
+            content_hits=[
+                _content_hit(
+                    "large",
+                    content=" ".join(["large-content"] * 200),
+                ),
+            ],
+        ).assemble(_request(max_input_tokens=30)),
+    )
+
+    assert "relevant_project_documentation" not in context.manifest.section_names
+    assert context.manifest.used_content_refs == []
+    assert any(
+        ref.kind == "content"
+        and ref.ref_id == "chunk-large"
+        and ref.reason == "token_budget"
+        for ref in context.manifest.dropped_refs
+    )
+
+
+def test_secret_content_hit_is_excluded_from_context() -> None:
+    context = asyncio.run(
+        _assembler(
+            content_hits=[
+                _content_hit(
+                    "secret",
+                    content="SECRET_VALUE=hunter2",
+                    sensitivity=Sensitivity.SECRET,
+                ),
+            ],
+        ).assemble(_request()),
+    )
+
+    assert "relevant_project_documentation" not in context.manifest.section_names
+    assert "SECRET_VALUE" not in context.messages[0].content[0].text
+    assert any(
+        ref.kind == "content"
+        and ref.ref_id == "chunk-secret"
+        and ref.reason == "secret"
+        for ref in context.manifest.dropped_refs
+    )
+
+
 def test_context_manifest_is_event_recorded_without_raw_prompt() -> None:
     event_log = InMemoryEventLog()
 
@@ -552,6 +755,17 @@ def _serialized_context(context) -> dict:
             "section_names": context.manifest.section_names,
             "used_message_ids": context.manifest.used_message_ids,
             "used_memory_ids": context.manifest.used_memory_ids,
+            "used_content_refs": [
+                {
+                    "source_id": ref.source_id,
+                    "chunk_id": ref.chunk_id,
+                    "citation": ref.citation,
+                    "score": ref.score,
+                    "sensitivity": ref.sensitivity.value,
+                    "content_hash": ref.content_hash,
+                }
+                for ref in context.manifest.used_content_refs
+            ],
             "dropped_refs": [
                 {"kind": ref.kind, "ref_id": ref.ref_id, "reason": ref.reason}
                 for ref in context.manifest.dropped_refs

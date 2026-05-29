@@ -98,6 +98,7 @@
     "used_memory_ids": [
       "mem-project"
     ],
+    "used_content_refs": [],
     "dropped_refs": [],
     "token_estimate": 89,
     "active_namespaces": [

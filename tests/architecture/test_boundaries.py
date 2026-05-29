@@ -472,6 +472,30 @@ def test_memory_subsystem_does_not_import_content_retrieval_storage() -> None:
         assert "content_retrieval" not in source
 
 
+def test_agent_runtime_does_not_import_content_storage_adapters() -> None:
+    _assert_no_import_prefixes(
+        [SRC_ROOT / "runtime" / "agent_runtime.py"],
+        {
+            "assistant_core.storage.content_store",
+            "assistant_core.storage",
+            "sqlalchemy",
+            "pgvector",
+        },
+    )
+
+
+def test_context_assembler_does_not_import_content_sqlalchemy_models() -> None:
+    _assert_no_import_prefixes(
+        _python_files("context_assembly"),
+        {
+            "assistant_core.storage.content_store",
+            "assistant_core.storage",
+            "sqlalchemy",
+            "pgvector",
+        },
+    )
+
+
 def test_content_retrieval_does_not_write_memory_tables() -> None:
     forbidden_fragments = [
         "insert into memories",

@@ -28,6 +28,11 @@ class ContentChunkStatus(StrEnum):
     DELETED = "deleted"
 
 
+class ContentEmbeddingStatus(StrEnum):
+    INDEXED = "indexed"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class ContentCitation:
     path: Path
@@ -70,6 +75,50 @@ class ContentChunk:
     sensitivity: Sensitivity
     status: ContentChunkStatus
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ContentEmbeddingRecord:
+    chunk_id: str
+    embedding_profile: str
+    embedding_model: str
+    embedding_dimension: int
+    content_hash: str
+    embedding: list[float]
+    status: ContentEmbeddingStatus
+    created_at: datetime
+    error_type: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ContentHit:
+    source_id: str
+    chunk_id: str
+    source_type: ContentSourceType
+    source_path: Path
+    title: str
+    content: str
+    score: float
+    citation: ContentCitation
+    sensitivity: Sensitivity
+    content_hash: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ContentRetrievalQuery:
+    text: str
+    source_types: list[ContentSourceType | str] | None = None
+    exclude_sensitivities: list[Sensitivity | str] = field(
+        default_factory=lambda: [Sensitivity.SECRET],
+    )
+    limit: int | None = None
+    sensitivity: Sensitivity = Sensitivity.PROJECT
+    request_id: str | None = None
+    conversation_id: str | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None
 
 
 @dataclass(frozen=True)

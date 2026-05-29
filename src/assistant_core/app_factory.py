@@ -29,6 +29,7 @@ from assistant_core.runtime.loops import LoopStrategyRegistry, MemoryAugmentedAn
 from assistant_core.runtime.loops.tool_react import ToolReactLoop
 from assistant_core.storage.conversation_store import PostgresConversationStore
 from assistant_core.storage.approval_store import PostgresApprovalStore
+from assistant_core.storage.content_store import PostgresContentStore
 from assistant_core.storage.database import create_database_engine
 from assistant_core.storage.event_log import PostgresEventLog
 from assistant_core.storage.memory_store import PostgresMemoryStore
@@ -86,9 +87,15 @@ def create_runtime_app(
         policy=policy,
         embedding_port=ModelRouterEmbeddingPort(router=router, profile="local_embedding"),
     )
+    content_store = PostgresContentStore(
+        engine=engine,
+        settings=settings,
+        embedding_port=ModelRouterEmbeddingPort(router=router, profile="local_embedding"),
+    )
     context_assembler = DeterministicContextAssembler(
         conversation_store=conversation_store,
         memory_read=memory_store,
+        content_retrieval=content_store,
         event_log=event_log,
         policy=policy,
     )
@@ -145,6 +152,7 @@ def create_runtime_app(
     app = create_app(
         conversation_store=conversation_store,
         memory_store=memory_store,
+        content_store=content_store,
         settings=settings,
         runtime=runtime,
         event_log=event_log,

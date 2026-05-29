@@ -469,21 +469,23 @@ dropped_secret_sources, if any
 Full raw prompt logging remains disabled by default.
 
 
-## 20. Post-MVP Content Retrieval integration
+## 20. PM-07 Content Retrieval integration
 
-Phase 1 ContextAssembler uses:
+ContextAssembler uses:
 
 ```text
 ConversationStorePort
 MemoryReadPort
 PolicyPort
-```
-
-Post-MVP ContextAssembler may also use:
-
-```text
 ContentRetrievalPort
 ```
+
+`ContentRetrievalPort` is optional at construction time for tests and narrow
+runtime profiles, but the full runtime app wires it for PM-07 project-docs
+retrieval.
+
+Content retrieval is policy-gated through `content.retrieve` before query
+embedding or storage retrieval.
 
 `MemoryHit` and `ContentHit` must remain different domain objects.
 

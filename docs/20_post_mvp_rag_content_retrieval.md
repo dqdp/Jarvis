@@ -50,9 +50,9 @@ This would expand Phase 1 beyond the Core Daemon MVP.
 
 ---
 
-## 4. Future architecture
+## 4. Current PM-07 architecture
 
-Post-MVP, ContextAssembler may use:
+PM-07b wires a narrow project-docs retrieval path into ContextAssembler:
 
 ```text
 ConversationStorePort
@@ -61,7 +61,7 @@ ContentRetrievalPort
 PolicyPort
 ```
 
-Future shape:
+Current shape:
 
 ```text
 ContextAssembler
@@ -69,13 +69,13 @@ ContextAssembler
   -> ContentRetrievalPort  # retrieved source chunks/documents
 ```
 
-`ContentRetrievalPort` is a separate future facade.
+`ContentRetrievalPort` remains a separate facade from memory retrieval.
 
 ---
 
-## 5. Future ContentRetrievalPort
+## 5. ContentRetrievalPort
 
-Potential contract:
+Contract:
 
 ```python
 class ContentRetrievalPort(Protocol):
@@ -176,7 +176,8 @@ RAG ingestion/retrieval should produce events:
 content.source.ingested
 content.source.updated
 content.chunk.created
-content.index.created
+content.embedding.created
+content.embedding.failed
 content.retrieved
 ```
 

@@ -16,6 +16,7 @@ from assistant_core.config.settings import ConfigLoader
 from assistant_core.models.fake_provider import FakeEmbeddingProvider
 from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.storage.conversation_store import PostgresConversationStore
+from assistant_core.storage.content_store import PostgresContentStore
 from assistant_core.storage.database import assert_test_database_url, create_database_engine
 from assistant_core.storage.memory_store import PostgresMemoryStore
 from assistant_core.storage.migrations import run_migrations
@@ -31,6 +32,16 @@ def _database_url() -> str:
     )
 
 
+class _HealthyComponent:
+    async def health_check(self) -> bool:
+        return True
+
+
+class _UnhealthyComponent:
+    async def health_check(self) -> bool:
+        return False
+
+
 async def _truncate_api(database_url: str) -> None:
     assert_test_database_url(database_url)
     engine = create_database_engine(database_url)
@@ -38,7 +49,8 @@ async def _truncate_api(database_url: str) -> None:
         async with engine.begin() as connection:
             await connection.execute(
                 text(
-                    "truncate table memory_embeddings, memory_candidates, memories, "
+                    "truncate table content_embeddings, content_chunks, content_sources, "
+                    "memory_embeddings, memory_candidates, memories, "
                     "model_invocations, assistant_requests, messages, conversations, events "
                     "restart identity cascade",
                 ),
@@ -57,12 +69,13 @@ def app_parts():
     settings = ConfigLoader(Path("config")).load("test")
     app = create_app(
         conversation_store=PostgresConversationStore(engine),
-            memory_store=PostgresMemoryStore(
-                engine=engine,
-                settings=settings,
-                policy=ConfigPolicyEngine(settings),
-                embedding_port=FakeEmbeddingProvider(),
-            ),
+        memory_store=PostgresMemoryStore(
+            engine=engine,
+            settings=settings,
+            policy=ConfigPolicyEngine(settings),
+            embedding_port=FakeEmbeddingProvider(),
+        ),
+        content_store=PostgresContentStore(engine=engine, embedding_port=FakeEmbeddingProvider()),
         settings=settings,
     )
     app.state.engine = engine
@@ -439,6 +452,24 @@ def test_get_health(app_parts) -> None:
     assert payload["liveness"]["status"] == "ok"
     assert payload["readiness"]["checks"]["conversation_store"] == "ok"
     assert payload["readiness"]["checks"]["memory_store"] == "ok"
+    assert payload["readiness"]["checks"]["content_store"] == "ok"
+
+
+def test_get_health_reports_content_store_readiness_failure() -> None:
+    app = create_app(
+        conversation_store=_HealthyComponent(),
+        memory_store=_HealthyComponent(),
+        content_store=_UnhealthyComponent(),
+        settings=ConfigLoader(Path("config")).load("test"),
+    )
+
+    status, payload = asyncio.run(_request(app, "GET", "/v1/health"))
+
+    assert status == 503
+    assert payload["status"] == "not_ready"
+    assert payload["readiness"]["checks"]["conversation_store"] == "ok"
+    assert payload["readiness"]["checks"]["memory_store"] == "ok"
+    assert payload["readiness"]["checks"]["content_store"] == "failed"
 
 
 def test_idempotent_message_submit(app_parts) -> None:

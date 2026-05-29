@@ -87,9 +87,10 @@ async def _truncate_e2e(database_url: str) -> None:
         async with engine.begin() as connection:
             await connection.execute(
                 text(
-                    "truncate table approvals, memory_embeddings, memory_candidates, "
-                    "memories, model_invocations, assistant_requests, messages, "
-                    "conversations, events restart identity cascade",
+                    "truncate table approvals, content_embeddings, content_chunks, "
+                    "content_sources, memory_embeddings, memory_candidates, memories, "
+                    "model_invocations, assistant_requests, messages, conversations, events "
+                    "restart identity cascade",
                 ),
             )
     finally:

@@ -144,6 +144,7 @@ class ToolReactLoop:
                             current_message_sensitivity=request.current_message_sensitivity,
                             current_user_message_id=request.user_message_id,
                             causation_event_id=step_started.event_id,
+                            permission_mode=request.permission_mode,
                             tool_observation_refs=tuple(tool_observation_refs),
                         ),
                     ),

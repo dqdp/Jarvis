@@ -50,7 +50,10 @@ async def _truncate_content(database_url: str) -> None:
     try:
         async with engine.begin() as connection:
             await connection.execute(
-                text("truncate table content_chunks, content_sources restart identity cascade"),
+                text(
+                    "truncate table content_embeddings, content_chunks, content_sources "
+                    "restart identity cascade",
+                ),
             )
     finally:
         await engine.dispose()

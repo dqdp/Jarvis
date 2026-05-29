@@ -41,7 +41,8 @@ async def _truncate_runtime_app(database_url: str) -> None:
         async with engine.begin() as connection:
             await connection.execute(
                 text(
-                    "truncate table memory_embeddings, memory_candidates, memories, "
+                    "truncate table content_embeddings, content_chunks, content_sources, "
+                    "memory_embeddings, memory_candidates, memories, "
                     "model_invocations, assistant_requests, messages, conversations, events "
                     "restart identity cascade",
                 ),
@@ -157,6 +158,7 @@ def test_runtime_app_factory_builds_dogfood_app_with_fake_providers() -> None:
 
     assert health_status == 200
     assert health["status"] == "ready"
+    assert health["readiness"]["checks"]["content_store"] == "ok"
     assert stream_events[-1] == "request.processing.completed"
     assert request_status["status"] == "completed"
     assert stream_calls == 1

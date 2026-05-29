@@ -75,6 +75,7 @@ def create_app(
     *,
     conversation_store,
     memory_store,
+    content_store=None,
     settings: Settings,
     runtime=None,
     event_log=None,
@@ -134,7 +135,11 @@ def create_app(
 
     @app.get("/v1/health")
     async def get_health():
-        payload = await _health_payload(conversation_store, memory_store)
+        payload = await _health_payload(
+            conversation_store,
+            memory_store,
+            content_store=content_store,
+        )
         return _json_response(200 if payload["status"] == "ready" else 503, payload)
 
     @app.post("/v1/conversations")
@@ -735,11 +740,13 @@ def _validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-async def _health_payload(conversation_store, memory_store) -> dict[str, Any]:
+async def _health_payload(conversation_store, memory_store, *, content_store=None) -> dict[str, Any]:
     checks = {
         "conversation_store": await _component_health(conversation_store),
         "memory_store": await _component_health(memory_store),
     }
+    if content_store is not None:
+        checks["content_store"] = await _component_health(content_store)
     ready = all(value == "ok" for value in checks.values())
     return {
         "status": "ready" if ready else "not_ready",
