@@ -457,3 +457,43 @@ def test_toolgateway_consults_policy_before_diagnostics_execution() -> None:
     execute_index = source.index("_execute_adapter(")
 
     assert policy_index < execute_index
+
+
+def test_memory_subsystem_does_not_import_content_retrieval_storage() -> None:
+    memory_paths = [
+        SRC_ROOT / "domain" / "memory.py",
+        SRC_ROOT / "ports" / "memory.py",
+        SRC_ROOT / "storage" / "memory_store.py",
+    ]
+
+    for path in memory_paths:
+        source = path.read_text(encoding="utf-8")
+        assert "storage.content_store" not in source
+        assert "content_retrieval" not in source
+
+
+def test_content_retrieval_does_not_write_memory_tables() -> None:
+    forbidden_fragments = [
+        "insert into memories",
+        "update memories",
+        "delete from memories",
+        "insert into memory_embeddings",
+        "update memory_embeddings",
+        "delete from memory_embeddings",
+        "_memories",
+        "_memory_embeddings",
+    ]
+
+    content_paths = [
+        *(SRC_ROOT / "content_retrieval").rglob("*.py"),
+        SRC_ROOT / "domain" / "content_retrieval.py",
+        SRC_ROOT / "storage" / "content_store.py",
+    ]
+    for path in content_paths:
+        source = path.read_text(encoding="utf-8")
+        lowered = source.lower()
+        imported = _imported_modules(path)
+        assert "assistant_core.storage.memory_store" not in imported
+        assert "assistant_core.ports.memory" not in imported
+        for fragment in forbidden_fragments:
+            assert fragment not in lowered

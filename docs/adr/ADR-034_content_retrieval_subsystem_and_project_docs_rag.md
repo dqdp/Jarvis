@@ -271,6 +271,11 @@ content.retrieved
 
 Events must not include full raw source content by default.
 
+PM-07a defines the content event type contract, but does not wire ingestion
+event emission yet. Emission through `EventLogPort` is deferred until the
+retrieval/observability path is integrated; this keeps the ingestion slice
+focused on source registry, chunking, citations and storage lifecycle safety.
+
 ## Testing requirements
 
 PM-07 is implemented in two slices:
@@ -285,6 +290,7 @@ PM-07a must include unit tests for:
 ```text
 source allowlist matching
 secret-like path denial
+secret-like content denial
 markdown heading chunking
 oversized section splitting
 citation formatting
@@ -296,7 +302,11 @@ PM-07a must include integration tests for:
 ```text
 source registry creates and updates sources
 changed source marks old chunks stale
+unchanged reingestion does not churn chunks
+content revert/delete-restore reactivates existing chunks
+failed source/chunk sync does not publish partial state
 deleted source marks chunks deleted or stale
+project docs deletion does not delete other content corpora
 content tables remain separate from Memory tables
 ```
 

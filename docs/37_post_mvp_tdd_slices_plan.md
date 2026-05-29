@@ -1849,9 +1849,25 @@ Unit tests:
 ```text
 test_project_docs_source_allowlist_matches_readme_docs_and_adrs
 test_secret_like_paths_are_not_ingested
+test_secret_like_paths_include_common_key_material_names
+test_secret_like_paths_include_separator_variants
+test_secret_like_paths_include_space_and_backslash_variants
+test_secret_like_content_is_not_ingested
+test_secret_like_content_includes_quoted_assignment_keys
+test_secret_like_content_includes_common_key_naming_variants
+test_secret_like_content_includes_inline_object_assignments
+test_secret_like_content_includes_markdown_decorated_assignments
+test_secret_like_content_allows_schema_fields_that_mention_tokens
+test_symlink_to_secret_like_path_is_not_ingested
+test_symlinked_docs_directory_is_not_ingested
+test_symlinked_docs_directory_adr_child_is_not_ingested
+test_symlinked_adr_directory_is_not_ingested
 test_markdown_chunker_splits_by_headings
 test_markdown_chunker_splits_oversized_sections
 test_chunk_preserves_heading_path
+test_markdown_chunker_ignores_headings_inside_fenced_code
+test_markdown_chunker_closes_fence_only_with_matching_marker
+test_markdown_chunker_does_not_close_fence_on_marker_prefix_with_text
 test_chunk_preserves_line_range_when_possible
 test_citation_formats_path_and_line_range
 test_changed_source_marks_old_chunks_stale
@@ -1864,8 +1880,20 @@ Integration tests:
 test_source_registry_creates_project_doc_sources
 test_source_registry_updates_content_hash_on_change
 test_ingestion_creates_content_sources_and_chunks
+test_ingestion_does_not_persist_secret_like_content
 test_reingestion_marks_old_chunks_stale
+test_reingestion_reactivates_chunks_when_content_reverts
+test_reingestion_recovers_after_failed_atomic_sync
+test_failed_source_chunk_sync_does_not_publish_new_source_hash
+test_real_source_chunk_sync_rolls_back_after_chunk_failure
+test_source_chunk_sync_rejects_cross_source_chunks
+test_source_chunk_sync_rejects_chunks_with_mismatched_source_metadata
+test_source_chunk_sync_rejects_secret_sensitivity_content
+test_unchanged_reingestion_does_not_churn_chunks
+test_unchanged_reingestion_refreshes_source_last_seen
+test_deleted_source_resurrection_reactivates_existing_chunks
 test_deleted_source_marks_source_and_chunks_deleted_or_stale
+test_project_docs_delete_pass_does_not_delete_other_content_corpora
 test_content_tables_are_separate_from_memory_tables
 ```
 
@@ -1919,12 +1947,16 @@ storage:
 
 ingestion:
   allowlisted source scanner
+  secret-like path/content denial
   deterministic markdown heading chunker
   citation builder
   content_hash change detection
   stale/deleted source handling
 
-events:
+event type contract:
+  PM-07a defines event types only; ingestion EventLogPort emission is deferred.
+  Event emission remains required before production observability, but it does
+  not block PM-07b retrieval/context integration.
   content.source.discovered
   content.source.ingested
   content.source.updated
@@ -1979,7 +2011,7 @@ PM-07a is complete only when:
 tests were added before production code;
 red phase failed for missing ingestion/index behavior;
 README/docs/ADR corpus can be ingested;
-secret-like paths are denied;
+secret-like paths and content are denied;
 markdown chunks include citations and line ranges when possible;
 changed sources mark old chunks stale;
 deleted sources mark chunks deleted or stale;

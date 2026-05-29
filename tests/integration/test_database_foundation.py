@@ -36,6 +36,8 @@ async def _reset_database(database_url: str) -> None:
     try:
         async with engine.begin() as connection:
             await connection.execute(text("drop table if exists approvals cascade"))
+            await connection.execute(text("drop table if exists content_chunks cascade"))
+            await connection.execute(text("drop table if exists content_sources cascade"))
             await connection.execute(text("drop table if exists memory_embeddings cascade"))
             await connection.execute(text("drop table if exists memory_candidates cascade"))
             await connection.execute(text("drop table if exists memories cascade"))
