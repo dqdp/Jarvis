@@ -1,7 +1,7 @@
 model_profiles:
   local_main:
     provider: ollama
-    model: qwen3.5:4b
+    model: qwen3.5:9b
     endpoint: http://127.0.0.1:11434
     timeout_seconds: 120
     max_input_tokens: 12000
@@ -11,7 +11,7 @@ model_profiles:
 
   local_structured:
     provider: ollama
-    model: qwen3.5:4b
+    model: qwen3.5:9b
     endpoint: http://127.0.0.1:11434
     timeout_seconds: 60
     max_input_tokens: 8000

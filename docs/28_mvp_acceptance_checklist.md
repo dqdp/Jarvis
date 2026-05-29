@@ -129,7 +129,7 @@ pgvector remains tracked as an adapter-level follow-up, not an MVP blocker.
 - [x] Raw prompt logging is disabled by default.
 - [x] Runtime budgets and windowing are config-driven.
 - [x] Standard `make migrate` and `make run` targets exist.
-- [x] Local Ollama dogfood profile exists with `qwen3.5:4b` as the current
+- [x] Local Ollama dogfood profile exists with `qwen3.5:9b` as the current
   chat model and `embeddinggemma:latest` as the embedding model.
 - [x] CLI command target exists for health, manual memory and chat smoke
   verification through the HTTP API.

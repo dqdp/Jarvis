@@ -93,7 +93,7 @@ def test_ollama_provider_disables_thinking_for_chat() -> None:
 
     assert response.text == "OK"
     assert recorded["url"] == "http://127.0.0.1:11434/api/chat"
-    assert recorded["payload"]["model"] == "qwen3.5:4b"
+    assert recorded["payload"]["model"] == "qwen3.5:9b"
     assert recorded["payload"]["stream"] is False
     assert recorded["payload"]["think"] is False
     assert recorded["payload"]["options"]["num_predict"] == 1024

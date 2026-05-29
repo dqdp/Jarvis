@@ -88,7 +88,7 @@ For local Ollama dogfood, run with:
 CONFIG_PROFILE=ollama make run
 ```
 
-The `ollama` profile uses the locally available chat model `qwen3.5:4b` and the
+The `ollama` profile uses the locally available chat model `qwen3.5:9b` and the
 embedding model `embeddinggemma:latest`. This is a runtime
 profile behind the existing `ModelRouterPort`; CI still uses fake model and
 embedding providers and does not require real LLM calls.

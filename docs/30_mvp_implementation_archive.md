@@ -138,14 +138,14 @@ make test
 
 This verification adds native Ollama provider support, the `ollama` runtime
 profile, local model Makefile targets and a thin CLI for health, manual memory
-and chat smoke checks. The current local chat model is `qwen3.5:4b`; the local
+and chat smoke checks. The current local chat model is `qwen3.5:9b`; the local
 embedding model is `embeddinggemma:latest`.
 
 Interactive CLI shell verification was added after the first CLI pass. Running
 `make cli` without `ARGS`, or `make cli ARGS='chat'`, opens a terminal chat
 session with `/help`, `/new`, `/memory add`, `/memory list` and `/exit`.
 The CLI also cancels the server request on stream interruption, and the local
-Ollama dogfood profile now uses `qwen3.5:4b` with `max_output_tokens` capped at
+Ollama dogfood profile now uses `qwen3.5:9b` with `max_output_tokens` capped at
 1024 to bound runaway generations.
 The interactive shell uses Unix `readline` on TTY for Up/Down in-session input
 history without persisting raw prompts to disk. `/memory add` payloads and

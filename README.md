@@ -226,7 +226,7 @@ Implementation notes:
   `assistant_core.app_factory:create_asgi_app --factory`, `make migrate` and
   `make run`.
 - Local Ollama dogfood is available through `config/ollama.yaml`. The current
-  local profile uses `qwen3.5:4b` for chat/structured calls and
+  local profile uses `qwen3.5:9b` for chat/structured calls and
   `embeddinggemma:latest` for embeddings.
 - A thin local CLI is available through `make cli ARGS='...'` or the `jarvis`
   console entrypoint. Running `make cli` without `ARGS` opens an interactive
@@ -261,7 +261,7 @@ Future architecture-changing changes still require the relevant ADR update.
 ## Local Ollama and CLI additions in v22
 
 - `config/ollama.yaml` wires local Ollama profiles without cloud fallback.
-- `qwen3.5:4b` is the current chat/structured model for local dogfood
+- `qwen3.5:9b` is the current chat/structured model for local dogfood
   verification on the target machine.
 - `embeddinggemma:latest` is the initial local embedding model.
 - `make models-list`, `make models-pull` and `make cli ARGS='...'` were added
