@@ -529,7 +529,15 @@ def _is_secret_like_key(key: str) -> bool:
     compacted = _separator_compacted(normalized)
     if normalized in _SECRET_KEY_EXACT or compacted in _SECRET_KEY_EXACT:
         return True
-    return any(normalized.endswith(suffix) for suffix in _SECRET_KEY_SUFFIXES)
+    if any(normalized.endswith(suffix) for suffix in _SECRET_KEY_SUFFIXES):
+        return True
+    if normalized.endswith("_value"):
+        root = normalized.removesuffix("_value")
+        compacted_root = _separator_compacted(root)
+        return root in _SECRET_KEY_EXACT or compacted_root in _SECRET_KEY_EXACT or any(
+            root.endswith(suffix) for suffix in _SECRET_KEY_SUFFIXES
+        )
+    return False
 
 
 def _camel_tokenized(value: str) -> str:

@@ -151,6 +151,10 @@ def test_secret_like_content_includes_common_key_naming_variants(tmp_path: Path)
     _write(tmp_path, "docs/config-a.md", "# Config\nsecret-key = hunter2\n")
     _write(tmp_path, "docs/config-b.md", "# Config\nclientSecret: hunter2\n")
     _write(tmp_path, "docs/config-c.md", "# Config\naccessToken: hunter2\n")
+    _write(tmp_path, "docs/config-d.md", "# Config\nSECRET_VALUE=hunter2\n")
+    _write(tmp_path, "docs/config-e.md", "# Config\nTOKEN_VALUE=hunter2\n")
+    _write(tmp_path, "docs/config-f.md", "# Config\nPASSWORD_VALUE=hunter2\n")
+    _write(tmp_path, "docs/config-g.md", "# Config\nAPI_KEY_VALUE=hunter2\n")
 
     candidates = ProjectDocsSourceScanner(project_root=tmp_path).scan()
 
