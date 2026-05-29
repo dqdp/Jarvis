@@ -128,10 +128,87 @@ def test_only_storage_imports_sqlalchemy() -> None:
     for path in SRC_ROOT.rglob("*.py"):
         if path.relative_to(SRC_ROOT).parts[0] == "storage":
             continue
-        if "sqlalchemy" in _imported_modules(path):
-            offenders.append(str(path.relative_to(PROJECT_ROOT)))
+        for module in _imported_modules(path):
+            if module == "sqlalchemy" or module.startswith("sqlalchemy."):
+                offenders.append(f"{path.relative_to(PROJECT_ROOT)} imports {module}")
 
     assert offenders == []
+
+
+def test_contract_tests_guard_database_url_before_migrations() -> None:
+    offenders: list[str] = []
+    guarded_test_roots = [
+        PROJECT_ROOT / "tests" / "contract",
+        PROJECT_ROOT / "tests" / "e2e",
+        PROJECT_ROOT / "tests" / "integration",
+    ]
+    for root in guarded_test_roots:
+        for path in root.glob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            functions = (
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            )
+            for function in functions:
+                guarded_names: set[str] = set()
+                guarded_any = False
+                calls = sorted(
+                    (
+                        node
+                        for node in ast.walk(function)
+                        if isinstance(node, ast.Call)
+                    ),
+                    key=lambda node: (node.lineno, node.col_offset),
+                )
+                for call in calls:
+                    call_name = _call_name(call)
+                    first_arg_name = _first_arg_name(call)
+                    if call_name == "assert_test_database_url":
+                        if first_arg_name is not None:
+                            guarded_names.add(first_arg_name)
+                        guarded_any = True
+                        continue
+                    if call_name == "run_migrations":
+                        if first_arg_name is None or first_arg_name not in guarded_names:
+                            offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{call.lineno}")
+                    if call_name == "command.upgrade" and not guarded_any:
+                        offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{call.lineno}")
+
+    assert offenders == []
+
+
+def _call_name(call: ast.Call) -> str:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        parts = [call.func.attr]
+        value = call.func.value
+        while isinstance(value, ast.Attribute):
+            parts.append(value.attr)
+            value = value.value
+        if isinstance(value, ast.Name):
+            parts.append(value.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def _first_arg_name(call: ast.Call) -> str | None:
+    if not call.args:
+        return None
+    first = call.args[0]
+    if isinstance(first, ast.Name):
+        return first.id
+    return None
+
+
+def test_runtime_does_not_construct_prompt_from_context_sections() -> None:
+    runtime_path = SRC_ROOT / "runtime" / "agent_runtime.py"
+    source = runtime_path.read_text(encoding="utf-8")
+
+    assert "MODEL_PROMPT_SECTION_NAMES" not in source
+    assert "_model_prompt_messages" not in source
+    assert "context.sections" not in source
 
 
 def test_no_pgvector_import_outside_storage_or_memory_adapter() -> None:

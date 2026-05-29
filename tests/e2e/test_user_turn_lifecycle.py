@@ -72,6 +72,7 @@ def _sse_events(raw: str) -> list[str]:
 
 def test_e2e_user_turn_lifecycle_with_memory_and_fake_model() -> None:
     database_url = _database_url()
+    assert_test_database_url(database_url)
     run_migrations(database_url)
 
     async def scenario():

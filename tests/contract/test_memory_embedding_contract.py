@@ -106,6 +106,7 @@ class SequencedEmbeddingPort:
 @pytest.fixture
 def store_factory():
     database_url = _database_url()
+    assert_test_database_url(database_url)
     run_migrations(database_url)
     asyncio.run(_truncate_memory(database_url))
     engine = create_database_engine(database_url)

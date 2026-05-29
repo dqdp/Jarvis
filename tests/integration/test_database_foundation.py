@@ -49,6 +49,7 @@ async def _reset_database(database_url: str) -> None:
 
 
 def _run_migrations_to(database_url: str, revision: str) -> None:
+    assert_test_database_url(database_url)
     config = Config(str(PROJECT_ROOT / "alembic.ini"))
     config.set_main_option(
         "script_location",
@@ -56,6 +57,11 @@ def _run_migrations_to(database_url: str, revision: str) -> None:
     )
     config.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(config, revision)
+
+
+def _run_test_migrations(database_url: str) -> None:
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
 
 
 async def _scalar(database_url: str, statement: str):
@@ -164,7 +170,7 @@ def test_migrations_apply_cleanly() -> None:
     database_url = _database_url()
     asyncio.run(_reset_database(database_url))
 
-    run_migrations(database_url)
+    _run_test_migrations(database_url)
 
     assert asyncio.run(_scalar(database_url, "select to_regclass('public.events')")) == "events"
     assert asyncio.run(
@@ -192,8 +198,8 @@ def test_migrations_are_idempotent() -> None:
     database_url = _database_url()
     asyncio.run(_reset_database(database_url))
 
-    run_migrations(database_url)
-    run_migrations(database_url)
+    _run_test_migrations(database_url)
+    _run_test_migrations(database_url)
 
     assert asyncio.run(_scalar(database_url, "select count(*) from alembic_version")) == 1
 
@@ -206,10 +212,10 @@ def test_migration_0006_rejects_assistant_message_without_matching_request_id() 
         asyncio.run(_insert_request_with_detached_assistant_message(database_url))
 
         with pytest.raises(RuntimeError, match="assistant_message_id is not a same-request"):
-            run_migrations(database_url)
+            _run_test_migrations(database_url)
     finally:
         asyncio.run(_reset_database(database_url))
-        run_migrations(database_url)
+        _run_test_migrations(database_url)
 
 
 def test_reset_database_rejects_non_test_database_url() -> None:
@@ -235,7 +241,7 @@ def test_conversation_store_health_requires_migrated_schema() -> None:
 def test_conversation_store_health_requires_integrity_constraints() -> None:
     database_url = _database_url()
     asyncio.run(_reset_database(database_url))
-    run_migrations(database_url)
+    _run_test_migrations(database_url)
     try:
         async def scenario() -> None:
             engine = create_database_engine(database_url)
@@ -249,13 +255,13 @@ def test_conversation_store_health_requires_integrity_constraints() -> None:
         asyncio.run(scenario())
     finally:
         asyncio.run(_reset_database(database_url))
-        run_migrations(database_url)
+        _run_test_migrations(database_url)
 
 
 def test_memory_store_health_requires_embedding_integrity_constraints() -> None:
     database_url = _database_url()
     asyncio.run(_reset_database(database_url))
-    run_migrations(database_url)
+    _run_test_migrations(database_url)
     try:
         async def scenario() -> None:
             engine = create_database_engine(database_url)
@@ -280,4 +286,4 @@ def test_memory_store_health_requires_embedding_integrity_constraints() -> None:
         asyncio.run(scenario())
     finally:
         asyncio.run(_reset_database(database_url))
-        run_migrations(database_url)
+        _run_test_migrations(database_url)

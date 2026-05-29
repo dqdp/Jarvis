@@ -108,6 +108,7 @@ class BrokenRuntime:
 @pytest.fixture
 def stream_parts():
     database_url = _database_url()
+    assert_test_database_url(database_url)
     run_migrations(database_url)
     asyncio.run(_truncate_stream(database_url))
     engine = create_database_engine(database_url)
