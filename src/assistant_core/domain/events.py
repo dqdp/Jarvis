@@ -33,6 +33,15 @@ class EventType(StrEnum):
     MODEL_REQUEST_DENIED = "model.request.denied"
     POLICY_DECISION_RECORDED = "policy.decision.recorded"
     POLICY_CAPABILITY_DECISION_RECORDED = "policy.capability.decision.recorded"
+    TOOL_CALL_REQUESTED = "tool.call.requested"
+    TOOL_CALL_APPROVED = "tool.call.approved"
+    TOOL_CALL_DENIED = "tool.call.denied"
+    TOOL_CALL_STARTED = "tool.call.started"
+    TOOL_CALL_COMPLETED = "tool.call.completed"
+    TOOL_CALL_FAILED = "tool.call.failed"
+    TOOL_CALL_TIMEOUT = "tool.call.timeout"
+    TOOL_CALL_CANCELLED = "tool.call.cancelled"
+    TOOL_OBSERVATION_RECORDED = "tool.observation.recorded"
     RUNTIME_ERROR = "runtime.error"
 
 

@@ -243,7 +243,7 @@ def test_no_raw_prompt_logging_by_default() -> None:
 
 
 def test_no_mvp_scope_creep_packages_exist() -> None:
-    forbidden_packages = {"tools", "mcp", "rag", "react", "planner", "voice"}
+    forbidden_packages = {"mcp", "rag", "react", "planner", "voice"}
 
     assert sorted(
         package
@@ -252,8 +252,9 @@ def test_no_mvp_scope_creep_packages_exist() -> None:
     ) == []
 
 
-def test_no_toolgateway_package_required_for_pm01() -> None:
-    assert not (SRC_ROOT / "toolgateway").exists()
+def test_toolgateway_package_exists_for_pm02() -> None:
+    assert (SRC_ROOT / "tools").exists()
+    assert (SRC_ROOT / "ports" / "tools.py").exists()
 
 
 def test_no_shell_adapter_package_required_for_pm01() -> None:
@@ -268,5 +269,49 @@ def test_runtime_does_not_import_tool_or_shell_adapters() -> None:
             "assistant_core.tools",
             "assistant_core.adapters.shell",
             "subprocess",
+        },
+    )
+
+
+def test_model_router_does_not_execute_tools() -> None:
+    _assert_no_import_prefixes(
+        _python_files("models"),
+        {
+            "assistant_core.tools",
+            "assistant_core.ports.tools",
+        },
+    )
+
+
+def test_context_assembler_does_not_execute_tools() -> None:
+    _assert_no_import_prefixes(
+        _python_files("context_assembly"),
+        {
+            "assistant_core.tools",
+            "assistant_core.ports.tools",
+        },
+    )
+
+
+def test_cli_api_do_not_import_concrete_tool_adapters() -> None:
+    _assert_no_import_prefixes(
+        _python_files("api") + [SRC_ROOT / "cli.py"],
+        {
+            "assistant_core.tools.fake",
+            "assistant_core.tools.builtin",
+            "assistant_core.tools.gateway",
+            "assistant_core.tools.registry",
+        },
+    )
+
+
+def test_toolgateway_does_not_import_loop_strategies() -> None:
+    if not (SRC_ROOT / "tools").exists():
+        pytest.fail("PM-02 requires the tools package")
+    _assert_no_import_prefixes(
+        _python_files("tools"),
+        {
+            "assistant_core.runtime.loops",
+            "assistant_core.loops",
         },
     )
