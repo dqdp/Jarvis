@@ -257,8 +257,10 @@ def test_toolgateway_package_exists_for_pm02() -> None:
     assert (SRC_ROOT / "ports" / "tools.py").exists()
 
 
-def test_no_shell_adapter_package_required_for_pm01() -> None:
-    assert not (SRC_ROOT / "tools" / "shell").exists()
+def test_project_shell_read_adapter_exists_without_write_shell_for_pm06a() -> None:
+    assert (SRC_ROOT / "tools" / "shell_read.py").exists()
+    assert not (SRC_ROOT / "tools" / "shell_write.py").exists()
+    assert not (SRC_ROOT / "tools" / "shell_write").exists()
 
 
 def test_runtime_does_not_import_tool_or_shell_adapters() -> None:
@@ -387,8 +389,44 @@ def test_tool_react_loop_does_not_import_shell_mcp_or_integration_adapters() -> 
         [loop_path],
         {
             "assistant_core.tools.shell",
+            "assistant_core.tools.shell_read",
             "assistant_core.mcp",
             "assistant_core.integrations",
             "subprocess",
         },
     )
+
+
+def test_agent_runtime_does_not_import_subprocess() -> None:
+    _assert_no_import_prefixes([SRC_ROOT / "runtime" / "agent_runtime.py"], {"subprocess"})
+
+
+def test_loop_strategies_do_not_import_subprocess() -> None:
+    _assert_no_import_prefixes(_python_files("runtime/loops"), {"subprocess"})
+
+
+def test_only_shell_adapter_executes_subprocess() -> None:
+    offenders: list[str] = []
+    allowed = SRC_ROOT / "tools" / "shell_read.py"
+    for path in SRC_ROOT.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        imported = _imported_modules(path)
+        uses_subprocess = (
+            "subprocess" in imported
+            or "asyncio.subprocess" in imported
+            or "create_subprocess_exec" in source
+        )
+        if uses_subprocess and path != allowed:
+            offenders.append(str(path.relative_to(PROJECT_ROOT)))
+
+    assert offenders == []
+
+
+def test_toolgateway_consults_policy_before_shell_execution() -> None:
+    gateway_path = SRC_ROOT / "tools" / "gateway.py"
+    source = gateway_path.read_text(encoding="utf-8")
+
+    policy_index = source.index("evaluate_capability_request")
+    execute_index = source.index("_execute_adapter(")
+
+    assert policy_index < execute_index

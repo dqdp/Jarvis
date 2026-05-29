@@ -274,6 +274,12 @@ git branch
 git ls-files
 ```
 
+`git status` and `git ls-files` are read-only only with an explicit safe file
+pathspec after `--`; whole-repository and directory index listings stay denied
+to avoid leaking stale secret-like filenames from git metadata.
+Direct reads of `.git` metadata through generic file readers are also denied,
+and shell observations are at least `project` sensitivity.
+
 Initial read-only diagnostics family:
 
 ```text

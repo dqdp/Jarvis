@@ -234,6 +234,80 @@ def test_runtime_app_factory_registers_tool_react_loop() -> None:
     assert EventType.POLICY_CAPABILITY_DECISION_RECORDED in event_types
 
 
+def test_runtime_app_factory_registers_project_shell_read_tool() -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        runtime_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            providers={
+                "local_structured": FakeModelProvider(
+                    structured_text_responses=[
+                        json.dumps(
+                            {
+                                "action": "tool_call",
+                                "tool_name": "tool.shell.read.project",
+                                "arguments": {
+                                    "argv": ["pwd"],
+                                    "cwd": str(Path.cwd()),
+                                },
+                            },
+                        ),
+                        json.dumps({"action": "final_answer", "final_answer": "shell ok"}),
+                    ],
+                ),
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        try:
+            conversation_store = PostgresConversationStore(runtime_app.engine)
+            event_log = PostgresEventLog(runtime_app.engine)
+            conversation = await conversation_store.create_conversation(
+                CreateConversationCommand(
+                    user_id=settings.app.default_user_id,
+                    title="factory shell tool loop",
+                    active_project_namespace="project.personal_assistant",
+                ),
+            )
+            submission = await conversation_store.submit_user_message(
+                MessageSubmissionCommand(
+                    conversation_id=conversation.conversation_id,
+                    client_message_id="client-factory-shell-tool-loop",
+                    content="use shell read",
+                    sensitivity=Sensitivity.PROJECT,
+                ),
+            )
+            result = await runtime_app.runtime.run_turn(
+                RuntimeTurnCommand(
+                    request_id=submission.request.request_id,
+                    conversation_id=submission.request.conversation_id,
+                    user_message_id=submission.user_message.message_id,
+                    user_id=settings.app.default_user_id,
+                    user_input=submission.user_message.content,
+                    active_project_namespace=conversation.active_project_namespace,
+                    model_profile="local_structured",
+                    loop_strategy=LoopStrategyName.TOOL_REACT_LOOP.value,
+                    permission_mode="developer_local",
+                ),
+            )
+            events = await event_log.query(EventFilter(request_id=submission.request.request_id))
+            return result, [event.event_type for event in events]
+        finally:
+            await runtime_app.dispose()
+
+    result, event_types = asyncio.run(scenario())
+
+    assert result.response_text == "shell ok"
+    assert EventType.TOOL_SHELL_COMPLETED in event_types
+
+
 def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
     database_url = _database_url()
     assert_test_database_url(database_url)

@@ -148,3 +148,12 @@ class ToolObservation:
             error=error,
             metadata=metadata or {},
         )
+
+
+@dataclass(frozen=True)
+class ToolInvocationResult:
+    content: str
+    content_type: str = "text/plain"
+    truncated: bool = False
+    output_bytes: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)

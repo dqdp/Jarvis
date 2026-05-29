@@ -51,6 +51,7 @@ deny destructive commands
 deny network clients
 deny interpreters
 deny secret-like paths
+deny direct reads of VCS metadata such as `.git`
 bound output
 bound wall-clock time
 audit every allow, deny, timeout and truncation
@@ -78,7 +79,7 @@ Commands must be represented as an argv array:
 
 ```text
 ["rg", "ToolGateway", "docs"]
-["git", "status", "--short"]
+["git", "status", "--short", "--", "docs/file.md"]
 ["sed", "-n", "1,120p", "docs/file.md"]
 ```
 
@@ -103,6 +104,14 @@ environment assignment prefixes
 ```
 
 This makes classification deterministic before execution.
+
+Executables are resolved from a minimal PATH, must be bare allowlisted command
+names, must come from trusted executable directories and symlink targets must
+resolve under trusted runtime roots such as system binary directories or
+Homebrew Cellar. PM-06a does not attempt to defend against a malicious local
+actor concurrently swapping already-classified project files between
+classification and execution; stronger file-descriptor or OS sandbox execution
+is deferred to a later hardening slice.
 
 ## PM-06a project inspection allowlist
 
@@ -129,6 +138,18 @@ bounded commands such as `sed -n`, `head` or `tail`.
 
 Allowed git subcommands must remain read-only. Write or state-changing git
 subcommands are denied even if the command starts with `git`.
+
+`git status` and `git ls-files` require an explicit safe file pathspec after
+`--`. Whole-repository and directory index listings are denied because git can
+report deleted or tracked secret-like paths that are no longer present in the
+filesystem.
+Direct reads of `.git` metadata through generic file readers are also denied.
+
+Non-recursive `ls` is classified against the entries that the requested listing
+can disclose. A bare `ls` at the workspace root is allowed even when hidden VCS
+metadata exists, while hidden-entry listings such as `ls -a` are denied when
+they would expose secret-like names. Recursive readers such as `rg` still scan
+descendants during classification.
 
 ## PM-06b system diagnostics allowlist
 
@@ -365,6 +386,12 @@ request_id/correlation_id when available
 
 Events must not include raw secrets, full unbounded stdout/stderr or raw
 environment values.
+If shell command output is redacted, the observation content remains structured
+JSON rather than returning raw replacement text under a JSON content type.
+
+Shell observations and shell-specific event envelopes are at least
+`project` sensitivity even when the user turn that initiated the command is
+`public`, because command output and working directories are project-scoped.
 
 ## Testing requirements
 

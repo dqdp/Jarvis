@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from assistant_core.domain.tools import ToolSpec
@@ -15,6 +15,28 @@ class ToolAdapter(Protocol):
     content_type: str
 
     async def invoke(self, arguments: dict[str, Any]) -> Any: ...
+
+
+@dataclass(frozen=True)
+class ToolClassificationResult:
+    allowed: bool
+    code: str
+    reason: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class ToolExecutionDenied(ValueError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.metadata = metadata or {}
 
 
 @dataclass(frozen=True)

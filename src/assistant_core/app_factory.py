@@ -38,6 +38,7 @@ from assistant_core.tools.builtin import calculator_tool, daemon_status_tool, da
 from assistant_core.tools.fake import fake_echo_tool, fake_fail_tool, fake_timeout_tool
 from assistant_core.tools.gateway import ToolGateway
 from assistant_core.tools.registry import ToolRegistry
+from assistant_core.tools.shell_read import project_shell_read_tool_from_config
 
 
 class AsyncDisposable(Protocol):
@@ -99,6 +100,7 @@ def create_runtime_app(
                 datetime_now_tool(),
                 calculator_tool(),
                 daemon_status_tool(),
+                project_shell_read_tool_from_config(settings.capabilities),
             ],
         ),
         policy=policy,
