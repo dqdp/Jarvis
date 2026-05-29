@@ -4,7 +4,8 @@
 
 `ModelRouter` is an internal module/package in Phase 1.
 
-Local inference node is an external OpenAI-compatible process.
+Local inference is external to `AgentRuntime` and accessed only through
+provider adapters behind `ModelRouter`.
 
 The runtime never calls vLLM, Ollama, OpenAI, NIM or provider-specific clients directly.
 
@@ -60,20 +61,28 @@ local_fast
 
 ## 4. Provider adapters
 
-Phase 1 provider adapter:
+Phase 1 provider adapters:
 
 ```text
 local_openai_compatible
+local_embedding
+ollama
 ```
 
-This adapter may point to vLLM, Ollama OpenAI-compatible mode, NIM or another local OpenAI-compatible serving endpoint.
+The `local_openai_compatible` adapter may point to vLLM, Ollama
+OpenAI-compatible mode, NIM or another local OpenAI-compatible serving
+endpoint. The `local_embedding` adapter is the narrow embedding-provider key
+used by the `local_embedding` profile.
 
-This avoids a vLLM-specific runtime dependency in Phase 1.
+The native Ollama adapter is accepted for local dogfood when the
+OpenAI-compatible endpoint does not expose final assistant content in the shape
+required by the MVP adapter.
+
+These adapters avoid a vLLM-specific runtime dependency in Phase 1.
 
 Future adapters:
 
 - OpenAIProviderAdapter;
-- OllamaNativeProviderAdapter;
 - LlamaCppProviderAdapter;
 - NIMProviderAdapter;
 - multi-node router adapter.

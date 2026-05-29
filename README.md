@@ -1,6 +1,6 @@
 # Personal Assistant Runtime — Phase 1 MVP Documentation Package
 
-Версия: implemented baseline v21
+Версия: implemented baseline v22
 Дата: 2026-05-29
 Статус: **Phase 1 Core Daemon MVP implemented and acceptance-reviewed in the local TDD harness**.
 
@@ -160,7 +160,8 @@ docs/adr/
 ### Model routing
 
 - ModelRouter is internal module/package in Phase 1.
-- Local inference node is external OpenAI-compatible process.
+- Local inference is external and accessed through `local_openai_compatible`,
+  `local_embedding` or native Ollama provider adapters behind ModelRouter.
 - Required profiles: `local_main`, `local_structured`, `local_embedding`.
 - `cloud_reasoning` may exist in config but is disabled by default.
 - No automatic fallback, especially no cloud fallback.
@@ -221,6 +222,15 @@ Implementation notes:
   remains an adapter-level optimization path, not a runtime/domain dependency.
 - Fake model and embedding providers are used for CI; real LLM calls are not
   required for acceptance.
+- Runtime dogfood wiring is available through
+  `assistant_core.app_factory:create_asgi_app --factory`, `make migrate` and
+  `make run`.
+- Local Ollama dogfood is available through `config/ollama.yaml`. The current
+  local profile uses `qwen3.5:4b` for chat/structured calls and
+  `embeddinggemma:latest` for embeddings.
+- A thin local CLI is available through `make cli ARGS='...'` or the `jarvis`
+  console entrypoint. Running `make cli` without `ARGS` opens an interactive
+  chat shell with slash commands.
 
 Future architecture-changing changes still require the relevant ADR update.
 
@@ -239,3 +249,24 @@ Future architecture-changing changes still require the relevant ADR update.
 - MVP acceptance checklist was completed.
 - Documentation acceptance tests were added.
 - MVP implementation archive was added.
+
+## Runtime verification additions in v21
+
+- Production app factory was added for config-driven daemon assembly.
+- Profile-specific local provider wiring was added for chat, structured and
+  embedding profiles.
+- OpenAI-compatible embedding calls are supported by the local provider adapter.
+- Standard local runtime targets `make migrate` and `make run` were added.
+
+## Local Ollama and CLI additions in v22
+
+- `config/ollama.yaml` wires local Ollama profiles without cloud fallback.
+- `qwen3.5:4b` is the current chat/structured model for local dogfood
+  verification on the target machine.
+- `embeddinggemma:latest` is the initial local embedding model.
+- `make models-list`, `make models-pull` and `make cli ARGS='...'` were added
+  for local operation.
+- `make cli` now opens an interactive chat shell with `/help`, `/new`,
+  `/memory add`, `/memory list` and `/exit`.
+- Interactive CLI input uses Unix `readline` on TTY, so Up/Down browse
+  in-session history without persisting raw prompts to disk.

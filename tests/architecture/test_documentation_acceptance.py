@@ -130,7 +130,34 @@ def test_required_make_targets_are_self_contained() -> None:
 
     assert "test-e2e: test-db-up" in makefile
     assert "DATABASE_URL=$(TEST_DATABASE_URL) $(PYTEST) -m e2e tests/e2e" in makefile
+    assert "migrate:" in makefile
+    assert (
+        "PYTHONPATH=$(APP_PYTHONPATH) DATABASE_URL=$(DATABASE_URL) "
+        "$(PYTHON) -m assistant_core.storage.migrations"
+    ) in makefile
+    assert "run:" in makefile
+    assert "PYTHONPATH=$(APP_PYTHONPATH) DATABASE_URL=$(DATABASE_URL)" in makefile
+    assert "assistant_core.app_factory:create_asgi_app --factory" in makefile
+    assert "models-list:" in makefile
+    assert "models-pull:" in makefile
+    assert "cli:" in makefile
+    assert "PYTHONPATH=$(APP_PYTHONPATH) $(PYTHON) -m assistant_core.cli $(ARGS)" in makefile
     assert "ALLOW_EMPTY" not in makefile
+
+
+def test_native_ollama_provider_is_documented_as_phase_1_adapter() -> None:
+    from assistant_core.config.settings import ConfigLoader
+
+    settings = ConfigLoader(PROJECT_ROOT / "config").load("ollama")
+    assert settings.model_profiles["local_main"].provider == "ollama"
+
+    model_router_adr = (DOCS_ROOT / "adr" / "ADR-019_model_profiles_and_model_router_baseline.md").read_text(
+        encoding="utf-8",
+    )
+    project_charter = (DOCS_ROOT / "00_project_charter.md").read_text(encoding="utf-8")
+
+    assert "native Ollama adapter" in model_router_adr
+    assert "local OpenAI-compatible or native Ollama inference backend" in project_charter
 
 
 def test_lifecycle_docs_do_not_defer_implemented_cancellation() -> None:

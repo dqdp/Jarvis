@@ -106,7 +106,7 @@ Agent Runtime может зависеть от:
 - manual memory creation;
 - simple memory retrieval;
 - model-router abstraction;
-- one local OpenAI-compatible inference backend;
+- one local OpenAI-compatible or native Ollama inference backend;
 - disabled external LLM profile;
 - SSE response streaming;
 - structured logging;

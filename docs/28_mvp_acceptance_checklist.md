@@ -111,6 +111,7 @@ pgvector remains tracked as an adapter-level follow-up, not an MVP blocker.
 - [x] `GET /v1/memories` works.
 - [x] `GET /v1/health` works.
 - [x] SSE emits runtime events.
+- [x] Production app factory assembles FastAPI/runtime/storage/model providers.
 - [x] `client_message_id` idempotency works.
 - [x] Same `client_message_id` with different content returns conflict.
 - [x] Standard error format is used.
@@ -127,6 +128,16 @@ pgvector remains tracked as an adapter-level follow-up, not an MVP blocker.
 - [x] Cloud is disabled by default.
 - [x] Raw prompt logging is disabled by default.
 - [x] Runtime budgets and windowing are config-driven.
+- [x] Standard `make migrate` and `make run` targets exist.
+- [x] Local Ollama dogfood profile exists with `qwen3.5:4b` as the current
+  chat model and `embeddinggemma:latest` as the embedding model.
+- [x] CLI command target exists for health, manual memory and chat smoke
+  verification through the HTTP API.
+- [x] CLI has an interactive terminal chat shell with conversation reset and
+  manual memory commands.
+- [x] CLI supports Unix TTY Up/Down in-session input history without persisted
+  raw prompt history; `/memory add` payloads and `secret` sessions are excluded
+  from readline history.
 
 ---
 

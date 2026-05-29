@@ -4,7 +4,7 @@
 
 Implemented MVP baseline, Slice 00 through Slice 19.
 
-Date: 2026-05-28
+Date: 2026-05-29
 
 ## Scope Completed
 
@@ -109,6 +109,58 @@ The final closure adds regression coverage for null-safe migration preflights,
 public SSE replay DTOs, configured memory retrieval exclusions and score
 thresholds, and no-scope-creep architecture packages.
 
+Dogfood runtime verification result on 2026-05-29:
+
+```text
+make test
+  unit: 42 passed
+  contract: 122 passed
+  integration: 8 passed
+  golden: 17 passed
+  architecture: 22 passed
+  e2e: 1 passed
+```
+
+This verification adds a production composition root, profile-specific provider
+selection, OpenAI-compatible embedding calls and Makefile runtime targets.
+
+Local Ollama and CLI verification result on 2026-05-29:
+
+```text
+make test
+  unit: 70 passed
+  contract: 122 passed
+  integration: 8 passed
+  golden: 19 passed
+  architecture: 25 passed
+  e2e: 1 passed
+```
+
+This verification adds native Ollama provider support, the `ollama` runtime
+profile, local model Makefile targets and a thin CLI for health, manual memory
+and chat smoke checks. The current local chat model is `qwen3.5:4b`; the local
+embedding model is `embeddinggemma:latest`.
+
+Interactive CLI shell verification was added after the first CLI pass. Running
+`make cli` without `ARGS`, or `make cli ARGS='chat'`, opens a terminal chat
+session with `/help`, `/new`, `/memory add`, `/memory list` and `/exit`.
+The CLI also cancels the server request on stream interruption, and the local
+Ollama dogfood profile now uses `qwen3.5:4b` with `max_output_tokens` capped at
+1024 to bound runaway generations.
+The interactive shell uses Unix `readline` on TTY for Up/Down in-session input
+history without persisting raw prompts to disk. `/memory add` payloads and
+`secret` sensitivity sessions are excluded from readline history.
+
+The final consistency pass also verifies that `DeterministicContextAssembler`
+includes assembled context sections in provider-neutral model messages,
+provider adapters surface timeouts and embedding cardinality mismatches
+explicitly, native Ollama stream error chunks fail the request instead of
+completing partial output, CLI daemon errors are reported as `error>`, and
+migration entrypoints require a local database host unless explicitly
+overridden. The CLI history regression checks also cover TTY auto-history
+removal before filtering `/memory add` payloads and `secret` sensitivity
+sessions.
+
 Layer-specific targets:
 
 ```text
@@ -190,6 +242,24 @@ The final review follow-ups are now implemented:
 - architecture tests fail if MVP-forbidden packages such as tools, MCP, RAG,
   ReAct, planner or voice appear under `assistant_core`;
 - cancellation documentation states that terminal request state wins races.
+
+## Dogfood Runtime Verification
+
+The first operational verification pass closed the main gap between test wiring
+and a runnable daemon:
+
+- `assistant_core.app_factory:create_asgi_app` now assembles the FastAPI app
+  from config, PostgreSQL adapters, policy, context assembler, model router and
+  local providers;
+- `ModelRouter` supports profile-specific providers before falling back to
+  provider-name lookup, allowing `local_main`, `local_structured` and
+  `local_embedding` to use separate profile adapters;
+- the local OpenAI-compatible adapter supports `/embeddings`;
+- `make migrate` and `make run` provide standard local runtime commands;
+- `make cli`, `make models-list` and `make models-pull` provide local operation
+  commands;
+- a contract test exercises the app factory with fake providers through
+  health, memory write, message submission and SSE completion.
 
 ## Deferred
 

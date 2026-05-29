@@ -30,15 +30,25 @@ cloud_reasoning
 
 `ModelRouter` remains an internal module/package inside the modular monolith.
 
-The local inference node remains an external OpenAI-compatible process.
+The local inference backend remains external to `AgentRuntime` and is accessed
+only through provider adapters behind `ModelRouter`.
 
-Phase 1 provider adapter is:
+Phase 1 provider adapters are:
 
 ```text
 local_openai_compatible
+local_embedding
+ollama
 ```
 
-Embeddings are accessed through a narrow `EmbeddingPort`; its default implementation delegates to `ModelRouter.embed()` with `local_embedding`.
+`ollama` is the native Ollama adapter. It is accepted for local dogfood because
+some local Qwen builds expose usable output through Ollama native `/api/chat`
+while their OpenAI-compatible endpoint can separate reasoning from final
+content in a way that produces empty assistant text for this MVP adapter.
+
+Embeddings are accessed through a narrow `EmbeddingPort`; its default
+implementation delegates to `ModelRouter.embed()` with the `local_embedding`
+profile and provider key.
 
 Structured output uses JSON schema prompting plus local validation. Provider-native structured output is allowed only as an optimization.
 
@@ -63,7 +73,8 @@ Every model call must pass `PolicyPort`, create `model_invocation` audit record 
 
 This preserves fast MVP implementation while preventing backend lock-in.
 
-`local_openai_compatible` avoids tying the runtime to vLLM specifically.
+`local_openai_compatible` and the native Ollama adapter avoid tying the runtime
+to a specific model server while preserving the same `ModelRouterPort` contract.
 
 A separate `EmbeddingPort` keeps the memory subsystem independent from chat-oriented model routing while allowing centralized audit and policy enforcement.
 

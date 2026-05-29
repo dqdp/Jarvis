@@ -31,14 +31,14 @@ AgentRuntime
       -> ProviderAdapterRegistry
       -> ModelInvocationLogger
       -> ProviderAdapter
-          -> local OpenAI-compatible inference node
+          -> local OpenAI-compatible or native Ollama inference backend
 ```
 
 Phase 1:
 
 - `ModelRouter` — internal module/package внутри modular monolith;
-- local inference node — отдельный процесс;
-- provider adapter — `local_openai_compatible`;
+- local inference backend — отдельный процесс;
+- provider adapters — `local_openai_compatible`, `local_embedding`, `ollama`;
 - cloud provider adapter может быть описан, но выключен.
 
 ---
@@ -362,6 +362,8 @@ MVP includes:
 - `local_embedding`;
 - disabled `cloud_reasoning`;
 - `local_openai_compatible` provider adapter;
+- `local_embedding` provider adapter key for the embedding profile;
+- `ollama` provider adapter for local dogfood profiles;
 - `EmbeddingPort` thin wrapper;
 - model invocation audit;
 - policy checks;
