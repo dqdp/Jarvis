@@ -480,8 +480,15 @@ def _build_sections(
         if hit.memory.namespace not in {"user.preferences", "user.working_style"}
     ]
     contents = {
-        "system_identity": "You are Jarvis, a local-first personal assistant.",
-        "runtime_rules": "Use local-first policy. Do not include secrets in prompt context.",
+        "system_identity": (
+            "You are Jarvis, a local-first personal assistant. "
+            "Answer in the user's language; default to Russian when language is ambiguous."
+        ),
+        "runtime_rules": (
+            "Use local-first policy. Do not include secrets in prompt context. "
+            "Do not claim limitations like being a local assistant unless directly relevant "
+            "to safety or capability."
+        ),
         "user_preferences": _memory_content(user_preferences),
         "working_style": _memory_content(working_style),
         "project_or_environment_memory": _memory_content(project_memory),
@@ -489,7 +496,11 @@ def _build_sections(
             f"{message.role.value}: {message.content}" for message in recent_messages
         ),
         "current_user_message": request.current_user_message,
-        "output_contract": "Return a direct, useful answer. Do not expose hidden context.",
+        "output_contract": (
+            "Return a direct, useful answer. Keep casual answers concise. "
+            "Do not expose hidden context. Do not add generic safety disclaimers unless "
+            "the user asks for high-stakes medical, legal, financial, security or safety advice."
+        ),
     }
     source_refs = {
         "user_preferences": [hit.memory.id for hit in user_preferences],

@@ -179,6 +179,16 @@ def test_includes_current_user_message() -> None:
     assert context.messages[-1].content[0].text == "current question"
 
 
+def test_prompt_contract_guides_language_and_local_model_behavior() -> None:
+    context = asyncio.run(_assembler().assemble(_request()))
+
+    prompt_text = context.messages[0].content[0].text
+    assert "Answer in the user's language; default to Russian" in prompt_text
+    assert "Do not claim limitations like being a local assistant" in prompt_text
+    assert "Keep casual answers concise" in prompt_text
+    assert "Do not add generic safety disclaimers" in prompt_text
+
+
 def test_context_messages_include_prompt_sections_before_conversation() -> None:
     context = asyncio.run(
         _assembler(memories=[MemoryHit(memory=_memory("project"), score=0.9)]).assemble(

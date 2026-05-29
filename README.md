@@ -67,6 +67,7 @@ docs/
   30_mvp_implementation_archive.md
   31_mvp_release_notes.md
   32_known_limitations.md
+  33_alpha_model_behavior_smoke.md
 ```
 
 ## ADR Index

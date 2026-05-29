@@ -27,3 +27,6 @@
 2. Memory search/delete lifecycle.
 3. Model behavior tuning and smoke/eval scenarios.
 4. Later, content retrieval/RAG and tool-capable loop strategies.
+
+The first three Alpha priorities are implemented as the first post-MVP slice.
+Manual model smoke coverage is tracked in `docs/33_alpha_model_behavior_smoke.md`.
