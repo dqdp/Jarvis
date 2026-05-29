@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 
 import yaml
 
+from assistant_core.domain.policy import Capability, PermissionMode, PolicyDecisionOutcome
+
 
 SENSITIVITY_VALUES = {"public", "project", "personal", "infra", "secret"}
 MEMORY_TYPES = {"fact", "preference", "procedure", "summary"}
@@ -128,6 +130,12 @@ class PolicyConfig:
 
 
 @dataclass(frozen=True)
+class PermissionsConfig:
+    mode: PermissionMode
+    modes: dict[str, dict[str, str]]
+
+
+@dataclass(frozen=True)
 class PrivacyConfig:
     sensitivity_order: list[str]
     raw_prompt_logging: bool
@@ -154,6 +162,8 @@ class Settings:
     context_assembly: ContextAssemblyConfig
     runtime_budgets: dict[str, RuntimeBudgetConfig]
     policy: PolicyConfig
+    permissions: PermissionsConfig
+    capabilities: dict[str, Any]
     privacy: PrivacyConfig
     observability: ObservabilityConfig
     raw: dict[str, Any]
@@ -169,7 +179,7 @@ class ConfigLoader:
         if profile != "default":
             data = _deep_merge(data, self._load_yaml(profile))
         self._apply_env_overrides(data)
-        settings = _settings_from_mapping(data)
+        settings = _settings_from_mapping(data, project_root=self._config_dir.resolve().parent)
         _validate(settings)
         return settings
 
@@ -193,7 +203,7 @@ class ConfigLoader:
             _set_nested(data, path, _parse_env_value(value))
 
 
-def _settings_from_mapping(data: dict[str, Any]) -> Settings:
+def _settings_from_mapping(data: dict[str, Any], *, project_root: Path) -> Settings:
     model_profiles = {
         name: ModelProfileConfig(**profile)
         for name, profile in data["model_profiles"].items()
@@ -231,6 +241,11 @@ def _settings_from_mapping(data: dict[str, Any]) -> Settings:
                 **data["policy"]["context_inclusion"],
             ),
         ),
+        permissions=PermissionsConfig(
+            mode=PermissionMode(data["permissions"]["mode"]),
+            modes=data["permissions"]["modes"],
+        ),
+        capabilities=_normalize_capabilities(data.get("capabilities", {}), project_root),
         privacy=PrivacyConfig(**data["privacy"]),
         observability=ObservabilityConfig(**data["observability"]),
         raw=data,
@@ -290,6 +305,76 @@ def _validate(settings: Settings) -> None:
         raise ConfigError("secret memory writes must be denied")
     if "secret" not in settings.policy.context_inclusion.deny_sensitivity:
         raise ConfigError("secret context inclusion must be denied")
+    if settings.permissions.mode not in {
+        PermissionMode.LOCKED_DOWN,
+        PermissionMode.DEVELOPER_LOCAL,
+        PermissionMode.AUTOMATION,
+    }:
+        raise ConfigError("invalid permission mode")
+    missing_modes = {"locked_down", "developer_local", "automation"} - set(
+        settings.permissions.modes,
+    )
+    if missing_modes:
+        raise ConfigError(f"missing permission modes: {sorted(missing_modes)}")
+    for mode_name, capability_actions in settings.permissions.modes.items():
+        try:
+            PermissionMode(mode_name)
+        except ValueError as exc:
+            raise ConfigError(f"invalid permission mode: {mode_name}") from exc
+        if not isinstance(capability_actions, dict):
+            raise ConfigError(f"permission mode must be a mapping: {mode_name}")
+        for capability_name, action in capability_actions.items():
+            try:
+                Capability(capability_name)
+            except ValueError as exc:
+                raise ConfigError(f"invalid capability in permissions: {capability_name}") from exc
+            try:
+                PolicyDecisionOutcome(action)
+            except ValueError as exc:
+                raise ConfigError(
+                    f"invalid permission action for {mode_name}.{capability_name}",
+                ) from exc
+
+    shell_read = settings.capabilities.get("tool.shell.read")
+    if not isinstance(shell_read, dict):
+        raise ConfigError("capabilities.tool.shell.read must be configured")
+    allowed_roots = shell_read.get("allowed_roots")
+    if (
+        not isinstance(allowed_roots, list)
+        or not allowed_roots
+        or not all(isinstance(root, str) and root for root in allowed_roots)
+    ):
+        raise ConfigError("capabilities.tool.shell.read.allowed_roots must be non-empty")
+    for key in ("max_output_bytes", "timeout_seconds"):
+        value = shell_read.get(key)
+        if not isinstance(value, int) or value <= 0:
+            raise ConfigError(f"capabilities.tool.shell.read.{key} must be a positive integer")
+
+
+def _normalize_capabilities(
+    capabilities: dict[str, Any],
+    project_root: Path,
+) -> dict[str, Any]:
+    normalized = dict(capabilities)
+    shell_read = dict(normalized.get("tool.shell.read", {}))
+    if shell_read:
+        roots = shell_read.get("allowed_roots", [])
+        if isinstance(roots, list) and all(isinstance(root, str) for root in roots):
+            shell_read["allowed_roots"] = [
+                _normalize_config_path(root, project_root)
+                for root in roots
+            ]
+        else:
+            shell_read["allowed_roots"] = roots
+        normalized["tool.shell.read"] = shell_read
+    return normalized
+
+
+def _normalize_config_path(value: str, project_root: Path) -> str:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = project_root / path
+    return str(path.resolve())
 
 
 def _is_local_endpoint(endpoint: str) -> bool:

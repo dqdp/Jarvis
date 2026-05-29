@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from assistant_core.domain.policy import (
+    CapabilityPolicyRequest,
     ContextPolicyRequest,
     MemoryWritePolicyRequest,
     ModelPolicyRequest,
@@ -24,4 +25,9 @@ class PolicyPort(Protocol):
     async def evaluate_context_inclusion(
         self,
         request: ContextPolicyRequest,
+    ) -> PolicyDecision: ...
+
+    async def evaluate_capability_request(
+        self,
+        request: CapabilityPolicyRequest,
     ) -> PolicyDecision: ...

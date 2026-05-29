@@ -143,6 +143,45 @@ policy:
   context_inclusion:
     deny_sensitivity: [secret]
 
+permissions:
+  mode: developer_local
+  modes:
+    locked_down:
+      tool.safe: allow
+      content.retrieve: approval_required
+      context.inspect: allow
+      tool.shell.read: approval_required
+      tool.shell.write: deny
+      tool.shell.network: deny
+      tool.shell.destructive: deny
+      model.cloud: deny
+    developer_local:
+      tool.safe: allow
+      content.retrieve: allow
+      context.inspect: allow
+      tool.shell.read: allow
+      tool.shell.write: approval_required
+      tool.shell.network: deny
+      tool.shell.destructive: deny
+      integration.telegram: approval_required
+      model.cloud: deny
+    automation:
+      tool.safe: allow
+      content.retrieve: allow
+      context.inspect: allow
+      tool.shell.read: allow
+      tool.shell.write: approval_required
+      task.schedule: approval_required
+      task.background: approval_required
+      memory.write: deny
+      model.cloud: deny
+
+capabilities:
+  tool.shell.read:
+    allowed_roots: ["."]
+    max_output_bytes: 20000
+    timeout_seconds: 10
+
 privacy:
   sensitivity_order: [public, project, personal, infra, secret]
   raw_prompt_logging: false

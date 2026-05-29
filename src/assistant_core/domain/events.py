@@ -32,6 +32,7 @@ class EventType(StrEnum):
     MODEL_REQUEST_FAILED = "model.request.failed"
     MODEL_REQUEST_DENIED = "model.request.denied"
     POLICY_DECISION_RECORDED = "policy.decision.recorded"
+    POLICY_CAPABILITY_DECISION_RECORDED = "policy.capability.decision.recorded"
     RUNTIME_ERROR = "runtime.error"
 
 

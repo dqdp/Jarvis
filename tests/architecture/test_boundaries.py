@@ -250,3 +250,23 @@ def test_no_mvp_scope_creep_packages_exist() -> None:
         for package in forbidden_packages
         if (SRC_ROOT / package).exists()
     ) == []
+
+
+def test_no_toolgateway_package_required_for_pm01() -> None:
+    assert not (SRC_ROOT / "toolgateway").exists()
+
+
+def test_no_shell_adapter_package_required_for_pm01() -> None:
+    assert not (SRC_ROOT / "tools" / "shell").exists()
+
+
+def test_runtime_does_not_import_tool_or_shell_adapters() -> None:
+    _assert_no_import_prefixes(
+        _python_files("runtime"),
+        {
+            "assistant_core.toolgateway",
+            "assistant_core.tools",
+            "assistant_core.adapters.shell",
+            "subprocess",
+        },
+    )

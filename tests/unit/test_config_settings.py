@@ -129,6 +129,41 @@ def test_invalid_config_fails_fast(monkeypatch) -> None:
         load_settings("default")
 
 
+def test_permission_actions_must_be_known(monkeypatch) -> None:
+    monkeypatch.setenv("JARVIS_PERMISSIONS__MODES__DEVELOPER_LOCAL__TOOL.SAFE", "maybe")
+
+    with pytest.raises(ConfigError):
+        load_settings("default")
+
+
+def test_shell_read_allowed_roots_must_be_explicit(monkeypatch) -> None:
+    monkeypatch.setenv("JARVIS_CAPABILITIES__TOOL.SHELL.READ__ALLOWED_ROOTS", "[]")
+
+    with pytest.raises(ConfigError):
+        load_settings("default")
+
+
+def test_shell_read_allowed_roots_must_be_a_list(monkeypatch) -> None:
+    monkeypatch.setenv("JARVIS_CAPABILITIES__TOOL.SHELL.READ__ALLOWED_ROOTS", '"/tmp"')
+
+    with pytest.raises(ConfigError):
+        load_settings("default")
+
+
+@pytest.mark.parametrize(
+    ("env_name", "value"),
+    [
+        ("JARVIS_CAPABILITIES__TOOL.SHELL.READ__MAX_OUTPUT_BYTES", "0"),
+        ("JARVIS_CAPABILITIES__TOOL.SHELL.READ__TIMEOUT_SECONDS", "0"),
+    ],
+)
+def test_shell_read_limits_must_be_positive(monkeypatch, env_name: str, value: str) -> None:
+    monkeypatch.setenv(env_name, value)
+
+    with pytest.raises(ConfigError):
+        load_settings("default")
+
+
 def test_local_model_endpoint_must_not_be_external(monkeypatch) -> None:
     monkeypatch.setenv("JARVIS_MODEL_PROFILES__LOCAL_MAIN__ENDPOINT", "https://api.openai.com/v1")
 
