@@ -50,6 +50,8 @@ class MemoryWritePort(Protocol):
 class MemoryReadPort(Protocol):
     async def retrieve(self, query: MemoryQuery) -> list[MemoryHit]: ...
 
+    async def get_memory(self, memory_id: str) -> MemoryRecord | None: ...
+
     async def list_memories(
         self,
         limit: int = 100,

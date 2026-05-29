@@ -202,7 +202,7 @@ class HttpJarvisClient:
         return await self._get_json("/v1/memories", params={"query": query})
 
     async def delete_memory(self, memory_id: str) -> dict[str, Any]:
-        return await self._delete_json(f"/v1/memories/{memory_id}")
+        return await self._post_json(f"/v1/memories/{memory_id}/archive", {})
 
     async def cancel_request(self, request_id: str) -> dict[str, Any]:
         return await self._post_json(f"/v1/requests/{request_id}/cancel", {})
@@ -229,22 +229,6 @@ class HttpJarvisClient:
                     if params is None
                     else await client.get(path, params=params)
                 )
-                response.raise_for_status()
-                return response.json()
-        except httpx.HTTPStatusError as exc:
-            raise CliUserError(_http_error_message(exc, path)) from exc
-        except httpx.HTTPError as exc:
-            raise CliUserError(f"cannot reach daemon at {self._base_url}: {exc}") from exc
-        except ValueError as exc:
-            raise CliUserError(f"invalid JSON response from daemon for {path}") from exc
-
-    async def _delete_json(self, path: str) -> dict[str, Any]:
-        try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            ) as client:
-                response = await client.delete(path)
                 response.raise_for_status()
                 return response.json()
         except httpx.HTTPStatusError as exc:
@@ -353,6 +337,17 @@ async def _run_command(
         await write_memory_list(client=client, stdout=stdout)
         return 0
 
+    if args.command == "memory" and args.memory_command == "search":
+        await write_memory_list(client=client, stdout=stdout, query=" ".join(args.query))
+        return 0
+
+    if args.command == "memory" and args.memory_command == "delete":
+        memory = await client.delete_memory(args.memory_id)
+        stdout.write(
+            f"memory> {_required_str(memory, 'memory_id')} {_display_text(memory.get('status'))}\n"
+        )
+        return 0
+
     raise AssertionError(f"unhandled command: {args.command}")
 
 
@@ -439,7 +434,12 @@ class TerminalInteractiveLineReader:
                 self._add_history(buffer)
                 return buffer
             if char == "\x03":
-                raise KeyboardInterrupt
+                buffer = ""
+                draft = ""
+                history_index = len(self._history)
+                self._stdout.write("^C\n")
+                self._stdout.flush()
+                return ""
             if char == "\x04":
                 if not buffer:
                     self._stdout.write("\n")
@@ -544,111 +544,120 @@ async def run_interactive_chat(
         line = raw_line.strip()
         if not line:
             continue
-        if line in {"/exit", "/quit"}:
-            stdout.write("bye\n")
-            return 0
-        if line == "/help":
-            write_interactive_help(stdout)
-            continue
-        if line == "/status":
-            await write_status(client=client, stdout=stdout)
-            continue
-        if line == "/model":
-            await write_model_status(client=client, stdout=stdout)
-            continue
-        if line == "/sessions":
-            await write_conversation_list(client=client, stdout=stdout)
-            continue
-        if line.startswith("/resume"):
-            conversation_id = line.removeprefix("/resume").strip()
-            if not conversation_id:
-                stdout.write("usage> /resume <conversation_id>\n")
+        try:
+            if line in {"/exit", "/quit"}:
+                stdout.write("bye\n")
+                return 0
+            if line == "/help":
+                write_interactive_help(stdout)
                 continue
-            conversation = await client.get_conversation(conversation_id)
-            state.conversation_id = _required_str(conversation, "conversation_id")
-            state.next_title = None
-            title_suffix = _display_text(conversation.get("title"))
-            stdout.write(f"conversation> resumed {state.conversation_id}")
-            if title_suffix:
-                stdout.write(f" {title_suffix}")
-            stdout.write("\n")
-            continue
-        if line.startswith("/new"):
-            state.conversation_id = None
-            state.next_title = line.removeprefix("/new").strip() or None
-            state.last_request_id = None
-            stdout.write("conversation> new conversation\n")
-            continue
-        if line == "/clear":
-            state.conversation_id = None
-            state.next_title = None
-            state.last_request_id = None
-            stdout.write("conversation> cleared\n")
-            continue
-        if line.startswith("/cancel"):
-            request_id = line.removeprefix("/cancel").strip() or state.last_request_id
-            if request_id is None:
-                stdout.write("cancelled> no request\n")
+            if line == "/status":
+                await write_status(client=client, stdout=stdout)
                 continue
-            await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
-            continue
-        if line == "/memory list":
-            await write_memory_list(client=client, stdout=stdout)
-            continue
-        if line.startswith("/memory search"):
-            query = line.removeprefix("/memory search").strip()
-            if not query:
-                stdout.write("usage> /memory search <query>\n")
+            if line == "/model":
+                await write_model_status(client=client, stdout=stdout)
                 continue
-            await write_memory_list(client=client, stdout=stdout, query=query)
-            continue
-        if line.startswith("/memory delete"):
-            memory_id = line.removeprefix("/memory delete").strip()
-            if not memory_id:
-                stdout.write("usage> /memory delete <memory_id>\n")
+            if line == "/sessions":
+                await write_conversation_list(client=client, stdout=stdout)
                 continue
-            memory = await client.delete_memory(memory_id)
-            stdout.write(
-                f"memory> {_required_str(memory, 'memory_id')} {_display_text(memory.get('status'))}\n"
-            )
-            continue
-        if line.startswith("/memory add"):
-            content = line.removeprefix("/memory add").strip()
-            if not content:
-                stdout.write("usage> /memory add <content>\n")
+            if line.startswith("/resume"):
+                conversation_id = line.removeprefix("/resume").strip()
+                if not conversation_id:
+                    stdout.write("usage> /resume <conversation_id>\n")
+                    continue
+                conversation = await client.get_conversation(conversation_id)
+                state.conversation_id = _required_str(conversation, "conversation_id")
+                state.next_title = None
+                state.last_request_id = None
+                title_suffix = _display_text(conversation.get("title"))
+                stdout.write(f"conversation> resumed {state.conversation_id}")
+                if title_suffix:
+                    stdout.write(f" {title_suffix}")
+                stdout.write("\n")
                 continue
-            memory = await client.create_memory(
-                namespace=project_namespace,
-                memory_type=DEFAULT_MEMORY_TYPE,
-                content=content,
+            if line.startswith("/new"):
+                state.conversation_id = None
+                state.next_title = line.removeprefix("/new").strip() or None
+                state.last_request_id = None
+                stdout.write("conversation> new conversation\n")
+                continue
+            if line == "/clear":
+                state.conversation_id = None
+                state.next_title = None
+                state.last_request_id = None
+                stdout.write("conversation> cleared\n")
+                continue
+            if line.startswith("/cancel"):
+                request_id = line.removeprefix("/cancel").strip() or state.last_request_id
+                if request_id is None:
+                    stdout.write("cancelled> no request\n")
+                    continue
+                await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
+                state.last_request_id = None
+                continue
+            if line == "/memory list":
+                await write_memory_list(client=client, stdout=stdout)
+                continue
+            if line.startswith("/memory search"):
+                query = line.removeprefix("/memory search").strip()
+                if not query:
+                    stdout.write("usage> /memory search <query>\n")
+                    continue
+                await write_memory_list(client=client, stdout=stdout, query=query)
+                continue
+            if line.startswith("/memory delete"):
+                memory_id = line.removeprefix("/memory delete").strip()
+                if not memory_id:
+                    stdout.write("usage> /memory delete <memory_id>\n")
+                    continue
+                memory = await client.delete_memory(memory_id)
+                stdout.write(
+                    "memory> "
+                    f"{_required_str(memory, 'memory_id')} "
+                    f"{_display_text(memory.get('status'))}\n"
+                )
+                continue
+            if line.startswith("/memory add"):
+                content = line.removeprefix("/memory add").strip()
+                if not content:
+                    stdout.write("usage> /memory add <content>\n")
+                    continue
+                memory = await client.create_memory(
+                    namespace=project_namespace,
+                    memory_type=DEFAULT_MEMORY_TYPE,
+                    content=content,
+                    sensitivity=sensitivity,
+                )
+                stdout.write(f"memory> {_required_str(memory, 'memory_id')}\n")
+                continue
+            if line.startswith("/"):
+                stdout.write("error> unknown command; type /help\n")
+                continue
+
+            if state.conversation_id is None:
+                conversation = await client.create_conversation(
+                    title=state.next_title,
+                    active_project_namespace=project_namespace,
+                )
+                state.conversation_id = _required_str(conversation, "conversation_id")
+                state.next_title = None
+
+            exit_code = await submit_and_stream_message(
+                client=client,
+                stdout=stdout,
+                conversation_id=state.conversation_id,
+                content=line,
                 sensitivity=sensitivity,
+                client_message_id=None,
+                assistant_prefix="assistant> ",
+                on_request_started=lambda request_id: setattr(state, "last_request_id", request_id),
             )
-            stdout.write(f"memory> {_required_str(memory, 'memory_id')}\n")
+            state.last_request_id = None
+            if exit_code != 0:
+                continue
+        except CliUserError as exc:
+            stdout.write(f"error> {exc}\n")
             continue
-        if line.startswith("/"):
-            stdout.write("error> unknown command; type /help\n")
-            continue
-
-        if state.conversation_id is None:
-            conversation = await client.create_conversation(
-                title=state.next_title,
-                active_project_namespace=project_namespace,
-            )
-            state.conversation_id = _required_str(conversation, "conversation_id")
-            state.next_title = None
-
-        exit_code = await submit_and_stream_message(
-            client=client,
-            stdout=stdout,
-            conversation_id=state.conversation_id,
-            content=line,
-            sensitivity=sensitivity,
-            client_message_id=None,
-            assistant_prefix="assistant> ",
-            on_request_started=lambda request_id: setattr(state, "last_request_id", request_id),
-        )
-        if exit_code != 0:
-            return exit_code
 
 
 def write_interactive_help(stdout: TextIO) -> None:
@@ -703,10 +712,15 @@ async def write_model_status(*, client: JarvisClient, stdout: TextIO) -> None:
 
 async def write_conversation_list(*, client: JarvisClient, stdout: TextIO) -> None:
     payload = await client.list_conversations(limit=20)
-    for conversation in payload.get("conversations", []):
+    conversations = payload.get("conversations", [])
+    if not conversations:
+        stdout.write("sessions> empty\n")
+        return
+    for conversation in conversations:
+        conversation_id = _required_str(conversation, "conversation_id")
         stdout.write(
             "session> "
-            f"{conversation['conversation_id']} "
+            f"{conversation_id} "
             f"{_display_text(conversation.get('status'))} "
             f"{_display_text(conversation.get('title'))}\n"
         )
@@ -719,10 +733,15 @@ async def write_memory_list(
     query: str | None = None,
 ) -> None:
     payload = await client.list_memories() if query is None else await client.search_memories(query)
-    for memory in payload.get("memories", []):
+    memories = payload.get("memories", [])
+    if not memories:
+        stdout.write("memory> empty\n")
+        return
+    for memory in memories:
+        memory_id = _required_str(memory, "memory_id")
         stdout.write(
             "memory> "
-            f"{memory['memory_id']} "
+            f"{memory_id} "
             f"{_display_text(memory.get('status'))} "
             f"{_display_text(memory.get('memory_type'))} "
             f"{_display_text(memory.get('sensitivity'))} "
@@ -764,6 +783,10 @@ async def submit_and_stream_message(
                 stdout.write(json.dumps(data.get("error", data), ensure_ascii=False))
                 stdout.write("\n")
                 return 1
+            elif event_type == "request.processing.cancelled":
+                stdout.write("\n")
+                stdout.write(f"cancelled> request {request_id}\n")
+                return 130
     except (asyncio.CancelledError, KeyboardInterrupt):
         stdout.write("\n")
         await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
@@ -779,11 +802,15 @@ async def cancel_server_request(
     stdout: TextIO,
 ) -> None:
     try:
-        await client.cancel_request(request_id)
-    except Exception as exc:
+        payload = await client.cancel_request(request_id)
+    except CliUserError as exc:
         stdout.write(f"cancelled> local client interrupted; server cancel failed: {exc}\n")
         return
-    stdout.write(f"cancelled> request {request_id}\n")
+    status = payload.get("status")
+    if status == "cancelled":
+        stdout.write(f"cancelled> request {request_id}\n")
+        return
+    stdout.write(f"request> {request_id} {status or 'unchanged'}\n")
 
 
 def parse_sse_blocks(raw: str) -> list[tuple[str, dict[str, Any]]]:
@@ -934,6 +961,10 @@ def _parser() -> argparse.ArgumentParser:
     memory_add.add_argument("--memory-type", default=DEFAULT_MEMORY_TYPE)
     memory_add.add_argument("--sensitivity", default=DEFAULT_SENSITIVITY)
     memory_subparsers.add_parser("list")
+    memory_search = memory_subparsers.add_parser("search")
+    memory_search.add_argument("query", nargs="+")
+    memory_delete = memory_subparsers.add_parser("delete")
+    memory_delete.add_argument("memory_id")
 
     return parser
 

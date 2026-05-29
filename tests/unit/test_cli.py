@@ -165,10 +165,48 @@ class InterruptedStreamCliClient(FakeCliClient):
         yield
 
 
+class ServerCancelledStreamCliClient(FakeCliClient):
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        yield "request.processing.cancelled", {
+            "error": {"code": "cancelled", "message": "request cancelled"},
+        }
+
+
 class FailingHealthCliClient(FakeCliClient):
     async def health(self):
         self.calls.append(("health", None))
         raise cli.CliUserError("daemon unavailable")
+
+
+class FailingResumeCliClient(FakeCliClient):
+    async def get_conversation(self, conversation_id: str):
+        self.calls.append(("get_conversation", conversation_id))
+        raise cli.CliUserError("conversation not found")
+
+
+class EmptyCliClient(FakeCliClient):
+    async def list_conversations(self, *, limit: int = 20):
+        self.calls.append(("list_conversations", {"limit": limit}))
+        return {"conversations": []}
+
+    async def list_memories(self):
+        self.calls.append(("list_memories", {"query": None}))
+        return {"memories": []}
+
+    async def search_memories(self, query: str):
+        self.calls.append(("list_memories", {"query": query}))
+        return {"memories": []}
+
+
+class MalformedListCliClient(FakeCliClient):
+    async def list_conversations(self, *, limit: int = 20):
+        self.calls.append(("list_conversations", {"limit": limit}))
+        return {"conversations": [{"title": "broken"}]}
+
+    async def list_memories(self):
+        self.calls.append(("list_memories", {"query": None}))
+        return {"memories": [{"content": "broken"}]}
 
 
 class FakeReadline:
@@ -244,6 +282,21 @@ def test_terminal_line_reader_filters_sensitive_history() -> None:
     assert reader.readline("jarvis> ") == "plain"
 
 
+def test_terminal_line_reader_ctrl_c_on_prompt_returns_empty_line() -> None:
+    stdin = StringIO("\x03/exit\n")
+    stdout = StringIO()
+    reader = cli.TerminalInteractiveLineReader(
+        stdin=stdin,
+        stdout=stdout,
+        raw_mode=False,
+    )
+
+    assert reader.readline("jarvis> ") == ""
+    assert reader.readline("jarvis> ") == "/exit"
+
+    assert "^C" in stdout.getvalue()
+
+
 def test_cli_chat_creates_conversation_and_streams_tokens() -> None:
     stdout = StringIO()
     clients: list[FakeCliClient] = []
@@ -311,6 +364,47 @@ def test_cli_chat_cancels_server_request_when_stream_is_interrupted() -> None:
     assert exit_code == 130
     assert "cancelled> request request-1" in stdout.getvalue()
     assert clients[0].calls[-1] == ("cancel_request", "request-1")
+
+
+def test_interactive_chat_continues_after_stream_interrupt() -> None:
+    stdout = StringIO()
+    stdin = StringIO("looping answer\n/status\n/exit\n")
+    clients: list[InterruptedStreamCliClient] = []
+
+    def client_factory(base_url: str) -> InterruptedStreamCliClient:
+        client = InterruptedStreamCliClient(base_url)
+        clients.append(client)
+        return client
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=client_factory,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "cancelled> request request-1" in output
+    assert "status> ready" in output
+    assert output.rstrip().endswith("bye")
+
+
+def test_stream_cancelled_event_returns_interrupt_status() -> None:
+    stdout = StringIO()
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "cancelled", "server-side"],
+            client_factory=ServerCancelledStreamCliClient,
+            stdout=stdout,
+        ),
+    )
+
+    assert exit_code == 130
+    assert "cancelled> request request-1" in stdout.getvalue()
 
 
 def test_cli_reports_user_errors_without_traceback() -> None:
@@ -538,6 +632,45 @@ def test_cli_memory_add_prints_memory_id() -> None:
     assert stdout.getvalue() == "memory-1\n"
 
 
+def test_cli_memory_search_prints_rich_results() -> None:
+    stdout = StringIO()
+    clients: list[FakeCliClient] = []
+
+    def client_factory(base_url: str) -> FakeCliClient:
+        client = FakeCliClient(base_url)
+        clients.append(client)
+        return client
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["memory", "search", "search", "target"],
+            client_factory=client_factory,
+            stdout=stdout,
+        ),
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == (
+        "memory> memory-2 active fact project project.personal_assistant search hit\n"
+    )
+    assert clients[0].calls == [("list_memories", {"query": "search target"})]
+
+
+def test_cli_memory_delete_archives_memory() -> None:
+    stdout = StringIO()
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["memory", "delete", "memory-2"],
+            client_factory=FakeCliClient,
+            stdout=stdout,
+        ),
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "memory> memory-2 archived\n"
+
+
 def test_cli_interactive_control_surface_and_sessions() -> None:
     stdout = StringIO()
     stdin = StringIO(
@@ -573,8 +706,58 @@ def test_cli_interactive_control_surface_and_sessions() -> None:
     assert "session> conversation-1 active First session" in output
     assert "conversation> resumed conversation-1 Resumed session" in output
     assert "conversation> cleared" in output
-    assert "cancelled> request request-1" in output
-    assert ("cancel_request", "request-1") in clients[0].calls
+    assert "cancelled> no request" in output
+    assert ("cancel_request", "request-1") not in clients[0].calls
+
+
+def test_cli_interactive_keeps_running_after_command_error() -> None:
+    stdout = StringIO()
+    stdin = StringIO("/resume missing-conversation\n/status\n/exit\n")
+    clients: list[FailingResumeCliClient] = []
+
+    def client_factory(base_url: str) -> FailingResumeCliClient:
+        client = FailingResumeCliClient(base_url)
+        clients.append(client)
+        return client
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=client_factory,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "error> conversation not found" in output
+    assert "status> ready" in output
+    assert output.rstrip().endswith("bye")
+
+
+def test_cli_interactive_cancel_does_not_reuse_completed_request() -> None:
+    stdout = StringIO()
+    stdin = StringIO("hello\n/cancel\n/exit\n")
+    clients: list[FakeCliClient] = []
+
+    def client_factory(base_url: str) -> FakeCliClient:
+        client = FakeCliClient(base_url)
+        clients.append(client)
+        return client
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=client_factory,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    assert exit_code == 0
+    assert "cancelled> no request" in stdout.getvalue()
+    assert ("cancel_request", "request-1") not in clients[0].calls
 
 
 def test_cli_memory_search_delete_and_rich_list_output() -> None:
@@ -608,6 +791,45 @@ def test_cli_memory_search_delete_and_rich_list_output() -> None:
     assert "memory> memory-2 archived" in output
     assert ("list_memories", {"query": "search target"}) in clients[0].calls
     assert ("delete_memory", "memory-2") in clients[0].calls
+
+
+def test_cli_interactive_empty_lists_are_explicit() -> None:
+    stdout = StringIO()
+    stdin = StringIO("/sessions\n/memory list\n/memory search none\n/exit\n")
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=EmptyCliClient,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "sessions> empty" in output
+    assert "memory> empty" in output
+
+
+def test_cli_interactive_reports_malformed_list_payloads_without_exit() -> None:
+    stdout = StringIO()
+    stdin = StringIO("/sessions\n/memory list\n/status\n/exit\n")
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=MalformedListCliClient,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert output.count("error> daemon response missing string field") == 2
+    assert "status> ready" in output
+    assert output.rstrip().endswith("bye")
 
 
 def test_parse_sse_blocks() -> None:
@@ -665,3 +887,55 @@ def test_http_client_uses_explicit_non_stream_timeout(monkeypatch) -> None:
 
     assert response == {"status": "ready"}
     assert timeouts == [cli.REQUEST_TIMEOUT_SECONDS]
+
+
+def test_http_client_maps_control_surface_endpoints(monkeypatch) -> None:
+    calls: list[tuple[str, str, Any]] = []
+
+    class FakeResponse:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self._payload
+
+    class RecordingAsyncClient:
+        def __init__(self, *, base_url: str, timeout=None) -> None:
+            self.base_url = base_url
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def get(self, path: str, params=None) -> FakeResponse:
+            calls.append(("GET", path, params))
+            return FakeResponse({"ok": True})
+
+        async def post(self, path: str, json=None) -> FakeResponse:
+            calls.append(("POST", path, json))
+            return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(cli.httpx, "AsyncClient", RecordingAsyncClient)
+    client = cli.HttpJarvisClient("http://testserver")
+
+    asyncio.run(client.list_conversations(limit=7))
+    asyncio.run(client.get_conversation("conversation-1"))
+    asyncio.run(client.runtime_status())
+    asyncio.run(client.search_memories("needle"))
+    asyncio.run(client.delete_memory("memory-1"))
+    asyncio.run(client.cancel_request("request-1"))
+
+    assert calls == [
+        ("GET", "/v1/conversations", {"limit": 7}),
+        ("GET", "/v1/conversations/conversation-1", None),
+        ("GET", "/v1/runtime/status", None),
+        ("GET", "/v1/memories", {"query": "needle"}),
+        ("POST", "/v1/memories/memory-1/archive", {}),
+        ("POST", "/v1/requests/request-1/cancel", {}),
+    ]

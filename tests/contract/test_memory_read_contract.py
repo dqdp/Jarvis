@@ -123,6 +123,59 @@ def test_retrieve_active_memories_only(store) -> None:
     assert archived.id not in [hit.memory.id for hit in hits]
 
 
+def test_get_memory_returns_record_by_id(store) -> None:
+    async def scenario():
+        memory = await store.create_memory(_create_command("get-by-id"))
+        return memory, await store.get_memory(memory.id)
+
+    memory, loaded = asyncio.run(scenario())
+
+    assert loaded is not None
+    assert loaded.id == memory.id
+    assert loaded.content == memory.content
+
+
+def test_list_memories_filters_by_query(store) -> None:
+    async def scenario():
+        target = await store.create_memory(
+            _create_command("list-query-target", content="Alpha memory search target."),
+        )
+        await store.create_memory(
+            _create_command("list-query-other", content="Unrelated note."),
+        )
+        return target, await store.list_memories(query="search target")
+
+    target, memories = asyncio.run(scenario())
+
+    assert [memory.id for memory in memories] == [target.id]
+
+
+def test_list_memories_treats_query_wildcards_literally(store) -> None:
+    async def scenario():
+        literal = await store.create_memory(
+            _create_command("literal-wildcard", content="Literal under_score memory."),
+        )
+        await store.create_memory(_create_command("wildcard-other", content="Other memory."))
+        return literal, await store.list_memories(query="_")
+
+    literal, memories = asyncio.run(scenario())
+
+    assert [memory.id for memory in memories] == [literal.id]
+
+
+def test_list_memories_treats_percent_wildcard_literally(store) -> None:
+    async def scenario():
+        literal = await store.create_memory(
+            _create_command("literal-percent", content="Literal percent% memory."),
+        )
+        await store.create_memory(_create_command("percent-other", content="Other memory."))
+        return literal, await store.list_memories(query="%")
+
+    literal, memories = asyncio.run(scenario())
+
+    assert [memory.id for memory in memories] == [literal.id]
+
+
 def test_exclude_archived(store) -> None:
     async def scenario():
         memory = await store.create_memory(_create_command("archived"))

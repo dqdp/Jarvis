@@ -192,6 +192,8 @@ class PostgresMemoryStore:
     async def archive_memory(self, command: ArchiveMemoryCommand) -> None:
         async with self.engine.begin() as connection:
             memory = await self._select_memory(connection, command.memory_id, for_update=True)
+            if memory.status == MemoryStatus.ARCHIVED:
+                return
             now = _now()
             row = (
                 await connection.execute(
@@ -276,11 +278,14 @@ class PostgresMemoryStore:
     ) -> list[MemoryRecord]:
         conditions = [_memories.c.sensitivity != Sensitivity.SECRET.value]
         if query:
-            pattern = f"%{query.lower()}%"
+            pattern = _like_literal_pattern(query)
             conditions.append(
                 sa.or_(
-                    sa.func.lower(_memories.c.content).like(pattern),
-                    sa.func.lower(sa.func.coalesce(_memories.c.summary, "")).like(pattern),
+                    sa.func.lower(_memories.c.content).like(pattern, escape="\\"),
+                    sa.func.lower(sa.func.coalesce(_memories.c.summary, "")).like(
+                        pattern,
+                        escape="\\",
+                    ),
                 ),
             )
         statement = (
@@ -740,6 +745,16 @@ def _row_to_memory(row: Mapping[str, Any]) -> MemoryRecord:
 
 def _content_hash(content: str) -> str:
     return f"sha256:{sha256(content.encode('utf-8')).hexdigest()}"
+
+
+def _like_literal_pattern(value: str) -> str:
+    escaped = (
+        value.lower()
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+    return f"%{escaped}%"
 
 
 def _memory_type(value: MemoryType | str) -> MemoryType:

@@ -65,6 +65,7 @@ def app_parts():
             ),
         settings=settings,
     )
+    app.state.engine = engine
     assert isinstance(app, FastAPI)
     try:
         yield app
@@ -138,6 +139,13 @@ def test_get_conversations_lists_recent_sessions(app_parts) -> None:
         second["conversation_id"],
         first["conversation_id"],
     ]
+
+
+def test_get_conversations_rejects_invalid_limit(app_parts) -> None:
+    status, payload = asyncio.run(_request(app_parts, "GET", "/v1/conversations?limit=0"))
+
+    assert status == 400
+    assert payload["error"]["code"] == "invalid_request"
 
 
 def test_get_conversation(app_parts) -> None:
@@ -285,6 +293,13 @@ def test_get_memories(app_parts) -> None:
     assert payload["memories"][0]["content"] == "Memory list item."
 
 
+def test_get_memories_rejects_invalid_limit(app_parts) -> None:
+    status, payload = asyncio.run(_request(app_parts, "GET", "/v1/memories?limit=0"))
+
+    assert status == 400
+    assert payload["error"]["code"] == "invalid_request"
+
+
 def test_search_memories_filters_by_query(app_parts) -> None:
     async def scenario():
         await _request(
@@ -339,6 +354,70 @@ def test_delete_memory_archives_record(app_parts) -> None:
     assert status == 200
     assert payload["status"] == "archived"
     assert payload["archive_reason"] == "deleted_by_user"
+    assert "content" not in payload
+    assert "summary" not in payload
+
+
+def test_archive_memory_endpoint_archives_record(app_parts) -> None:
+    async def scenario():
+        _, memory = await _request(
+            app_parts,
+            "POST",
+            "/v1/memories",
+            {
+                "namespace": "project.personal_assistant",
+                "memory_type": "fact",
+                "content": "Archive me explicitly.",
+                "sensitivity": "project",
+            },
+        )
+        return await _request(app_parts, "POST", f"/v1/memories/{memory['memory_id']}/archive")
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 200
+    assert payload["status"] == "archived"
+    assert payload["archive_reason"] == "archived_by_user"
+    assert "content" not in payload
+    assert "summary" not in payload
+
+
+def test_archive_memory_endpoint_does_not_disclose_secret_memory_content(app_parts) -> None:
+    async def scenario():
+        async with app_parts.state.engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    insert into memories (
+                      memory_id, namespace, memory_type, content, summary,
+                      content_hash, sensitivity, confidence, importance,
+                      status, indexing_status, source_event_ids, supersedes_memory_ids,
+                      revision, created_at, updated_at, metadata
+                    )
+                    values (
+                      '11111111-1111-1111-1111-111111111111',
+                      'project.personal_assistant', 'fact',
+                      'secret archive payload', 'secret summary', 'sha256:secret',
+                      'secret', 1, 1, 'active', 'embedding_pending',
+                      '{}', '{}', 1, now(), now(), '{}'
+                    )
+                    """,
+                ),
+            )
+        return await _request(
+            app_parts,
+            "POST",
+            "/v1/memories/11111111-1111-1111-1111-111111111111/archive",
+        )
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 200
+    assert payload["memory_id"] == "11111111-1111-1111-1111-111111111111"
+    assert payload["status"] == "archived"
+    assert "content" not in payload
+    assert "summary" not in payload
+    assert "secret archive payload" not in json.dumps(payload)
 
 
 def test_get_runtime_status_exposes_active_local_profile(app_parts) -> None:
@@ -348,6 +427,8 @@ def test_get_runtime_status_exposes_active_local_profile(app_parts) -> None:
     assert payload["default_model_profile"] == "local_main"
     assert payload["model_profiles"]["local_main"]["provider"]
     assert payload["model_profiles"]["local_main"]["model"]
+    assert "api_key_env" not in json.dumps(payload)
+    assert "secret" not in json.dumps(payload).lower()
 
 
 def test_get_health(app_parts) -> None:

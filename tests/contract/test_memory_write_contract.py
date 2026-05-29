@@ -205,6 +205,26 @@ def test_archive_memory(store) -> None:
     assert any(event.event_type == EventType.MEMORY_ARCHIVED for event in events)
 
 
+def test_archive_memory_is_idempotent(store) -> None:
+    async def scenario():
+        memory = await store.create_memory(_create_command(memory_id="archive-idempotent"))
+        await store.archive_memory(ArchiveMemoryCommand(memory_id=memory.id, reason="obsolete"))
+        first = await store.get_memory(memory.id)
+        await store.archive_memory(ArchiveMemoryCommand(memory_id=memory.id, reason="second"))
+        second = await store.get_memory(memory.id)
+        events = await PostgresEventLog(store.engine).query(EventFilter())
+        return first, second, events
+
+    first, second, events = asyncio.run(scenario())
+
+    assert first is not None
+    assert second is not None
+    assert second.status == MemoryStatus.ARCHIVED
+    assert second.archive_reason == first.archive_reason == "obsolete"
+    assert second.archived_at == first.archived_at
+    assert len([event for event in events if event.event_type == EventType.MEMORY_ARCHIVED]) == 1
+
+
 def test_supersede_memory(store) -> None:
     async def scenario():
         old = await store.create_memory(_create_command(memory_id="old"))

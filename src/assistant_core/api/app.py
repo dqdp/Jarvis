@@ -4,9 +4,10 @@ import asyncio
 from datetime import UTC, datetime
 import json
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
-from fastapi import Body, FastAPI, Request
+from fastapi import Body, FastAPI, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -131,7 +132,7 @@ def create_app(
         return _json_response(201, _conversation_payload(conversation))
 
     @app.get("/v1/conversations")
-    async def get_conversations(limit: int = 20):
+    async def get_conversations(limit: int = Query(default=20, ge=1, le=100)):
         conversations = await conversation_store.list_conversations(
             ListConversationsQuery(user_id=settings.app.default_user_id, limit=limit),
         )
@@ -225,26 +226,45 @@ def create_app(
         return _json_response(201, _memory_payload(memory))
 
     @app.get("/v1/memories")
-    async def get_memories(limit: int = 100, query: str | None = None):
+    async def get_memories(
+        limit: int = Query(default=100, ge=1, le=500),
+        query: str | None = None,
+    ):
         memories = await memory_store.list_memories(limit=limit, query=query)
         return {"memories": [_memory_payload(memory) for memory in memories]}
 
     @app.delete("/v1/memories/{memory_id}")
     async def delete_memory(memory_id: str):
-        normalized_memory_id = str(_uuid(memory_id))
-        await memory_store.archive_memory(
-            ArchiveMemoryCommand(memory_id=normalized_memory_id, reason="deleted_by_user"),
+        return await _archive_memory(
+            memory_store,
+            memory_id=memory_id,
+            reason="deleted_by_user",
         )
-        memory = await memory_store.get_memory(normalized_memory_id)
-        if memory is None:
-            raise KeyError("memory not found")
-        return _memory_payload(memory)
+
+    @app.post("/v1/memories/{memory_id}/archive")
+    async def archive_memory(memory_id: str):
+        return await _archive_memory(
+            memory_store,
+            memory_id=memory_id,
+            reason="archived_by_user",
+        )
 
     @app.get("/v1/runtime/status")
     async def get_runtime_status():
         return _runtime_status_payload(settings)
 
     return app
+
+
+async def _archive_memory(memory_store, *, memory_id: str, reason: str):
+    normalized_memory_id = str(_uuid(memory_id))
+    await memory_store.archive_memory(
+        ArchiveMemoryCommand(memory_id=normalized_memory_id, reason=reason),
+    )
+    memory = await memory_store.get_memory(normalized_memory_id)
+    if memory is None:
+        raise KeyError("memory not found")
+    return _memory_lifecycle_payload(memory)
 
 
 class _RequestExecutionManager:
@@ -850,6 +870,20 @@ def _memory_payload(memory) -> dict[str, Any]:
     }
 
 
+def _memory_lifecycle_payload(memory) -> dict[str, Any]:
+    return {
+        "memory_id": memory.id,
+        "namespace": memory.namespace,
+        "memory_type": memory.memory_type.value,
+        "sensitivity": memory.sensitivity.value,
+        "status": memory.status.value,
+        "created_at": memory.created_at,
+        "updated_at": memory.updated_at,
+        "archived_at": memory.archived_at,
+        "archive_reason": memory.archive_reason,
+    }
+
+
 def _runtime_status_payload(settings: Settings) -> dict[str, Any]:
     return {
         "status": "ready",
@@ -861,7 +895,7 @@ def _runtime_status_payload(settings: Settings) -> dict[str, Any]:
                 "enabled": profile.enabled,
                 "cloud": profile.cloud,
                 "model": profile.model,
-                "endpoint": profile.endpoint,
+                "endpoint": _public_endpoint(profile.endpoint),
                 "max_input_tokens": profile.max_input_tokens,
                 "max_output_tokens": profile.max_output_tokens,
                 "temperature": profile.temperature,
@@ -882,6 +916,18 @@ def _runtime_status_payload(settings: Settings) -> dict[str, Any]:
             for name, budget in settings.runtime_budgets.items()
         },
     }
+
+
+def _public_endpoint(endpoint: str | None) -> str | None:
+    if endpoint is None:
+        return None
+    parsed = urlsplit(endpoint)
+    if not parsed.netloc:
+        return endpoint
+    host = parsed.hostname or ""
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
 
 
 def _json_value(value):

@@ -167,16 +167,8 @@ class PostgresConversationStore:
 
     async def list_conversations(
         self,
-        query: ListConversationsQuery | None = None,
-        *,
-        user_id: str | None = None,
-        limit: int | None = None,
+        query: ListConversationsQuery,
     ) -> list[Conversation]:
-        if query is None:
-            if user_id is None:
-                raise TypeError("list_conversations requires query or user_id")
-            query = ListConversationsQuery(user_id=user_id, limit=limit or 20)
-
         statement = (
             sa.select(_conversations)
             .where(_conversations.c.user_id == query.user_id)
@@ -454,6 +446,7 @@ async def _append_message(
         .returning(*_messages.c)
     )
     row = (await connection.execute(statement)).mappings().one()
+    await _touch_conversation(connection, command.conversation_id)
     return _row_to_message(row)
 
 
@@ -609,6 +602,14 @@ async def _set_message_event_id(
     )
     row = (await connection.execute(statement)).mappings().one()
     return _row_to_message(row)
+
+
+async def _touch_conversation(connection: AsyncConnection, conversation_id: str) -> None:
+    await connection.execute(
+        sa.update(_conversations)
+        .where(_conversations.c.conversation_id == _uuid(conversation_id))
+        .values(updated_at=_now()),
+    )
 
 
 def _user_message_created_event(

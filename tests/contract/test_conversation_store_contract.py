@@ -13,6 +13,7 @@ from assistant_core.domain.conversations import (
     CreateAssistantRequestCommand,
     CreateConversationCommand,
     ConversationStatus,
+    ListConversationsQuery,
     MessageSubmissionCommand,
     RecentMessagesQuery,
     UpdateAssistantRequestStatusCommand,
@@ -100,7 +101,9 @@ def test_list_conversations_returns_most_recent_first(store) -> None:
     async def scenario():
         older = await _conversation(store, "older")
         newer = await _conversation(store, "newer")
-        conversations = await store.list_conversations(user_id="user-1", limit=10)
+        conversations = await store.list_conversations(
+            ListConversationsQuery(user_id="user-1", limit=10),
+        )
         return older, newer, conversations
 
     older, newer, conversations = asyncio.run(scenario())
@@ -109,6 +112,27 @@ def test_list_conversations_returns_most_recent_first(store) -> None:
         newer.conversation_id,
         older.conversation_id,
     ]
+
+
+def test_conversation_updated_at_moves_when_message_is_appended(store) -> None:
+    async def scenario():
+        conversation = await _conversation(store, "touch-on-message")
+        await store.append_message(
+            AppendMessageCommand(
+                message_id=_id("touch-message"),
+                conversation_id=conversation.conversation_id,
+                role=MessageRole.USER,
+                content="touch conversation",
+                sensitivity=Sensitivity.PROJECT,
+            ),
+        )
+        refreshed = await store.get_conversation(conversation.conversation_id)
+        return conversation, refreshed
+
+    conversation, refreshed = asyncio.run(scenario())
+
+    assert refreshed is not None
+    assert refreshed.updated_at > conversation.updated_at
 
 
 def test_append_user_message(store) -> None:

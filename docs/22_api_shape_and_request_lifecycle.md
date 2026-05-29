@@ -79,7 +79,7 @@ request.processing.completed
 
 ---
 
-## 4. Minimal MVP endpoints
+## 4. API surface
 
 Required for MVP:
 
@@ -95,10 +95,20 @@ GET  /v1/memories
 GET  /v1/health
 ```
 
-Designed but not necessarily required in first implementation:
+Implemented Alpha control surface:
 
 ```http
+GET  /v1/conversations?limit=20
 GET  /v1/conversations/{conversation_id}
+GET  /v1/memories?limit=100&query=optional
+DELETE /v1/memories/{memory_id}
+POST /v1/memories/{memory_id}/archive
+GET  /v1/runtime/status
+```
+
+Designed but not implemented in the current baseline:
+
+```http
 GET  /v1/conversations/{conversation_id}/events
 GET  /v1/requests/{request_id}/events
 POST /v1/conversations/{conversation_id}/archive
@@ -142,7 +152,23 @@ If title is missing, MVP may leave it null or later set it to first user message
 
 ---
 
-## 6. Send message
+## 6. List and get conversations
+
+Endpoints:
+
+```http
+GET /v1/conversations?limit=20
+GET /v1/conversations/{conversation_id}
+```
+
+`limit` must be between 1 and 100.
+
+`GET /v1/conversations` returns most recently active conversations first.
+Conversation `updated_at` moves when messages are appended.
+
+---
+
+## 7. Send message
 
 Endpoint:
 
@@ -178,7 +204,7 @@ The runtime may start processing immediately after request creation.
 
 ---
 
-## 7. Request status
+## 8. Request status
 
 Endpoint:
 
@@ -218,7 +244,7 @@ execution.
 
 ---
 
-## 8. SSE stream
+## 9. SSE stream
 
 Endpoint:
 
@@ -272,7 +298,7 @@ through `assistant_requests`, persisted events and conversation messages.
 
 ---
 
-## 9. Stream reconnect and recovery
+## 10. Stream reconnect and recovery
 
 No token-by-token replay guarantee in MVP.
 
@@ -302,7 +328,7 @@ if implemented.
 
 ---
 
-## 10. Persisted events endpoint
+## 11. Persisted events endpoint
 
 Designed endpoint:
 
@@ -318,7 +344,7 @@ MVP implementation may defer this endpoint if event data is otherwise inspectabl
 
 ---
 
-## 11. Idempotency
+## 12. Idempotency
 
 Clients should provide:
 
@@ -359,7 +385,7 @@ If the same `client_message_id` is reused with different content:
 
 ---
 
-## 12. Error format
+## 13. Error format
 
 Standard error response:
 
@@ -390,7 +416,7 @@ internal_error
 
 ---
 
-## 13. Cancellation
+## 14. Cancellation
 
 Cancel endpoint is implemented:
 
@@ -412,7 +438,7 @@ subscriber disconnect does not cancel the request.
 
 ---
 
-## 14. Blocking mode
+## 15. Blocking mode
 
 No separate blocking completion endpoint is required in MVP.
 
@@ -427,7 +453,7 @@ CLI clients may consume SSE and print final answer.
 
 ---
 
-## 15. Memory API
+## 16. Memory API
 
 MVP required:
 
@@ -436,21 +462,52 @@ POST /v1/memories
 GET  /v1/memories
 ```
 
+Implemented Alpha control surface:
+
+```http
+GET  /v1/memories?limit=100&query=optional
+DELETE /v1/memories/{memory_id}
+POST /v1/memories/{memory_id}/archive
+```
+
 Designed endpoints:
 
 ```http
 GET   /v1/memories/{memory_id}
 PATCH /v1/memories/{memory_id}
-POST  /v1/memories/{memory_id}/archive
 POST  /v1/memories/{memory_id}/supersede
 POST  /v1/memories/search
 ```
 
-`POST /v1/memories/search` is useful for debugging MemoryReadPort and retrieval behavior.
+`GET /v1/memories` lists non-secret memories. `query` is a literal text
+filter over memory content/summary and does not treat `%` or `_` as wildcards.
+`limit` must be between 1 and 500.
+
+`POST /v1/memories/{memory_id}/archive` is the explicit lifecycle endpoint.
+`DELETE /v1/memories/{memory_id}` is a compatibility soft-delete alias that
+archives the memory with reason `deleted_by_user`; it does not hard-purge data.
+Both endpoints return lifecycle metadata only and do not return memory
+`content` or `summary`.
+
+`POST /v1/memories/search` remains a designed future endpoint for debugging
+MemoryReadPort retrieval behavior.
 
 ---
 
-## 16. Request processing transaction boundary
+## 17. Runtime status
+
+Endpoint:
+
+```http
+GET /v1/runtime/status
+```
+
+Response exposes configured local model profiles and runtime budgets without
+secrets. It is intended for CLI diagnostics such as `/model`.
+
+---
+
+## 18. Request processing transaction boundary
 
 On message submit, one database transaction should create:
 
@@ -475,7 +532,7 @@ no assistant message by default
 
 ---
 
-## 17. assistant_requests table
+## 19. assistant_requests table
 
 Recommended shape:
 
@@ -512,7 +569,7 @@ cancelled
 
 ---
 
-## 18. MVP vs deferred
+## 20. MVP vs deferred
 
 MVP includes:
 
