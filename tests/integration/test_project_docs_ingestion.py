@@ -49,6 +49,7 @@ async def _truncate_content(database_url: str) -> None:
     engine = create_database_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(text("set local jarvis.allow_events_truncate = 'on'"))
             await connection.execute(
                 text(
                     "truncate table content_embeddings, content_chunks, content_sources "

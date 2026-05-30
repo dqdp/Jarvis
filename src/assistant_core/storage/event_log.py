@@ -16,7 +16,11 @@ from assistant_core.domain.events import (
     EventVisibility,
 )
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.ports.event_log import EventFilter, validate_event_envelope
+from assistant_core.ports.event_log import (
+    EventFilter,
+    sanitize_event_envelope,
+    validate_event_envelope,
+)
 
 
 _metadata = sa.MetaData()
@@ -75,6 +79,7 @@ class PostgresEventLog:
 
 
 async def insert_event(connection: AsyncConnection, event: EventEnvelope) -> EventEnvelope:
+    event = sanitize_event_envelope(event)
     validate_event_envelope(event)
     statement = (
         sa.insert(_events)

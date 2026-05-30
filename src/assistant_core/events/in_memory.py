@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 
 from assistant_core.domain.events import EventEnvelope
-from assistant_core.ports.event_log import EventFilter, validate_event_envelope
+from assistant_core.ports.event_log import (
+    EventFilter,
+    sanitize_event_envelope,
+    validate_event_envelope,
+)
 
 
 class InMemoryEventLog:
@@ -12,8 +16,9 @@ class InMemoryEventLog:
         self._next_event_seq = 1
 
     async def append(self, event: EventEnvelope) -> EventEnvelope:
-        validate_event_envelope(event)
-        stored = replace(event, event_seq=self._next_event_seq)
+        sanitized = sanitize_event_envelope(event)
+        validate_event_envelope(sanitized)
+        stored = replace(sanitized, event_seq=self._next_event_seq)
         self._next_event_seq += 1
         self._events.append(stored)
         return stored

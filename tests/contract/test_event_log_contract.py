@@ -38,6 +38,7 @@ async def _truncate_events(database_url: str) -> None:
     engine = create_database_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(text("set local jarvis.allow_events_truncate = 'on'"))
             await connection.execute(text("truncate table events restart identity cascade"))
     finally:
         await engine.dispose()
@@ -144,6 +145,80 @@ def test_event_log_contract_preserves_idempotency_key(event_log) -> None:
     )
 
     assert stored.idempotency_key == "client-message:abc"
+
+
+def test_event_log_contract_redacts_secret_like_idempotency_key(event_log) -> None:
+    stored = asyncio.run(
+        event_log.append(
+            _event(
+                _id("evt-secret-idempotency"),
+                idempotency_key="github_pat_1234567890abcdef",
+            ),
+        ),
+    )
+
+    assert stored.idempotency_key == "<redacted>"
+
+
+def test_event_log_contract_sanitizes_sensitive_payload_and_metadata(event_log) -> None:
+    raw = replace(
+        _event(_id("evt-sensitive")),
+        payload={
+            "content_hash": "sha256:test",
+            "api_key": "sk-test-secret",
+            "nested": {"password": "swordfish"},
+            "items": [{"token": "raw-token"}],
+        },
+        metadata={"prompt": "raw system prompt", "safe": "kept"},
+    )
+
+    stored = asyncio.run(event_log.append(raw))
+
+    assert stored.payload["api_key"] == "<redacted>"
+    assert stored.payload["nested"]["password"] == "<redacted>"
+    assert stored.payload["items"][0]["token"] == "<redacted>"
+    assert stored.metadata["prompt"] == "<redacted>"
+    assert stored.metadata["safe"] == "kept"
+
+
+def test_event_log_contract_preserves_non_secret_audit_fields(event_log) -> None:
+    raw = replace(
+        _event(_id("evt-audit-fields"), event_type=EventType.CONTEXT_ASSEMBLED),
+        payload={
+            "context_manifest_id": "manifest-1",
+            "full_prompt_stored": False,
+            "token_estimate": 42,
+            "max_output_tokens": 1024,
+            "raw_prompt": "secret prompt text",
+        },
+        metadata={},
+    )
+
+    stored = asyncio.run(event_log.append(raw))
+
+    assert stored.payload["full_prompt_stored"] is False
+    assert stored.payload["token_estimate"] == 42
+    assert stored.payload["max_output_tokens"] == 1024
+    assert stored.payload["raw_prompt"] == "<redacted>"
+
+
+def test_event_log_contract_redacts_secret_like_values_under_neutral_keys(event_log) -> None:
+    raw = replace(
+        _event(_id("evt-neutral-secret-values")),
+        payload={
+            "output": "github_pat_1234567890abcdef",
+            "note": "contains AKIAIOSFODNN7EXAMPLE credential",
+            "nested": {"line": "private key begins here"},
+        },
+        metadata={"trace": "ghp_1234567890abcdefghijklmnop"},
+    )
+
+    stored = asyncio.run(event_log.append(raw))
+
+    assert stored.payload["output"] == "<redacted>"
+    assert stored.payload["note"] == "<redacted>"
+    assert stored.payload["nested"]["line"] == "<redacted>"
+    assert stored.metadata["trace"] == "<redacted>"
 
 
 def test_event_envelope_validation(event_log) -> None:

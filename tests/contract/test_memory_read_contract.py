@@ -51,6 +51,7 @@ async def _truncate_memory(database_url: str) -> None:
     engine = create_database_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(text("set local jarvis.allow_events_truncate = 'on'"))
             await connection.execute(
                 text(
                     "truncate table memory_embeddings, memory_candidates, memories, events "
@@ -234,32 +235,35 @@ def test_empty_namespace_query_returns_no_hits(store) -> None:
     assert asyncio.run(scenario()) == []
 
 
-def test_exclude_secret(store) -> None:
+def test_secret_memory_records_are_rejected_by_database(store) -> None:
     async def scenario():
-        await store.create_memory(_create_command("visible"))
+        visible = await store.create_memory(_create_command("visible"))
         async with store.engine.begin() as connection:
-            await connection.execute(
-                text(
-                    """
-                    insert into memories (
-                      memory_id, namespace, memory_type, content, summary,
-                      content_hash, sensitivity, confidence, importance,
-                      status, indexing_status, source_event_ids, supersedes_memory_ids,
-                      revision, created_at, updated_at, metadata
-                    )
-                    values (
-                      cast(:memory_id as uuid), 'project.personal_assistant', 'fact',
-                      'secret phase memory', null, 'sha256:secret', 'secret', 1, 1,
-                      'active', 'embedding_pending', '{}', '{}', 1, now(), now(), '{}'
-                    )
-                    """,
-                ),
-                {"memory_id": _id("secret")},
-            )
-        return await store.retrieve(_query())
+            with pytest.raises(Exception):
+                await connection.execute(
+                    text(
+                        """
+                        insert into memories (
+                          memory_id, namespace, memory_type, content, summary,
+                          content_hash, sensitivity, confidence, importance,
+                          status, indexing_status, source_event_ids, supersedes_memory_ids,
+                          revision, created_at, updated_at, metadata
+                        )
+                        values (
+                          cast(:memory_id as uuid), 'project.personal_assistant', 'fact',
+                          'secret phase memory', null, 'sha256:secret', 'secret', 1, 1,
+                          'active', 'embedding_pending', '{}', '{}', 1, now(), now(), '{}'
+                        )
+                        """,
+                    ),
+                    {"memory_id": _id("secret")},
+                )
+        return visible, await store.retrieve(_query())
 
-    hits = asyncio.run(scenario())
+    visible, hits = asyncio.run(scenario())
 
+    assert len(hits) == 1
+    assert hits[0].memory.id == visible.id
     assert [hit.memory.sensitivity for hit in hits] == [Sensitivity.PROJECT]
 
 
