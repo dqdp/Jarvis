@@ -66,16 +66,20 @@ class FakeCliClient:
         client_message_id: str,
         content: str,
         sensitivity: str,
+        loop_strategy: str | None = None,
     ):
+        payload = {
+            "conversation_id": conversation_id,
+            "client_message_id": client_message_id,
+            "content": content,
+            "sensitivity": sensitivity,
+        }
+        if loop_strategy is not None:
+            payload["loop_strategy"] = loop_strategy
         self.calls.append(
             (
                 "submit_message",
-                {
-                    "conversation_id": conversation_id,
-                    "client_message_id": client_message_id,
-                    "content": content,
-                    "sensitivity": sensitivity,
-                },
+                payload,
             ),
         )
         return {"request_id": "request-1"}
@@ -431,6 +435,89 @@ def test_cli_chat_creates_conversation_and_streams_tokens() -> None:
     ]
 
 
+def test_http_submit_message_omits_loop_strategy_for_default_auto(monkeypatch) -> None:
+    recorded: dict[str, Any] = {}
+
+    class Response:
+        status_code = 202
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"request_id": "request-1"}
+
+    class RecordingAsyncClient:
+        def __init__(self, *, base_url: str, timeout=None) -> None:
+            self.base_url = base_url
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def post(self, path: str, *, json: dict[str, Any]) -> Response:
+            recorded["path"] = path
+            recorded["json"] = json
+            return Response()
+
+    monkeypatch.setattr(cli_client_module.httpx, "AsyncClient", RecordingAsyncClient)
+
+    payload = asyncio.run(
+        cli.HttpJarvisClient("http://testserver").submit_message(
+            conversation_id="conversation-1",
+            client_message_id="client-1",
+            content="hello",
+            sensitivity="project",
+            loop_strategy=None,
+        )
+    )
+
+    assert payload["request_id"] == "request-1"
+    assert recorded["path"] == "/v1/conversations/conversation-1/messages"
+    assert "loop_strategy" not in recorded["json"]
+
+
+def test_cli_chat_accepts_loop_strategy_override() -> None:
+    stdout = StringIO()
+    clients: list[FakeCliClient] = []
+
+    def client_factory(base_url: str) -> FakeCliClient:
+        client = FakeCliClient(base_url)
+        clients.append(client)
+        return client
+
+    exit_code = asyncio.run(
+        cli.run(
+            [
+                "chat",
+                "--loop-strategy",
+                "tools",
+                "inspect",
+                "project",
+                "--client-message-id",
+                "client-tools",
+            ],
+            client_factory=client_factory,
+            stdout=stdout,
+        ),
+    )
+
+    assert exit_code == 0
+    assert clients[0].calls[1] == (
+        "submit_message",
+        {
+            "conversation_id": "conversation-1",
+            "client_message_id": "client-tools",
+            "content": "inspect project",
+            "sensitivity": "project",
+            "loop_strategy": "tools",
+        },
+    )
+
+
 def test_cli_chat_cancels_server_request_when_stream_is_interrupted() -> None:
     stdout = StringIO()
     clients: list[InterruptedStreamCliClient] = []
@@ -724,6 +811,73 @@ def test_cli_without_subcommand_starts_interactive_chat() -> None:
         ),
         ("stream_request", "request-1"),
     ]
+
+
+def test_interactive_mode_defaults_to_auto() -> None:
+    stdout = StringIO()
+    stdin = StringIO("/status\n/exit\n")
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=FakeCliClient,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "mode> auto\n" in output
+    assert "memory_augmented_answer" not in output
+    assert "tool_react_loop" not in output
+
+
+def test_interactive_mode_command_switches_between_auto_chat_tools() -> None:
+    stdout = StringIO()
+    stdin = StringIO(
+        "/mode tools\n"
+        "inspect project\n"
+        "/mode chat\n"
+        "explain design\n"
+        "/mode auto\n"
+        "hello auto\n"
+        "/exit\n"
+    )
+    clients: list[FakeCliClient] = []
+
+    def client_factory(base_url: str) -> FakeCliClient:
+        client = FakeCliClient(base_url)
+        clients.append(client)
+        return client
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=client_factory,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    submit_payloads = [
+        payload for method, payload in clients[0].calls if method == "submit_message"
+    ]
+    assert exit_code == 0
+    assert "mode> tools\n" in stdout.getvalue()
+    assert "mode> chat\n" in stdout.getvalue()
+    assert "mode> auto\n" in stdout.getvalue()
+    assert submit_payloads[0]["loop_strategy"] == "tools"
+    assert submit_payloads[1]["loop_strategy"] == "chat"
+    assert "loop_strategy" not in submit_payloads[2]
+
+
+def test_interactive_help_lists_mode_command() -> None:
+    stdout = StringIO()
+
+    cli.write_interactive_help(stdout)
+
+    assert "/mode auto|chat|tools" in stdout.getvalue()
 
 
 def test_cli_interactive_slash_commands_manage_session_and_memory() -> None:

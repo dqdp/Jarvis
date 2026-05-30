@@ -577,6 +577,34 @@ def test_intent_classifier_port_does_not_import_tool_adapters() -> None:
     )
 
 
+def test_cli_does_not_import_loop_selector() -> None:
+    _assert_no_import_prefixes(
+        [SRC_ROOT / "cli.py", *_python_files("cli_app")],
+        {
+            "assistant_core.runtime.loop_selection",
+            "assistant_core.domain.loop_selection",
+            "assistant_core.ports.intent_classifier",
+        },
+    )
+
+
+def test_cli_does_not_duplicate_selector_rules() -> None:
+    offenders: list[str] = []
+    forbidden_fragments = {
+        "memory_augmented_answer",
+        "tool_react_loop",
+        "IntentFamily",
+        "CapabilityCandidate",
+    }
+    for path in [SRC_ROOT / "cli.py", *_python_files("cli_app")]:
+        source = path.read_text(encoding="utf-8")
+        for fragment in forbidden_fragments:
+            if fragment in source:
+                offenders.append(f"{path.relative_to(PROJECT_ROOT)} contains {fragment}")
+
+    assert offenders == []
+
+
 def test_tool_react_loop_uses_toolgateway_port_not_adapters() -> None:
     loop_path = SRC_ROOT / "runtime" / "loops" / "tool_react.py"
     assert loop_path.is_file()

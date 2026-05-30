@@ -2533,6 +2533,7 @@ Tests first:
 
 ```text
 test_cli_submit_message_omits_loop_strategy_for_default_auto
+test_http_submit_message_omits_loop_strategy_for_default_auto
 test_cli_chat_accepts_loop_strategy_override
 test_interactive_mode_defaults_to_auto
 test_interactive_mode_command_switches_between_auto_chat_tools
@@ -2560,9 +2561,10 @@ Implementation:
 
 ```text
 cli:
-  default to auto
+  default to auto by omitting loop_strategy from normal message submissions
   add --loop-strategy auto|chat|tools as debug override
   add /mode auto|chat|tools in interactive mode
+  treat /mode auto as returning to default omitted loop_strategy
   show current user-facing mode in help/status
   keep routing rules on the backend
 ```

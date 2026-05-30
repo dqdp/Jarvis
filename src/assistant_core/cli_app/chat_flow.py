@@ -9,7 +9,7 @@ from typing import Any, TextIO
 from uuid import uuid4
 
 from assistant_core.cli_app.client import CliUserError, JarvisClient
-from assistant_core.cli_app.config import DEFAULT_MEMORY_TYPE
+from assistant_core.cli_app.config import DEFAULT_MEMORY_TYPE, LOOP_STRATEGY_CHOICES
 from assistant_core.cli_app.line_reader import create_interactive_line_reader
 from assistant_core.cli_app.renderers import (
     write_conversation_list,
@@ -26,6 +26,7 @@ class ChatShellState:
     conversation_id: str | None
     next_title: str | None
     last_request_id: str | None = None
+    loop_strategy: str | None = None
 
 
 async def run_interactive_chat(
@@ -37,8 +38,9 @@ async def run_interactive_chat(
     project_namespace: str,
     sensitivity: str,
     title: str | None,
+    loop_strategy: str | None = None,
 ) -> int:
-    state = ChatShellState(conversation_id=None, next_title=title)
+    state = ChatShellState(conversation_id=None, next_title=title, loop_strategy=loop_strategy)
     line_reader = create_interactive_line_reader(
         stdin=stdin,
         stdout=stdout,
@@ -67,7 +69,19 @@ async def run_interactive_chat(
                 write_interactive_help(stdout)
                 continue
             if line == "/status":
+                stdout.write(f"mode> {_display_loop_mode(state.loop_strategy)}\n")
                 await write_status(client=client, stdout=stdout)
+                continue
+            if line == "/mode" or line.startswith("/mode "):
+                requested_mode = line.removeprefix("/mode").strip()
+                if not requested_mode:
+                    stdout.write(f"mode> {_display_loop_mode(state.loop_strategy)}\n")
+                    continue
+                if requested_mode not in LOOP_STRATEGY_CHOICES:
+                    stdout.write("usage> /mode auto|chat|tools\n")
+                    continue
+                state.loop_strategy = None if requested_mode == "auto" else requested_mode
+                stdout.write(f"mode> {_display_loop_mode(state.loop_strategy)}\n")
                 continue
             if line == "/model":
                 await write_model_status(client=client, stdout=stdout)
@@ -163,6 +177,7 @@ async def run_interactive_chat(
                 conversation_id=state.conversation_id,
                 content=line,
                 sensitivity=sensitivity,
+                loop_strategy=state.loop_strategy,
                 client_message_id=None,
                 assistant_prefix="assistant> ",
                 stdin=stdin,
@@ -183,6 +198,7 @@ async def submit_and_stream_message(
     conversation_id: str,
     content: str,
     sensitivity: str,
+    loop_strategy: str | None = None,
     client_message_id: str | None,
     assistant_prefix: str | None,
     stdin: TextIO = sys.stdin,
@@ -193,6 +209,7 @@ async def submit_and_stream_message(
         client_message_id=client_message_id or str(uuid4()),
         content=content,
         sensitivity=sensitivity,
+        loop_strategy=loop_strategy,
     )
     request_id = _required_str(submitted, "request_id")
     if on_request_started is not None:
@@ -296,6 +313,10 @@ def _approval_summary(approval: dict[str, Any], event_data: dict[str, Any]) -> s
 def _approval_error_is_expired(exc: CliUserError) -> bool:
     message = str(exc).lower()
     return "approval_expired" in message or "expired" in message
+
+
+def _display_loop_mode(loop_strategy: str | None) -> str:
+    return loop_strategy or "auto"
 
 
 async def cancel_server_request(

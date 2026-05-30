@@ -12,6 +12,7 @@ from assistant_core.cli_app.config import (
     DEFAULT_MEMORY_TYPE,
     DEFAULT_PROJECT_NAMESPACE,
     DEFAULT_SENSITIVITY,
+    LOOP_STRATEGY_CHOICES,
 )
 from assistant_core.cli_app.interactive import run_interactive_chat, submit_and_stream_message
 from assistant_core.cli_app.renderers import (
@@ -57,6 +58,7 @@ async def _run_command(
             project_namespace=DEFAULT_PROJECT_NAMESPACE,
             sensitivity=DEFAULT_SENSITIVITY,
             title=None,
+            loop_strategy=None,
         )
 
     if args.command == "health":
@@ -74,6 +76,7 @@ async def _run_command(
                 project_namespace=args.project_namespace,
                 sensitivity=args.sensitivity,
                 title=args.title,
+                loop_strategy=args.loop_strategy,
             )
         conversation_id = args.conversation_id
         if conversation_id is None:
@@ -88,6 +91,7 @@ async def _run_command(
             conversation_id=conversation_id,
             content=" ".join(args.message),
             sensitivity=args.sensitivity,
+            loop_strategy=args.loop_strategy,
             client_message_id=args.client_message_id,
             assistant_prefix=None,
             stdin=stdin,
@@ -159,6 +163,7 @@ def _parser() -> argparse.ArgumentParser:
     chat.add_argument("--project-namespace", default=DEFAULT_PROJECT_NAMESPACE)
     chat.add_argument("--sensitivity", default=DEFAULT_SENSITIVITY)
     chat.add_argument("--title")
+    chat.add_argument("--loop-strategy", choices=LOOP_STRATEGY_CHOICES)
 
     memory = subparsers.add_parser("memory")
     memory_subparsers = memory.add_subparsers(dest="memory_command", required=True)

@@ -7,6 +7,7 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8080"
 DEFAULT_PROJECT_NAMESPACE = "project.personal_assistant"
 DEFAULT_MEMORY_TYPE = "fact"
 DEFAULT_SENSITIVITY = "project"
+LOOP_STRATEGY_CHOICES = ("auto", "chat", "tools")
 REQUEST_TIMEOUT_SECONDS = 60.0
 STREAM_CONNECT_TIMEOUT_SECONDS = 5.0
 STREAM_READ_TIMEOUT_SECONDS = 180.0
@@ -29,6 +30,7 @@ SLASH_COMMANDS = (
     SlashCommand("/new [title]", "Start a new conversation."),
     SlashCommand("/clear", "Clear current conversation."),
     SlashCommand("/cancel [request_id]", "Cancel the last or selected request."),
+    SlashCommand("/mode auto|chat|tools", "Set routing mode for new messages."),
     SlashCommand("/memory add TEXT", "Save manual memory."),
     SlashCommand("/memory list", "List manual memories."),
     SlashCommand("/memory search TEXT", "Search manual memories."),

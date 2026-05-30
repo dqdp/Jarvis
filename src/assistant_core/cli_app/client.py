@@ -33,6 +33,7 @@ class JarvisClient(Protocol):
         client_message_id: str,
         content: str,
         sensitivity: str,
+        loop_strategy: str | None = None,
     ) -> dict[str, Any]: ...
 
     def stream_request(self, request_id: str): ...
@@ -112,15 +113,19 @@ class HttpJarvisClient:
         client_message_id: str,
         content: str,
         sensitivity: str,
+        loop_strategy: str | None = None,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "client_message_id": client_message_id,
+            "content": content,
+            "sensitivity": sensitivity,
+            "metadata": {},
+        }
+        if loop_strategy is not None:
+            payload["loop_strategy"] = loop_strategy
         return await self._post_json(
             f"/v1/conversations/{conversation_id}/messages",
-            {
-                "client_message_id": client_message_id,
-                "content": content,
-                "sensitivity": sensitivity,
-                "metadata": {},
-            },
+            payload,
         )
 
     async def stream_request(self, request_id: str):
