@@ -133,6 +133,18 @@ class ContentIngestionResult:
 
 
 @dataclass(frozen=True)
+class ProjectDocsSourceCandidate:
+    source_id: str
+    relative_path: Path
+    absolute_path: Path
+    source_type: ContentSourceType
+    title: str
+    content: str
+    content_hash: str
+    sensitivity: Sensitivity = Sensitivity.PROJECT
+
+
+@dataclass(frozen=True)
 class ContentSourceSyncResult:
     created_source: bool = False
     updated_source: bool = False

@@ -16,6 +16,7 @@ from assistant_core.domain.content_retrieval import (
     ContentSourceSyncResult,
     ContentSourceType,
     DeletedSourcePlan,
+    ProjectDocsSourceCandidate,
     ReingestionPlan,
 )
 from assistant_core.domain.sensitivity import Sensitivity
@@ -107,18 +108,6 @@ _SECRET_PLACEHOLDER_VALUES = {
     "your_secret",
     "your_token",
 }
-
-
-@dataclass(frozen=True)
-class ProjectDocsSourceCandidate:
-    source_id: str
-    relative_path: Path
-    absolute_path: Path
-    source_type: ContentSourceType
-    title: str
-    content: str
-    content_hash: str
-    sensitivity: Sensitivity = Sensitivity.PROJECT
 
 
 class ContentIngestionStore(Protocol):

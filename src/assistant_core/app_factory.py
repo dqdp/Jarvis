@@ -15,7 +15,10 @@ from assistant_core.content_retrieval.project_docs import (
     ProjectDocsIngestionService,
     ProjectDocsSourceScanner,
 )
+from assistant_core.content_retrieval.indexing_service import ContentIndexingService
+from assistant_core.content_retrieval.retrieval_service import ContentRetrievalService
 from assistant_core.context_assembly.deterministic import DeterministicContextAssembler
+from assistant_core.memory.write_service import MemoryWriteService
 from assistant_core.models.embedding_port import ModelRouterEmbeddingPort
 from assistant_core.models.local_openai import (
     HttpxOpenAICompatibleTransport,
@@ -28,6 +31,7 @@ from assistant_core.models.ollama import (
     OllamaTransport,
 )
 from assistant_core.models.router import ModelRouter
+from assistant_core.ports.model_provider import ModelProviderPort
 from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.runtime.agent_runtime import AgentRuntime
 from assistant_core.runtime.loops import LoopStrategyRegistry, MemoryAugmentedAnswerLoop
@@ -68,7 +72,7 @@ def create_runtime_app(
     *,
     database_url: str,
     settings: Settings,
-    providers: dict[str, object] | None = None,
+    providers: dict[str, ModelProviderPort] | None = None,
     project_root: Path | None = None,
     run_database_migrations: bool = False,
 ) -> RuntimeApplication:
@@ -94,23 +98,27 @@ def create_runtime_app(
         policy=policy,
         embedding_port=ModelRouterEmbeddingPort(router=router, profile="local_embedding"),
     )
+    memory_write = MemoryWriteService(memory_store)
     content_store = PostgresContentStore(
         engine=engine,
         settings=settings,
         embedding_port=ModelRouterEmbeddingPort(router=router, profile="local_embedding"),
     )
+    content_indexing = ContentIndexingService(content_store)
+    content_retrieval = ContentRetrievalService(content_store)
     content_project_root = (project_root or Path(os.environ.get("JARVIS_PROJECT_ROOT", "."))).resolve()
     content_ingestion = ProjectDocsIngestionService(
-        store=content_store,
+        store=content_indexing,
         scanner=ProjectDocsSourceScanner(project_root=content_project_root),
         chunker=MarkdownChunker(),
     )
     context_assembler = DeterministicContextAssembler(
         conversation_store=conversation_store,
         memory_read=memory_store,
-        content_retrieval=content_store,
+        content_retrieval=content_retrieval,
         event_log=event_log,
         policy=policy,
+        settings=settings,
     )
     tool_gateway = ToolGateway(
         registry=ToolRegistry(
@@ -166,7 +174,9 @@ def create_runtime_app(
     app = create_app(
         conversation_store=conversation_store,
         memory_store=memory_store,
+        memory_write=memory_write,
         content_store=content_store,
+        content_retrieval=content_retrieval,
         settings=settings,
         runtime=runtime,
         event_log=event_log,
@@ -194,10 +204,10 @@ def build_local_providers(
     *,
     transport: OpenAICompatibleTransport | None = None,
     ollama_transport: OllamaTransport | None = None,
-) -> dict[str, object]:
+) -> dict[str, ModelProviderPort]:
     local_transport = transport or HttpxOpenAICompatibleTransport()
     local_ollama_transport = ollama_transport or HttpxOllamaTransport()
-    providers: dict[str, object] = {}
+    providers: dict[str, ModelProviderPort] = {}
     for profile_name, profile in settings.model_profiles.items():
         if not profile.enabled or profile.cloud:
             continue

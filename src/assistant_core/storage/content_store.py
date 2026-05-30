@@ -12,7 +12,6 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from assistant_core.config.settings import Settings
-from assistant_core.content_retrieval.project_docs import ProjectDocsSourceCandidate
 from assistant_core.domain.content_retrieval import (
     ContentChunk,
     ContentChunkStatus,
@@ -25,6 +24,7 @@ from assistant_core.domain.content_retrieval import (
     ContentSourceStatus,
     ContentSourceSyncResult,
     ContentSourceType,
+    ProjectDocsSourceCandidate,
 )
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
 from assistant_core.domain.sensitivity import Sensitivity
