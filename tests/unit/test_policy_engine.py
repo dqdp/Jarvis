@@ -251,6 +251,68 @@ def test_writes_local_risk_cannot_pass_as_safe_tool() -> None:
     assert decision.code == "approval_required_for_write_risk"
 
 
+def test_content_ingest_write_risk_is_allowed_when_capability_is_explicitly_allowed() -> None:
+    decision = asyncio.run(
+        _engine().evaluate_capability_request(
+            CapabilityPolicyRequest(
+                capability=Capability.CONTENT_INGEST,
+                risk_classes=frozenset({RiskClass.WRITES_LOCAL}),
+                sensitivity=Sensitivity.PROJECT,
+            ),
+        ),
+    )
+
+    assert decision.outcome == PolicyDecisionOutcome.ALLOW
+    assert decision.code == "allowed_content_ingest"
+
+
+def test_content_index_write_risk_is_allowed_when_capability_is_explicitly_allowed() -> None:
+    decision = asyncio.run(
+        _engine().evaluate_capability_request(
+            CapabilityPolicyRequest(
+                capability=Capability.CONTENT_INDEX,
+                risk_classes=frozenset({RiskClass.WRITES_LOCAL}),
+                sensitivity=Sensitivity.PROJECT,
+            ),
+        ),
+    )
+
+    assert decision.outcome == PolicyDecisionOutcome.ALLOW
+    assert decision.code == "allowed_content_index"
+
+
+def test_content_ingest_write_risk_is_denied_in_locked_down_mode() -> None:
+    decision = asyncio.run(
+        _engine().evaluate_capability_request(
+            CapabilityPolicyRequest(
+                capability=Capability.CONTENT_INGEST,
+                risk_classes=frozenset({RiskClass.WRITES_LOCAL}),
+                sensitivity=Sensitivity.PROJECT,
+                permission_mode=PermissionMode.LOCKED_DOWN,
+            ),
+        ),
+    )
+
+    assert decision.outcome == PolicyDecisionOutcome.DENY
+    assert decision.code == "capability_denied"
+
+
+def test_content_index_write_risk_is_allowed_in_automation_mode_when_configured() -> None:
+    decision = asyncio.run(
+        _engine().evaluate_capability_request(
+            CapabilityPolicyRequest(
+                capability=Capability.CONTENT_INDEX,
+                risk_classes=frozenset({RiskClass.WRITES_LOCAL}),
+                sensitivity=Sensitivity.PROJECT,
+                permission_mode=PermissionMode.AUTOMATION,
+            ),
+        ),
+    )
+
+    assert decision.outcome == PolicyDecisionOutcome.ALLOW
+    assert decision.code == "allowed_content_index"
+
+
 @pytest.mark.parametrize(
     "risk_class",
     [RiskClass.WRITES_LOCAL, RiskClass.EXTERNAL_SIDE_EFFECT],

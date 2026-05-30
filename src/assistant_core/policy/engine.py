@@ -189,6 +189,14 @@ class ConfigPolicyEngine:
                 scope,
             )
 
+        if (
+            capability in {Capability.CONTENT_INGEST, Capability.CONTENT_INDEX}
+            and RiskClass.WRITES_LOCAL in request.risk_classes
+            and action == PolicyDecisionOutcome.ALLOW
+        ):
+            code = _allow_code(capability)
+            return _capability_allow(code, "capability is allowed", request, mode, scope)
+
         if RiskClass.WRITES_LOCAL in request.risk_classes and action == PolicyDecisionOutcome.ALLOW:
             return _capability_approval(
                 "approval_required_for_write_risk",
@@ -553,6 +561,10 @@ def _allow_code(capability: Capability) -> str:
         return "allowed_system_diagnostics"
     if capability == Capability.CONTENT_RETRIEVE:
         return "allowed_content_retrieve"
+    if capability == Capability.CONTENT_INGEST:
+        return "allowed_content_ingest"
+    if capability == Capability.CONTENT_INDEX:
+        return "allowed_content_index"
     if capability == Capability.CONTEXT_INSPECT:
         return "allowed_context_inspect"
     return "allowed"
