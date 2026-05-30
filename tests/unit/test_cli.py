@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from assistant_core import cli
+from assistant_core.cli_app import client as cli_client_module
 
 
 pytestmark = pytest.mark.unit
@@ -526,7 +527,7 @@ def test_http_health_returns_not_ready_payload_from_503(monkeypatch) -> None:
             assert path == "/v1/health"
             return DegradedResponse()
 
-    monkeypatch.setattr(cli.httpx, "AsyncClient", RecordingAsyncClient)
+    monkeypatch.setattr(cli_client_module.httpx, "AsyncClient", RecordingAsyncClient)
 
     payload = asyncio.run(cli.HttpJarvisClient("http://testserver").health())
 
@@ -1178,7 +1179,7 @@ def test_http_client_uses_explicit_non_stream_timeout(monkeypatch) -> None:
             assert path == "/v1/health"
             return FakeResponse()
 
-    monkeypatch.setattr(cli.httpx, "AsyncClient", RecordingAsyncClient)
+    monkeypatch.setattr(cli_client_module.httpx, "AsyncClient", RecordingAsyncClient)
 
     response = asyncio.run(cli.HttpJarvisClient("http://testserver").health())
 
@@ -1218,7 +1219,7 @@ def test_http_client_maps_control_surface_endpoints(monkeypatch) -> None:
             calls.append(("POST", path, json))
             return FakeResponse({"ok": True})
 
-    monkeypatch.setattr(cli.httpx, "AsyncClient", RecordingAsyncClient)
+    monkeypatch.setattr(cli_client_module.httpx, "AsyncClient", RecordingAsyncClient)
     client = cli.HttpJarvisClient("http://testserver")
 
     asyncio.run(client.list_conversations(limit=7))
