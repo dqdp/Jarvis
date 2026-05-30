@@ -20,9 +20,10 @@ from assistant_core.domain.events import EventType
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.events.in_memory import InMemoryEventLog
 from assistant_core.models.fake_provider import FakeEmbeddingProvider, FakeModelProvider
-from assistant_core.models.router import ModelPolicyDenied, ModelProviderError, ModelRouter
+from assistant_core.models.router import ModelPolicyDenied, ModelRouter
 from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.ports.event_log import EventFilter
+from assistant_core.ports.model_provider import ModelProviderError
 from assistant_core.storage.database import assert_test_database_url, create_database_engine
 from assistant_core.storage.migrations import run_migrations
 from assistant_core.storage.model_invocations import PostgresModelInvocationRepository

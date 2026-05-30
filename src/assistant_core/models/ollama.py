@@ -15,7 +15,7 @@ from assistant_core.domain.models import (
     EmbeddingResponse,
     StructuredModelRequest,
 )
-from assistant_core.models.router import ModelProviderError
+from assistant_core.ports.model_provider import ModelProviderError
 
 
 REPEAT_LAST_N = 256

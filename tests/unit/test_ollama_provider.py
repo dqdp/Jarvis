@@ -13,7 +13,7 @@ from assistant_core.domain.messages import ChatMessage, MessageRole, TextPart
 from assistant_core.domain.models import ChatModelRequest, EmbeddingRequest
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.models.ollama import OllamaProviderAdapter
-from assistant_core.models.router import ModelProviderError
+from assistant_core.ports.model_provider import ModelProviderError
 
 
 pytestmark = pytest.mark.unit

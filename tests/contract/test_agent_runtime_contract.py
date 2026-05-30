@@ -29,9 +29,10 @@ from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.events.in_memory import InMemoryEventLog
 from assistant_core.models.fake_provider import FakeEmbeddingProvider, FakeModelProvider
-from assistant_core.models.router import ModelProviderError, ModelRouter
+from assistant_core.models.router import ModelRouter
 from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.ports.event_log import EventFilter
+from assistant_core.ports.model_provider import ModelProviderError
 from assistant_core.ports.memory import MemoryRetrievalError
 from assistant_core.runtime.agent_runtime import AgentRuntime, RuntimeTurnCommand
 from assistant_core.storage.conversation_store import PostgresConversationStore

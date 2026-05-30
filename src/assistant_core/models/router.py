@@ -26,6 +26,8 @@ from assistant_core.ports.model_invocations import (
     ModelInvocationRepositoryPort,
     StartModelInvocationCommand,
 )
+from assistant_core.ports.model_provider import ModelProviderPort
+import assistant_core.ports.model_provider as model_provider_ports
 from assistant_core.ports.policy import PolicyPort
 
 
@@ -39,10 +41,6 @@ class ModelPolicyDenied(ModelRouterError):
         self.decision = decision
 
 
-class ModelProviderError(ModelRouterError):
-    """Raised when a provider call fails."""
-
-
 class StructuredOutputValidationError(ModelRouterError):
     """Raised when structured output cannot be parsed after retries."""
 
@@ -54,7 +52,7 @@ class ModelRouter:
         settings: Settings,
         policy: PolicyPort,
         invocation_repository: ModelInvocationRepositoryPort,
-        providers: dict[str, object],
+        providers: dict[str, ModelProviderPort],
         event_log: EventLogPort,
     ) -> None:
         self._settings = settings
@@ -103,7 +101,7 @@ class ModelRouter:
             streaming=False,
         )
         try:
-            response = await provider.chat(request)  # type: ignore[attr-defined]
+            response = await provider.chat(request)
         except asyncio.CancelledError as exc:
             await self._finish_cancelled(invocation.model_invocation_id, exc)
             raise
@@ -129,7 +127,7 @@ class ModelRouter:
         )
         finished = False
         try:
-            async for token in provider.stream_chat(request):  # type: ignore[attr-defined]
+            async for token in provider.stream_chat(request):
                 yield ModelStreamEvent(event_type="token", delta=token)
         except asyncio.CancelledError as exc:
             await self._finish_cancelled(invocation.model_invocation_id, exc)
@@ -172,7 +170,7 @@ class ModelRouter:
         last_error: Exception | None = None
         for attempt in range(retry_count + 1):
             try:
-                raw = await provider.structured(request)  # type: ignore[attr-defined]
+                raw = await provider.structured(request)
             except asyncio.CancelledError as exc:
                 await self._finish_cancelled(invocation.model_invocation_id, exc)
                 raise
@@ -212,7 +210,7 @@ class ModelRouter:
         last_error: Exception | None = None
         for attempt in range(retry_count + 1):
             try:
-                response = await provider.embed(request)  # type: ignore[attr-defined]
+                response = await provider.embed(request)
             except asyncio.CancelledError as exc:
                 await self._finish_cancelled(invocation.model_invocation_id, exc)
                 raise
@@ -229,20 +227,20 @@ class ModelRouter:
                 )
                 return response
 
-        raise ModelProviderError(str(last_error))
+        raise model_provider_ports.ModelProviderError(str(last_error))
 
     def _profile(self, name: str) -> ModelProfileConfig:
         profile = self._settings.model_profiles.get(name)
         if profile is None:
-            raise ModelProviderError(f"unknown model profile: {name}")
+            raise model_provider_ports.ModelProviderError(f"unknown model profile: {name}")
         return profile
 
-    def _provider(self, name: str, *, profile_name: str | None = None) -> Any:
+    def _provider(self, name: str, *, profile_name: str | None = None) -> ModelProviderPort:
         if profile_name is not None and profile_name in self._providers:
             return self._providers[profile_name]
         provider = self._providers.get(name)
         if provider is None:
-            raise ModelProviderError(f"provider is not registered: {name}")
+            raise model_provider_ports.ModelProviderError(f"provider is not registered: {name}")
         return provider
 
     def _has_provider_for_profile(self, profile_name: str) -> bool:
@@ -447,7 +445,7 @@ def _profile_name(settings: Settings, profile: ModelProfileConfig) -> str:
     for name, candidate in settings.model_profiles.items():
         if candidate is profile:
             return name
-    raise ModelProviderError("model profile is not registered in settings")
+    raise model_provider_ports.ModelProviderError("model profile is not registered in settings")
 
 
 async def _provider_health(provider: object) -> bool:
