@@ -19,6 +19,12 @@ from assistant_core.models.router import ModelProviderError
 
 
 class OpenAICompatibleTransport(Protocol):
+    async def get_json(
+        self,
+        url: str,
+        timeout_seconds: int | None,
+    ) -> dict[str, Any]: ...
+
     async def post_json(
         self,
         url: str,
@@ -35,6 +41,16 @@ class OpenAICompatibleTransport(Protocol):
 
 
 class HttpxOpenAICompatibleTransport:
+    async def get_json(
+        self,
+        url: str,
+        timeout_seconds: int | None,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response.json()
+
     async def post_json(
         self,
         url: str,
@@ -150,6 +166,16 @@ class LocalOpenAICompatibleProviderAdapter:
             raise ModelProviderError("embedding count mismatch")
         return EmbeddingResponse(vectors=vectors)
 
+    async def health_check(self) -> bool:
+        try:
+            response = await self._transport.get_json(
+                self._models_url(),
+                self._profile.timeout_seconds,
+            )
+        except Exception:
+            return False
+        return _model_list_contains(response, self._profile.model)
+
     def _chat_payload(
         self,
         messages: list[ChatMessage],
@@ -176,6 +202,11 @@ class LocalOpenAICompatibleProviderAdapter:
         if not self._profile.endpoint:
             raise ModelProviderError("local OpenAI-compatible endpoint is not configured")
         return f"{self._profile.endpoint.rstrip('/')}/embeddings"
+
+    def _models_url(self) -> str:
+        if not self._profile.endpoint:
+            raise ModelProviderError("local OpenAI-compatible endpoint is not configured")
+        return f"{self._profile.endpoint.rstrip('/')}/models"
 
 
 def _message_payload(message: ChatMessage) -> dict[str, str]:
@@ -225,3 +256,10 @@ def _extract_embeddings(response: dict[str, Any]) -> list[list[float]]:
             raise ModelProviderError("invalid local OpenAI-compatible embedding vector")
         vectors.append([float(value) for value in vector])
     return vectors
+
+
+def _model_list_contains(response: dict[str, Any], model: str) -> bool:
+    items = response.get("data")
+    if not isinstance(items, list):
+        return False
+    return any(isinstance(item, dict) and item.get("id") == model for item in items)

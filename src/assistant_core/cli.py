@@ -100,6 +100,14 @@ class JarvisClient(Protocol):
 
     async def deny_approval(self, approval_id: str) -> dict[str, Any]: ...
 
+    async def ingest_project_docs(self) -> dict[str, Any]: ...
+
+    async def reindex_project_docs(self) -> dict[str, Any]: ...
+
+    async def list_content_sources(self) -> dict[str, Any]: ...
+
+    async def content_status(self) -> dict[str, Any]: ...
+
 
 class ReadlineModule(Protocol):
     def add_history(self, line: str) -> None: ...
@@ -114,7 +122,7 @@ class HttpJarvisClient:
         self._base_url = base_url.rstrip("/")
 
     async def health(self) -> dict[str, Any]:
-        return await self._get_json("/v1/health")
+        return await self._get_json("/v1/health", accepted_status_codes={200, 503})
 
     async def create_conversation(
         self,
@@ -228,11 +236,24 @@ class HttpJarvisClient:
     async def deny_approval(self, approval_id: str) -> dict[str, Any]:
         return await self._post_json(f"/v1/approvals/{approval_id}/deny", {})
 
+    async def ingest_project_docs(self) -> dict[str, Any]:
+        return await self._post_json("/v1/content/project-docs/ingest", {})
+
+    async def reindex_project_docs(self) -> dict[str, Any]:
+        return await self._post_json("/v1/content/project-docs/reindex", {})
+
+    async def list_content_sources(self) -> dict[str, Any]:
+        return await self._get_json("/v1/content/sources")
+
+    async def content_status(self) -> dict[str, Any]:
+        return await self._get_json("/v1/content/status")
+
     async def _get_json(
         self,
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        accepted_status_codes: set[int] | None = None,
     ) -> dict[str, Any]:
         try:
             async with httpx.AsyncClient(
@@ -244,6 +265,8 @@ class HttpJarvisClient:
                     if params is None
                     else await client.get(path, params=params)
                 )
+                if getattr(response, "status_code", 200) in (accepted_status_codes or {200}):
+                    return response.json()
                 response.raise_for_status()
                 return response.json()
         except httpx.HTTPStatusError as exc:
@@ -362,6 +385,22 @@ async def _run_command(
         stdout.write(
             f"memory> {_required_str(memory, 'memory_id')} {_display_text(memory.get('status'))}\n"
         )
+        return 0
+
+    if args.command == "content" and args.content_command == "ingest":
+        await write_content_ingest(client=client, stdout=stdout)
+        return 0
+
+    if args.command == "content" and args.content_command == "reindex":
+        await write_content_reindex(client=client, stdout=stdout)
+        return 0
+
+    if args.command == "content" and args.content_command == "list":
+        await write_content_sources(client=client, stdout=stdout)
+        return 0
+
+    if args.command == "content" and args.content_command == "status":
+        await write_content_status(client=client, stdout=stdout)
         return 0
 
     raise AssertionError(f"unhandled command: {args.command}")
@@ -708,6 +747,14 @@ def write_slash_command_menu(stdout: TextIO, *, prefix: str) -> None:
 async def write_status(*, client: JarvisClient, stdout: TextIO) -> None:
     payload = await client.health()
     stdout.write(f"status> {_display_text(payload.get('status'))}\n")
+    readiness = payload.get("readiness")
+    if not isinstance(readiness, dict):
+        return
+    reasons = readiness.get("reasons")
+    if not isinstance(reasons, dict):
+        return
+    for component, reason in sorted(reasons.items()):
+        stdout.write(f"reason> {_display_text(component)}: {_display_text(reason)}\n")
 
 
 async def write_model_status(*, client: JarvisClient, stdout: TextIO) -> None:
@@ -725,6 +772,50 @@ async def write_model_status(*, client: JarvisClient, stdout: TextIO) -> None:
     if temperature is not None:
         stdout.write(f" temperature={temperature}")
     stdout.write("\n")
+
+
+async def write_content_ingest(*, client: JarvisClient, stdout: TextIO) -> None:
+    payload = await client.ingest_project_docs()
+    stdout.write(
+        "content> ingested "
+        f"sources={_display_text(payload.get('seen_sources'))} "
+        f"chunks={_display_text(payload.get('created_chunks'))}\n",
+    )
+
+
+async def write_content_reindex(*, client: JarvisClient, stdout: TextIO) -> None:
+    payload = await client.reindex_project_docs()
+    stdout.write(
+        "content> reindexed "
+        f"sources={_display_text(payload.get('updated_sources'))} "
+        f"chunks={_display_text(payload.get('created_chunks'))}\n",
+    )
+
+
+async def write_content_sources(*, client: JarvisClient, stdout: TextIO) -> None:
+    payload = await client.list_content_sources()
+    sources = payload.get("sources", [])
+    if not sources:
+        stdout.write("content> empty\n")
+        return
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        stdout.write(
+            "content> "
+            f"{_display_text(source.get('path'))} "
+            f"{_display_text(source.get('status'))} "
+            f"{_display_text(source.get('title'))}\n",
+        )
+
+
+async def write_content_status(*, client: JarvisClient, stdout: TextIO) -> None:
+    payload = await client.content_status()
+    sources = payload.get("sources", {})
+    chunks = payload.get("chunks", {})
+    source_total = sources.get("total") if isinstance(sources, dict) else ""
+    chunk_total = chunks.get("total") if isinstance(chunks, dict) else ""
+    stdout.write(f"content> sources={_display_text(source_total)} chunks={_display_text(chunk_total)}\n")
 
 
 async def write_conversation_list(*, client: JarvisClient, stdout: TextIO) -> None:
@@ -1060,6 +1151,13 @@ def _parser() -> argparse.ArgumentParser:
     memory_search.add_argument("query", nargs="+")
     memory_delete = memory_subparsers.add_parser("delete")
     memory_delete.add_argument("memory_id")
+
+    content = subparsers.add_parser("content")
+    content_subparsers = content.add_subparsers(dest="content_command", required=True)
+    content_subparsers.add_parser("ingest")
+    content_subparsers.add_parser("reindex")
+    content_subparsers.add_parser("list")
+    content_subparsers.add_parser("status")
 
     return parser
 

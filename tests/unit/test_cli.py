@@ -157,6 +157,30 @@ class FakeCliClient:
             },
         }
 
+    async def ingest_project_docs(self):
+        self.calls.append(("ingest_project_docs", None))
+        return {"seen_sources": 2, "created_sources": 1, "updated_sources": 1, "created_chunks": 3}
+
+    async def reindex_project_docs(self):
+        self.calls.append(("reindex_project_docs", None))
+        return {"seen_sources": 2, "updated_sources": 2, "created_chunks": 1}
+
+    async def list_content_sources(self):
+        self.calls.append(("list_content_sources", None))
+        return {
+            "sources": [
+                {"path": "README.md", "status": "active", "title": "Readme"},
+                {"path": "docs/guide.md", "status": "active", "title": "Guide"},
+            ],
+        }
+
+    async def content_status(self):
+        self.calls.append(("content_status", None))
+        return {
+            "sources": {"total": 2, "by_status": {"active": 2}},
+            "chunks": {"total": 3, "by_status": {"active": 3}},
+        }
+
 
 class InterruptedStreamCliClient(FakeCliClient):
     async def stream_request(self, request_id: str):
@@ -170,6 +194,19 @@ class ServerCancelledStreamCliClient(FakeCliClient):
         self.calls.append(("stream_request", request_id))
         yield "request.processing.cancelled", {
             "error": {"code": "cancelled", "message": "request cancelled"},
+        }
+
+
+class DegradedHealthCliClient(FakeCliClient):
+    async def health(self):
+        self.calls.append(("health", None))
+        return {
+            "status": "not_ready",
+            "readiness": {
+                "status": "failed",
+                "checks": {"conversation_store": "ok", "inference": "failed"},
+                "reasons": {"inference": "missing providers: local_main"},
+            },
         }
 
 
@@ -439,6 +476,92 @@ def test_interactive_chat_continues_after_stream_interrupt() -> None:
     assert "cancelled> request request-1" in output
     assert "status> ready" in output
     assert output.rstrip().endswith("bye")
+
+
+def test_status_command_prints_degraded_reasons() -> None:
+    stdout = StringIO()
+
+    asyncio.run(cli.write_status(client=DegradedHealthCliClient("http://test"), stdout=stdout))
+
+    output = stdout.getvalue()
+    assert "status> not_ready" in output
+    assert "reason> inference: missing providers: local_main" in output
+
+
+def test_http_health_returns_not_ready_payload_from_503(monkeypatch) -> None:
+    class DegradedResponse:
+        status_code = 503
+
+        def raise_for_status(self) -> None:
+            request = httpx.Request("GET", "http://testserver/v1/health")
+            response = httpx.Response(
+                self.status_code,
+                request=request,
+                json=self.json(),
+            )
+            raise httpx.HTTPStatusError("service unavailable", request=request, response=response)
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "status": "not_ready",
+                "readiness": {
+                    "status": "failed",
+                    "checks": {"inference": "failed"},
+                    "reasons": {"inference": "missing providers: local_main"},
+                },
+            }
+
+    class RecordingAsyncClient:
+        def __init__(self, *, base_url: str, timeout=None) -> None:
+            self.base_url = base_url
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def get(self, path: str) -> DegradedResponse:
+            assert path == "/v1/health"
+            return DegradedResponse()
+
+    monkeypatch.setattr(cli.httpx, "AsyncClient", RecordingAsyncClient)
+
+    payload = asyncio.run(cli.HttpJarvisClient("http://testserver").health())
+
+    assert payload["status"] == "not_ready"
+    assert payload["readiness"]["reasons"]["inference"] == "missing providers: local_main"
+
+
+def test_content_ops_cli_commands_call_api() -> None:
+    commands = [
+        (["content", "ingest"], "content> ingested sources=2 chunks=3", ("ingest_project_docs", None)),
+        (["content", "reindex"], "content> reindexed sources=2 chunks=1", ("reindex_project_docs", None)),
+        (["content", "list"], "content> README.md active Readme", ("list_content_sources", None)),
+        (["content", "status"], "content> sources=2 chunks=3", ("content_status", None)),
+    ]
+
+    for argv, expected_output, expected_call in commands:
+        stdout = StringIO()
+        clients: list[FakeCliClient] = []
+
+        def client_factory(base_url: str) -> FakeCliClient:
+            client = FakeCliClient(base_url)
+            clients.append(client)
+            return client
+
+        exit_code = asyncio.run(
+            cli.run(
+                argv,
+                client_factory=client_factory,
+                stdout=stdout,
+            ),
+        )
+
+        assert exit_code == 0
+        assert expected_output in stdout.getvalue()
+        assert clients[0].calls == [expected_call]
 
 
 def test_stream_cancelled_event_returns_interrupt_status() -> None:

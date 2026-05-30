@@ -47,6 +47,16 @@ class FakeOpenAITransport:
             raise self.error
         return self.response
 
+    async def get_json(
+        self,
+        url: str,
+        timeout_seconds: int | None,
+    ) -> dict[str, Any]:
+        self.requests.append({"url": url, "timeout_seconds": timeout_seconds})
+        if self.error is not None:
+            raise self.error
+        return {"data": [{"id": _profile().model}, {"id": _embedding_profile().model}]}
+
     async def stream_json(
         self,
         url: str,
@@ -160,6 +170,18 @@ def test_local_openai_provider_builds_embedding_request() -> None:
         "model": "qwen3-embedding-0.6b",
         "input": ["hello", "world"],
     }
+
+
+def test_local_openai_provider_health_checks_configured_model() -> None:
+    async def scenario():
+        transport = FakeOpenAITransport()
+        adapter = LocalOpenAICompatibleProviderAdapter(profile=_profile(), transport=transport)
+        return await adapter.health_check(), transport.requests[0]
+
+    healthy, recorded = asyncio.run(scenario())
+
+    assert healthy is True
+    assert recorded["url"] == "http://inference-node:8000/v1/models"
 
 
 def test_local_openai_provider_rejects_embedding_cardinality_mismatch() -> None:

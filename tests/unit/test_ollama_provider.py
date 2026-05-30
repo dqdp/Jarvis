@@ -45,6 +45,16 @@ class FakeOllamaTransport:
             raise self.error
         return self.response
 
+    async def get_json(
+        self,
+        url: str,
+        timeout_seconds: int | None,
+    ) -> dict[str, Any]:
+        self.requests.append({"url": url, "timeout_seconds": timeout_seconds})
+        if self.error is not None:
+            raise self.error
+        return {"models": [{"name": _profile("local_main").model}]}
+
     async def stream_json(
         self,
         url: str,
@@ -205,6 +215,18 @@ def test_ollama_provider_builds_embedding_request() -> None:
     assert response.vectors == [[0.1, 0.2]]
     assert recorded["url"] == "http://127.0.0.1:11434/api/embed"
     assert recorded["payload"] == {"model": "embeddinggemma:latest", "input": ["hello"]}
+
+
+def test_ollama_provider_health_checks_configured_model() -> None:
+    async def scenario():
+        transport = FakeOllamaTransport()
+        adapter = OllamaProviderAdapter(profile=_profile("local_main"), transport=transport)
+        return await adapter.health_check(), transport.requests[0]
+
+    healthy, recorded = asyncio.run(scenario())
+
+    assert healthy is True
+    assert recorded["url"] == "http://127.0.0.1:11434/api/tags"
 
 
 def test_ollama_provider_rejects_embedding_cardinality_mismatch() -> None:

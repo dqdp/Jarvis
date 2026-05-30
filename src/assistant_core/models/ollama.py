@@ -25,6 +25,12 @@ MIN_REPEATED_LINE_LENGTH = 12
 
 
 class OllamaTransport(Protocol):
+    async def get_json(
+        self,
+        url: str,
+        timeout_seconds: int | None,
+    ) -> dict[str, Any]: ...
+
     async def post_json(
         self,
         url: str,
@@ -41,6 +47,16 @@ class OllamaTransport(Protocol):
 
 
 class HttpxOllamaTransport:
+    async def get_json(
+        self,
+        url: str,
+        timeout_seconds: int | None,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response.json()
+
     async def post_json(
         self,
         url: str,
@@ -160,6 +176,16 @@ class OllamaProviderAdapter:
             raise ModelProviderError("embedding count mismatch")
         return EmbeddingResponse(vectors=vectors)
 
+    async def health_check(self) -> bool:
+        try:
+            response = await self._transport.get_json(
+                self._tags_url(),
+                self._profile.timeout_seconds,
+            )
+        except Exception:
+            return False
+        return _model_list_contains(response, self._profile.model)
+
     def _chat_payload(
         self,
         messages: list[ChatMessage],
@@ -192,6 +218,11 @@ class OllamaProviderAdapter:
         if not self._profile.endpoint:
             raise ModelProviderError("Ollama endpoint is not configured")
         return f"{self._profile.endpoint.rstrip('/')}/api/embed"
+
+    def _tags_url(self) -> str:
+        if not self._profile.endpoint:
+            raise ModelProviderError("Ollama endpoint is not configured")
+        return f"{self._profile.endpoint.rstrip('/')}/api/tags"
 
 
 def _message_payload(message: ChatMessage) -> dict[str, str]:
@@ -259,6 +290,18 @@ def _normalize_repeated_line(line: str) -> str | None:
     if len(normalized) < MIN_REPEATED_LINE_LENGTH:
         return None
     return normalized
+
+
+def _model_list_contains(response: dict[str, Any], model: str) -> bool:
+    items = response.get("models")
+    if not isinstance(items, list):
+        return False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("name") == model or item.get("model") == model:
+            return True
+    return False
 
 
 def _extract_embeddings(response: dict[str, Any]) -> list[list[float]]:
