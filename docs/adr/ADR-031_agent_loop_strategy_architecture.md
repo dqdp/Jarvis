@@ -207,7 +207,8 @@ added without removing existing request, context, model and message events.
 
 ## Tool-capable loop boundary
 
-`tool_react_loop` is a future loop strategy, not a tool.
+`tool_react_loop` is the implemented post-MVP Alpha tool-capable loop strategy,
+not a tool.
 
 It should:
 

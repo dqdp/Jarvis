@@ -62,7 +62,9 @@ def test_config_matches_documented_defaults() -> None:
     }
     assert settings.model_profiles["cloud_reasoning"].enabled is False
     assert settings.policy.cloud_models_enabled is False
-    assert settings.policy.tools_enabled is False
+    assert settings.policy.tools_enabled is True
+    assert settings.permissions.modes["developer_local"]["content.ingest"] == "allow"
+    assert settings.permissions.modes["developer_local"]["content.index"] == "allow"
     assert settings.privacy.raw_prompt_logging is False
     assert settings.context_assembly.full_prompt_logging is False
     assert settings.observability.log_raw_prompts is False
@@ -90,6 +92,10 @@ def test_all_required_ports_have_contract_tests() -> None:
         "tests/contract/test_memory_read_contract.py",
         "tests/contract/test_memory_write_contract.py",
         "tests/contract/test_model_router_contract.py",
+        "tests/contract/test_tool_gateway_contract.py",
+        "tests/contract/test_approval_api_contract.py",
+        "tests/contract/test_approval_store_contract.py",
+        "tests/contract/test_content_retrieval_contract.py",
         "tests/contract/test_sse_stream_contract.py",
     }
 
@@ -138,6 +144,22 @@ def test_required_make_targets_are_self_contained() -> None:
     assert "run:" in makefile
     assert "PYTHONPATH=$(APP_PYTHONPATH) DATABASE_URL=$(DATABASE_URL)" in makefile
     assert "assistant_core.app_factory:create_asgi_app --factory" in makefile
+
+
+def test_local_ollama_ops_targets_match_configured_models() -> None:
+    from assistant_core.config.settings import ConfigLoader
+
+    settings = ConfigLoader(PROJECT_ROOT / "config").load("ollama")
+    makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
+
+    assert f"OLLAMA_CHAT_MODEL ?= {settings.model_profiles['local_main'].model}" in makefile
+    assert f"OLLAMA_EMBED_MODEL ?= {settings.model_profiles['local_embedding'].model}" in makefile
+    assert "run-ollama:" in makefile
+    assert "CONFIG_PROFILE=ollama $(MAKE) run" in makefile
+    assert "local-smoke:" in makefile
+    assert "$(MAKE) cli ARGS='health'" in makefile
+    assert "content-ingest:" in makefile
+    assert "$(MAKE) cli ARGS='content ingest'" in makefile
     assert "models-list:" in makefile
     assert "models-pull:" in makefile
     assert "cli:" in makefile
@@ -180,6 +202,83 @@ def test_lifecycle_docs_do_not_defer_implemented_cancellation() -> None:
     assert "token replay guarantee\nwebsocket\ncancellation" not in lifecycle_docs.lower()
     assert "running -> cancelled" in lifecycle_docs
     assert "POST /v1/requests/{request_id}/cancel" in lifecycle_docs
+
+
+def test_lifecycle_docs_include_waiting_approval_status() -> None:
+    lifecycle_docs = "\n".join(
+        (DOCS_ROOT / relative_path).read_text(encoding="utf-8")
+        for relative_path in [
+            "08_data_model_and_storage.md",
+            "22_api_shape_and_request_lifecycle.md",
+            "23_error_handling_and_runtime_budgets.md",
+            "adr/ADR-023_api_shape_and_request_lifecycle.md",
+        ]
+    )
+
+    assert "waiting_approval" in lifecycle_docs
+    assert "running -> waiting_approval" in lifecycle_docs
+    assert "waiting_approval -> running" in lifecycle_docs
+
+
+def test_post_mvp_docs_do_not_defer_implemented_alpha_surface() -> None:
+    docs_text = "\n".join(
+        (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        for relative_path in [
+            "README.md",
+            "docs/32_known_limitations.md",
+            "docs/36_post_mvp_plan_review.md",
+            "docs/01_target_architecture_overview.md",
+            "docs/adr/ADR-029_capability_and_permission_model.md",
+            "docs/adr/ADR-030_toolgateway_boundary_and_tool_invocation_audit.md",
+            "docs/adr/ADR-031_agent_loop_strategy_architecture.md",
+            "docs/adr/ADR-034_content_retrieval_subsystem_and_project_docs_rag.md",
+        ]
+    )
+
+    stale_phrases = [
+        "The implementation still needs PM-01",
+        "Required fix:\n\n```text\nSlice PM-01",
+        "Approval transport is deferred to ADR-032",
+        "Defer approval transport until ADR-032",
+        "approval API/CLI UX;",
+        "Granted, denied and expired approval execution flows are deferred",
+        "does not wire ingestion event emission yet",
+        "Tools, MCP, RAG/content ingestion, ReAct/planner-executor, voice and external\n  integrations are intentionally out of MVP",
+        "does not implement tools, MCP, RAG/content ingestion, planner-executor, voice",
+        "Post-MVP Alpha will add capabilities",
+        "ReAct is a future loop strategy, not a tool, and is deferred until\n  `ToolGatewayPort` and the loop-strategy boundary exist.",
+        "deny tools because tools are out of scope",
+        "`tool_react_loop` is a future loop strategy, not a tool.",
+    ]
+    for phrase in stale_phrases:
+        assert phrase not in docs_text
+
+
+def test_current_alpha_api_surface_is_documented() -> None:
+    api_doc = (DOCS_ROOT / "22_api_shape_and_request_lifecycle.md").read_text(encoding="utf-8")
+    testing_doc = (DOCS_ROOT / "26_testing_strategy.md").read_text(encoding="utf-8")
+
+    for endpoint in [
+        "GET  /v1/approvals/pending",
+        "POST /v1/approvals/{approval_id}/grant",
+        "POST /v1/approvals/{approval_id}/deny",
+        "POST /v1/content/project-docs/ingest",
+        "POST /v1/content/project-docs/reindex",
+        "GET  /v1/content/sources",
+        "GET  /v1/content/status",
+    ]:
+        assert endpoint in api_doc
+        assert endpoint in testing_doc
+
+
+def test_current_alpha_baseline_is_called_out_in_foundational_docs() -> None:
+    for relative_path in [
+        "00_project_charter.md",
+        "01_target_architecture_overview.md",
+        "06_agent_runtime_and_loop_architecture.md",
+    ]:
+        text = (DOCS_ROOT / relative_path).read_text(encoding="utf-8")
+        assert "Current baseline: post-MVP Alpha" in text
 
 
 def test_docs_do_not_require_graph_runtime_for_mvp() -> None:

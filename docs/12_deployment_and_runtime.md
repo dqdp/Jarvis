@@ -51,7 +51,9 @@ Important flags:
 ```text
 cloud_models_enabled: false
 allow_autonomous_memory_write: false
-allow_tools: false
+policy.tools_enabled: true
+memory_augmented_answer.allow_tools: false
+tool_react_loop.allow_tools: true
 streaming_transport: sse
 ```
 
@@ -62,10 +64,12 @@ Local daemon commands:
 ```text
 make migrate
 make run
+make run-ollama
 make cli
 make cli ARGS='health'
 make models-list
 make models-pull
+make local-smoke
 ```
 
 `make migrate` applies Alembic migrations to `DATABASE_URL`. Migration
@@ -85,7 +89,7 @@ local providers and the FastAPI app.
 For local Ollama dogfood, run with:
 
 ```text
-CONFIG_PROFILE=ollama make run
+make run-ollama
 ```
 
 The `ollama` profile uses the locally available chat model `qwen3.5:9b` and the
@@ -94,12 +98,17 @@ profile behind the existing `ModelRouterPort`; CI still uses fake model and
 embedding providers and does not require real LLM calls.
 The Ollama adapter sends anti-repeat generation options and terminates obvious
 repeated-line loops before they exhaust the configured output-token budget.
+`GET /v1/health` also performs cheap provider readiness probes: Ollama uses
+`/api/tags`, and local OpenAI-compatible providers use `/v1/models`. CI keeps
+using fake providers/transports, so these probes do not make real LLM calls in
+tests.
 
 The CLI talks to the HTTP API:
 
 ```text
 make cli
 make cli ARGS='health'
+make local-smoke
 make cli ARGS='memory add --memory-type preference Prefer concise answers'
 make cli ARGS='chat Ответь ровно одним словом: OK'
 ```

@@ -16,17 +16,32 @@
   config changes.
 - Request execution is in-process. There is no durable queue or background
   worker system yet.
-- Tools, MCP, RAG/content ingestion, ReAct/planner-executor, voice and external
-  integrations are intentionally out of MVP.
+- Tools, RAG/content ingestion and a bounded tool loop are now implemented as
+  post-MVP Alpha slices, not as original MVP scope.
+- MCP, planner-executor, voice, remembered approvals, durable background
+  workers and external integrations remain future work.
+- Approval pauses are durable as approval records and request status, but there
+  is no general graph checkpoint/resume engine yet.
 - Cloud model fallback is disabled and must remain disabled until a future ADR
   changes the policy.
 
 ## Alpha Priorities
 
-1. CLI control surface and conversation navigation.
-2. Memory search/delete lifecycle.
-3. Model behavior tuning and smoke/eval scenarios.
-4. Later, content retrieval/RAG and tool-capable loop strategies.
+Implemented first Alpha wave:
 
-The first three Alpha priorities are implemented as the first post-MVP slice.
+- CLI control surface and conversation navigation.
+- Memory search/delete lifecycle.
+- Capability policy, permission modes and one-shot approvals.
+- ToolGateway, safe tools, read-only shell and system diagnostics.
+- Project docs content ingestion/retrieval and ContextAssembler integration.
+- Model behavior tuning and smoke/eval scenarios.
+
+Next priority candidates:
+
+- durable task queue / resumable workflow checkpoints;
+- broader context management and summaries;
+- MCP gateway;
+- external integrations;
+- voice interaction.
+
 Manual model smoke coverage is tracked in `docs/33_alpha_model_behavior_smoke.md`.

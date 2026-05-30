@@ -349,6 +349,10 @@ Allowed MVP transitions:
 accepted -> running
 accepted -> failed
 accepted -> cancelled
+running -> waiting_approval
+waiting_approval -> running
+waiting_approval -> failed
+waiting_approval -> cancelled
 running -> completed
 running -> failed
 running -> cancelled

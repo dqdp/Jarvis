@@ -2,9 +2,10 @@
 
 ## Status
 
-Planning review for post-MVP Alpha.
+Planning review for post-MVP Alpha and implementation status after PM-01
+through PM-07b.
 
-Date: 2026-05-29
+Date: 2026-05-30
 
 Reviewed documents:
 
@@ -24,21 +25,27 @@ docs/adr/ADR-031_agent_loop_strategy_architecture.md
 
 ## 1. Review verdict
 
-The plans are directionally consistent:
+The plans remain directionally consistent after the first Alpha implementation
+wave:
 
 - MVP remains a local-first core daemon;
-- tools, MCP, RAG, planner-executor, scheduler, voice and integrations are
-  post-MVP;
+- tools, read-only shell, read-only diagnostics, approvals and project docs RAG
+  are implemented as post-MVP Alpha capabilities, not as original MVP scope;
+- MCP, planner-executor, scheduler, voice, remembered approvals and external
+  integrations remain future work;
 - RAG remains separate from Memory;
-- tool-capable/ReAct loops wait for both `ToolGatewayPort` and an explicit
-  `LoopStrategy` boundary;
+- tool-capable loops use `ToolGatewayPort` and explicit `LoopStrategy`
+  selection;
 - advanced context work remains behind `ContextAssemblerPort`;
 - cloud fallback remains disabled until a future ADR changes policy.
 
-The main risk is not a contradiction in the documents. The main risk is
-implementation order. If we add shell, MCP, voice or RAG before permissions,
-ToolGateway, loop strategy boundaries and audit are ready, the architecture
-will likely degrade into direct adapters called from runtime code.
+The original implementation-order risk was addressed for PM-01..PM-07b:
+permissions, ToolGateway, loop strategy boundaries, approvals, shell/diagnostics
+and project-docs retrieval were added through ports/adapters and tests.
+
+The remaining risk is the next wave. MCP, voice, planner-executor, scheduler
+and external integrations must not bypass the policy, approval, audit and
+context boundaries now in place.
 
 ## 2. Strong points
 
@@ -57,9 +64,9 @@ ModelRouterPort
 MemoryReadPort
 MemoryWritePort
 PolicyPort
-future ToolGatewayPort
+ToolGatewayPort
+ContentRetrievalPort
 future SchedulerPort
-future ContentRetrievalPort
 ```
 
 ### Correct RAG boundary
@@ -79,90 +86,62 @@ The project already has unit, contract, integration, golden, architecture and
 e2e test layers. Post-MVP features can extend this discipline instead of
 inventing a new process.
 
-## 3. Weak points and gaps
+## 3. Remaining weak points and gaps
 
-### Permissions implementation is still pending
+### Durable workflow execution is still missing
 
-ADR-029 now accepts the capability taxonomy, risk classes and permission modes.
-The implementation still needs PM-01 before tools or integrations start.
+Request execution is still in-process. Approval records and
+`waiting_approval` request status are durable, but the loop itself is not
+checkpointed as a resumable workflow.
 
-Required fix:
+Required follow-up:
 
 ```text
-Slice PM-01 Capability and policy extension
+ADR-037 Scheduler and durable background workflows
+workflow checkpoint/resume slice before planner-executor or long automations
 ```
 
-### Loop strategy boundary needs implementation
+### Tool observation storage is still narrow
 
-ToolGateway defines how tools execute, but not how an agent decides to use
-them. The base agent loop must become an explicit strategy before adding a
-tool-capable loop.
+Tool observations are not conversation messages by default, which is correct.
+The current implementation keeps observations suitable for bounded context, but
+large artifacts still need a dedicated artifact store.
 
-Required fix:
-
-```text
-Slice PM-03 LoopStrategy abstraction
-```
-
-### Approval baseline needs implementation
-
-Risky tools need approval. The Alpha baseline is now one-shot approvals with
-redacted HTTP grant/deny endpoints, CLI prompts and SSE/runtime events.
-WebSocket and remembered approvals are deferred.
-
-Required fix:
+Required follow-up:
 
 ```text
-Slice PM-05 Approval model and CLI/API flow
-```
-
-### Tool observation storage is not fully designed
-
-The docs correctly say observations are not conversation messages by default.
-They do not yet define where large outputs live or how they enter context.
-
-Required fix:
-
-```text
-ADR-030 ToolGateway boundary
 ADR-044 Artifact storage
+large-output artifact references before broad MCP/file/integration tools
 ```
 
-### Shell sandbox needs an explicit threat model
+### Shell remains read-only Alpha scope
 
-Shell is the highest-risk early feature. We need command classification,
-working-directory policy, output caps, timeouts and approval rules before any
-runtime shell execution.
+PM-06a/PM-06b implemented read-only project shell and system diagnostics with
+classification, allowlists, redaction, output caps and timeouts. Write, network
+and destructive shell actions remain intentionally denied or deferred.
 
-Required implementation:
+Required follow-up:
 
 ```text
-PM-06a Project read-only shell tool
-PM-06b Read-only system diagnostics tools
+separate write-shell ADR/slice with stronger sandboxing and approval rules
 ```
 
-### RAG ingestion lifecycle is not yet concrete
+### Project docs RAG is narrow by design
 
-The RAG boundary is good, but implementation still needs source registry,
-chunking, citation invalidation and refresh behavior.
+PM-07a/PM-07b implemented project documentation ingestion, retrieval and
+ContextAssembler integration. General file RAG, source-code indexing, PDFs,
+web/email/Telegram ingestion and MCP resource indexing remain out of scope.
 
-Required implementation:
+Required follow-up:
 
 ```text
-PM-07a Project Docs ingestion and citation index
-PM-07b Project Docs retrieval and ContextAssembler integration
+source-specific RAG slices with explicit permissions and citation lifecycle
 ```
 
 ### Scheduler choice should remain deferred
 
-NATS/JetStream is mentioned as a possible future option. It should not be added
+NATS/JetStream is still only a possible future option. It should not be added
 until DB-backed scheduling is proven insufficient.
-
-Required fix:
-
-```text
-ADR-037 Scheduler and durable background workflows
-```
 
 ## 4. Contradiction check
 
@@ -182,11 +161,11 @@ Potential confusion points to watch:
 - `voice` may need realtime transport, but push-to-talk can start without
   committing to WebSocket or cloud realtime models.
 
-## 5. Recommended next implementation slices
+## 5. Implemented Alpha slices
 
 ### Slice PM-01 — Capability and policy extension
 
-Tests first:
+Implemented with tests for:
 
 - capability enum/config validates;
 - permission mode config validates;
@@ -196,9 +175,10 @@ Tests first:
 - policy denies unknown capabilities;
 - policy allows configured safe local capabilities;
 - policy requires approval for risky classes;
-- denied decisions emit audit events.
+- denied decisions emit audit events;
+- `tools_enabled` acts as a real kill switch for tool capabilities.
 
-Implementation:
+Implemented:
 
 - capability domain objects;
 - policy request/decision extensions;
@@ -206,7 +186,7 @@ Implementation:
 
 ### Slice PM-02 — ToolGatewayPort and fake gateway
 
-Tests first:
+Implemented with tests for:
 
 - tool spec validates;
 - fake tool executes through gateway;
@@ -214,7 +194,7 @@ Tests first:
 - tool lifecycle events are emitted;
 - observation output is bounded.
 
-Implementation:
+Implemented:
 
 - `ToolGatewayPort`;
 - fake adapter;
@@ -222,7 +202,7 @@ Implementation:
 
 ### Slice PM-03 — LoopStrategy abstraction
 
-Tests first:
+Implemented with tests for:
 
 - strategy registry selects `memory_augmented_answer` by default;
 - unknown strategy is rejected;
@@ -230,7 +210,7 @@ Tests first:
 - existing MVP event chain remains compatible;
 - fake tool-capable strategy requires `ToolGatewayPort`.
 
-Implementation:
+Implemented:
 
 - loop strategy domain objects;
 - strategy registry;
@@ -239,7 +219,7 @@ Implementation:
 
 ### Slice PM-04 — Safe-tool loop v1
 
-Tests first:
+Implemented with tests for:
 
 - fake model proposes safe tool call;
 - fake/safe tool returns observation;
@@ -247,7 +227,7 @@ Tests first:
 - max tool calls and max steps stop execution;
 - malformed tool request fails safely.
 
-Implementation:
+Implemented:
 
 - `tool_react_loop` or equivalent first tool-capable strategy;
 - action parsing;
@@ -256,7 +236,7 @@ Implementation:
 
 ### Slice PM-05 — Approval model and CLI/API flow
 
-Tests first:
+Implemented with tests for:
 
 - CLI displays approval request;
 - approval-required action does not execute before grant;
@@ -264,8 +244,9 @@ Tests first:
 - granted approval allows retry execution with matching approval id;
 - expired approval prevents execution;
 - interrupted approval cancels tool call.
+- approval pauses expose durable `waiting_approval` request status.
 
-Implementation:
+Implemented:
 
 - approval domain/API;
 - CLI approval flow;
@@ -274,14 +255,14 @@ Implementation:
 
 ### Slice PM-06a — Project read-only shell tool
 
-Tests first:
+Implemented with tests for:
 
 - read-only commands allowed only in allowlisted roots;
 - write/destructive/network commands denied;
 - timeout and output caps work;
 - env values are redacted.
 
-Implementation:
+Implemented:
 
 - shell adapter;
 - command classifier;
@@ -289,7 +270,7 @@ Implementation:
 
 ### Slice PM-06b — Read-only system diagnostics tools
 
-Tests first:
+Implemented with tests for:
 
 - process/resource/hardware diagnostics are allowed by command family;
 - network diagnostics are bounded and redacted;
@@ -299,7 +280,7 @@ Tests first:
 - `du` is restricted to allowlisted workspace roots;
 - platform-specific diagnostics are classified deterministically.
 
-Implementation:
+Implemented:
 
 - diagnostics command classifier;
 - platform-specific allowlists;
@@ -308,14 +289,14 @@ Implementation:
 
 ### Slice PM-07a — Project Docs ingestion and citation index
 
-Tests first:
+Implemented with tests for:
 
 - docs source registry;
 - markdown chunking;
 - secret-like docs paths are not ingested;
 - source changes mark old chunks stale or refresh them.
 
-Implementation:
+Implemented:
 
 - storage tables for content sources/chunks;
 - markdown ingestion;
@@ -323,19 +304,35 @@ Implementation:
 
 ### Slice PM-07b — Project Docs retrieval and ContextAssembler integration
 
-Tests first:
+Implemented with tests for:
 
 - retrieval returns citations;
 - retrieval returns `ContentHit`, not `MemoryHit`;
 - stale/deleted chunks are excluded;
 - ContextAssembler includes content hits separately from memories;
 - ContextManifest records content hit refs.
+- retrieval failures emit `content.retrieval.failed` without storing raw query
+  text.
 
-Implementation:
+Implemented:
 
 - `ContentRetrievalPort`;
 - content embeddings;
 - docs retrieval adapter.
+
+### Operational hardening added after PM-07b
+
+Implemented:
+
+- server-side `loop_strategy` and `model_profile` authorization;
+- event payload sanitization before storage;
+- storage CHECK constraints and no-secret constraints;
+- append-only protection for events;
+- inference readiness in `/v1/health`;
+- `make run-ollama`, `make local-smoke` and `make content-ingest`;
+- CLI/API content ingest, reindex, list and status operations;
+- same-process SSE live buffers cleaned up after terminal drain, with durable
+  replay from EventLog for completed requests.
 
 ## 6. Main questions for discussion
 
@@ -358,8 +355,10 @@ safe built-in tools -> LoopStrategy abstraction -> safe-tool loop
 -> project read-only shell -> system diagnostics
 ```
 
-Reason: it validates ToolGateway, policy, audit and the new loop boundary before
-external integrations.
+Status: the safe-tool loop, project read-only shell, system diagnostics and
+project docs RAG path are implemented. The next tool decision should focus on
+MCP or a specific external integration only after artifact storage and workflow
+durability are clarified.
 
 ### Question 2 — How strict should approvals be in Alpha?
 
@@ -397,8 +396,8 @@ Recommendation:
 after ToolGateway foundation and LoopStrategy abstraction, before large external integrations
 ```
 
-Reason: project docs RAG is high-value and low-risk, but it still benefits from
-ContextAssembler V2 and explicit content permissions.
+Status: the first narrow project docs RAG path is implemented after
+ToolGateway and LoopStrategy. Broader RAG remains source-specific future work.
 
 ### Question 4 — Do we need WebSocket now?
 
@@ -460,13 +459,16 @@ rules, redaction, user approval and audit before implementation.
 
 ## 7. Review conclusion
 
-The roadmap is ready for discussion and can drive the next implementation goal.
+PM-01 through PM-07b are implemented and the original architecture sequencing
+concerns are no longer blockers for the first Alpha wave.
 
-Recommended immediate next step:
+Recommended next direction:
 
 ```text
-Implement Slice PM-01.
+stabilize the implemented Alpha surface
+then choose between durable workflow execution, artifact storage, MCP or voice
 ```
 
-Do not start with shell, MCP, RAG, voice or Telegram before the capability and
-permission foundation is in place.
+Do not start planner-executor, broad MCP, voice, Telegram/Spotify or cloud
+reasoning before the durable workflow, artifact, permission and audit questions
+for that specific feature are documented and tested.

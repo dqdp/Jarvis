@@ -39,6 +39,7 @@ Request statuses:
 ```text
 accepted
 running
+waiting_approval
 completed
 failed
 cancelled
@@ -50,9 +51,9 @@ Cancel endpoint is implemented for MVP hardening:
 POST /v1/requests/{request_id}/cancel
 ```
 
-Cancellation changes only a still non-terminal `accepted` or `running` request.
-If `completed`, `failed` or `cancelled` has already won the status race, the
-terminal state is returned unchanged.
+Cancellation changes only a still non-terminal `accepted`, `running` or
+`waiting_approval` request. If `completed`, `failed` or `cancelled` has already
+won the status race, the terminal state is returned unchanged.
 
 SSE stream opening subscribes to public runtime events. It does not execute the
 request itself and does not expose raw persisted EventEnvelope payloads. Runtime

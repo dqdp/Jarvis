@@ -255,7 +255,7 @@ returning hits to ContextAssembler.
 
 ## Events
 
-Initial events:
+Planned event taxonomy:
 
 ```text
 content.source.discovered
@@ -271,10 +271,13 @@ content.retrieved
 
 Events must not include full raw source content by default.
 
-PM-07a defines the content event type contract, but does not wire ingestion
-event emission yet. Emission through `EventLogPort` is deferred until the
-retrieval/observability path is integrated; this keeps the ingestion slice
-focused on source registry, chunking, citations and storage lifecycle safety.
+Current PM-07a/PM-07b implementation wires embedding, retrieval and retrieval
+failure event emission through `EventLogPort`, including retrieval failure
+events that store query hashes rather than raw query text.
+
+Source/chunk lifecycle events such as `content.source.ingested` and
+`content.chunk.created` remain a follow-up hardening slice unless they can be
+emitted without raw content and with stable source identifiers.
 
 ## Testing requirements
 

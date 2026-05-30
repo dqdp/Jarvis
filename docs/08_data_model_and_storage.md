@@ -140,6 +140,7 @@ Allowed MVP statuses:
 ```text
 accepted
 running
+waiting_approval
 completed
 failed
 ```

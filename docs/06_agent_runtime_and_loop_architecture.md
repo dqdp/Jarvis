@@ -10,9 +10,13 @@ Key decision:
 
 The assistant's agent loops are defined by our own workflow templates, loop strategies, budgets, policy hooks and emitted runtime events.
 
-## 2. Why Not ReAct in Phase 1
+Current baseline: post-MVP Alpha. The original MVP loop remains
+`memory_augmented_answer`; PM-03 added bounded `tool_react_loop` after
+ToolGateway and the loop-strategy boundary were in place.
 
-ReAct is useful for tool-use loops, but Phase 1 has no tools.
+## 2. Why Not ReAct in Original Phase 1
+
+ReAct is useful for tool-use loops, but original Phase 1 had no tools.
 
 Using ReAct everywhere would add:
 
@@ -23,7 +27,9 @@ Using ReAct everywhere would add:
 - harder tests;
 - premature tool/action semantics.
 
-Phase 1 uses deterministic memory-augmented workflow.
+Original Phase 1 uses deterministic memory-augmented workflow. Current
+post-MVP Alpha keeps that loop as the default and adds `tool_react_loop` as a
+separate, bounded strategy.
 
 ## 3. Loop Strategy Concept
 
@@ -35,7 +41,7 @@ Phase 1:
 memory_augmented_answer_workflow
 ```
 
-Future:
+Current Alpha and future:
 
 ```text
 direct_answer_workflow
@@ -173,7 +179,8 @@ Tests must verify:
 
 - selected loop for chat requests;
 - max_model_calls = 1 in Phase 1;
-- no tool calls in Phase 1;
+- original MVP loop does not make tool calls;
+- `tool_react_loop` uses ToolGatewayPort and explicit budgets;
 - no autonomous memory writes in Phase 1;
 - policy decision is recorded for model calls;
 - RuntimeStreamEvents emitted in expected order.

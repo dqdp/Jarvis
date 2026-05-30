@@ -118,7 +118,11 @@ docs/adr/
 ### Scope
 
 - Phase 1 = Core Daemon MVP, не полноценный autonomous agent.
-- Tools, MCP, RAG, voice, Telegram/Spotify integrations, ReAct, planner-executor и sleep/reflection implementation — out of MVP.
+- Tools, MCP, RAG, voice, Telegram/Spotify integrations, ReAct,
+  planner-executor и sleep/reflection implementation были out of original MVP.
+  PM-01..PM-07b теперь являются post-MVP Alpha implementation, а MCP, voice,
+  planner-executor, external integrations и remembered approvals остаются
+  future scope.
 - Post-MVP направления явно зафиксированы в отдельных follow-up документах.
 
 ### Architecture style
@@ -166,8 +170,9 @@ docs/adr/
 
 - MVP runtime uses a custom deterministic workflow behind `AgentRuntime`.
 - Phase 1 loop = deterministic `memory_augmented_answer`; LangGraph is deferred.
-- ReAct is a future loop strategy, not a tool, and is deferred until
-  `ToolGatewayPort` and the loop-strategy boundary exist.
+- Original MVP shipped with only `memory_augmented_answer`; current post-MVP
+  Alpha adds bounded `tool_react_loop` behind the loop-strategy boundary.
+- Planner-executor and unbounded autonomous ReAct behavior remain future scope.
 - Future loop strategies must declare budgets, capabilities, policy hooks, failure semantics and emitted events.
 
 ### Model routing
@@ -185,8 +190,9 @@ docs/adr/
 - Phase 1 indexes only explicit long-term `MemoryRecord` content/summary.
 - No document/event/raw conversation/log/code vector indexing in MVP.
 - Retrieval is active-only and namespace-aware.
-- Full RAG is deferred to a separate future Content Retrieval subsystem.
-- First post-MVP RAG target: project documentation / ADR corpus.
+- Full/general RAG remains separate from Memory.
+- The first narrow post-MVP RAG path is implemented for project documentation /
+  ADR corpus through the Content Retrieval subsystem.
 
 ### API
 
@@ -194,7 +200,9 @@ docs/adr/
 - `POST /v1/conversations/{conversation_id}/messages` returns `request_id`.
 - SSE endpoint: `GET /v1/requests/{request_id}/stream`.
 - `client_message_id` provides idempotency per conversation.
-- No token replay guarantee after SSE reconnect; final message is recoverable.
+- Token-by-token replay is best-effort only for active same-process streams.
+  After terminal cleanup or daemon restart, clients recover from durable request
+  status, persisted allowlisted events and conversation messages.
 
 ### Privacy and policy
 
@@ -224,8 +232,21 @@ docs/adr/
 
 The Phase 1 Core Daemon MVP is complete as `mvp-0.1`. The repository contains
 the MVP contracts, adapters, runtime workflow, API surface, SSE stream, local
-Ollama dogfood profile, CLI and acceptance tests. New work should be treated as
-post-MVP Alpha scope unless it fixes the MVP baseline.
+Ollama dogfood profile, CLI and acceptance tests.
+
+Post-MVP Alpha PM-01 through PM-07b are now implemented as the first extension
+wave:
+
+- capability and permission modes with `tools_enabled` as a real tool kill
+  switch;
+- ToolGateway, safe tools, read-only project shell and read-only system
+  diagnostics;
+- `memory_augmented_answer` plus bounded `tool_react_loop`;
+- one-shot approvals through API/CLI/SSE with durable approval records and
+  explicit `waiting_approval` request status;
+- project docs ingestion, retrieval and ContextAssembler integration;
+- event/data hardening, append-only event protection and no-secret storage
+  constraints.
 
 Implementation notes:
 
@@ -245,6 +266,8 @@ Implementation notes:
 - A thin local CLI is available through `make cli ARGS='...'` or the `jarvis`
   console entrypoint. Running `make cli` without `ARGS` opens an interactive
   chat shell with slash commands.
+- Local operational targets include `make run-ollama`, `make local-smoke` and
+  `make content-ingest`.
 
 Future architecture-changing changes still require the relevant ADR update.
 

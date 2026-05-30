@@ -364,6 +364,13 @@ GET /requests/{id}/stream emits runtime events
 POST /memories creates manual memory
 GET /memories lists memories
 GET /health returns healthy status
+GET  /v1/approvals/pending lists pending approvals
+POST /v1/approvals/{approval_id}/grant records one-shot grant
+POST /v1/approvals/{approval_id}/deny records one-shot denial
+POST /v1/content/project-docs/ingest ingests configured project docs
+POST /v1/content/project-docs/reindex rebuilds project-docs index through the same policy gate
+GET  /v1/content/sources lists indexed content sources
+GET  /v1/content/status returns content source/chunk counts
 same client_message_id returns existing request
 same client_message_id different content -> 409
 standard error format

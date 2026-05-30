@@ -6,6 +6,10 @@ Phase 1 закладывает минимальный, но архитектур
 
 Цель первого этапа — не построить полноценного автономного ассистента сразу. Цель — создать надежный `Core Daemon`, который сможет эволюционировать в постоянно работающую агентную систему с долгосрочной памятью, локальным инференсом, опциональным доступом к внешним LLM, tools, MCP-интеграциями, Telegram, voice interaction и bounded self-reflection workflows.
 
+Current baseline: post-MVP Alpha. Original Phase 1/MVP scope remains the
+historical baseline, while PM-01..PM-07b have added bounded tools, approvals
+and project-docs retrieval without changing the local-first/no-cloud default.
+
 Главный принцип:
 
 > Сначала строим надежный runtime личного ассистента; автономность и широкий набор инструментов добавляем позже.
@@ -149,8 +153,9 @@ Phase 1 не предназначена для:
 4. memory_candidates входят в data model, но auto-extraction не входит в MVP acceptance.
 5. MVP runtime uses a custom deterministic workflow; LangGraph is deferred.
 6. Phase 1 agent loop — deterministic memory-augmented workflow.
-7. ReAct не используется в Phase 1.
-8. ReAct-style tool loop откладывается до ToolGatewayPort.
+7. Original Phase 1 не использовал ReAct/tool loops.
+8. Current baseline: post-MVP Alpha includes bounded `tool_react_loop` after
+   `ToolGatewayPort`; planner-executor and autonomous ReAct remain deferred.
 9. Graph checkpoints are deferred runtime state, not MVP storage scope.
 10. Redis/NATS не вводятся как обязательная зависимость Phase 1.
 11. SSE — primary streaming transport.

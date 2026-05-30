@@ -4,6 +4,10 @@
 
 Документ описывает целевую архитектуру Phase 1 с высоты компонентов: runtime, storage, memory, model routing, streaming и future extension points.
 
+Current baseline: post-MVP Alpha. The original MVP baseline used only the
+deterministic memory-augmented loop; PM-01..PM-07b add bounded tools, approvals
+and project-docs retrieval while keeping the same ports/adapters shape.
+
 ## 2. High-Level Architecture
 
 ```text
@@ -127,11 +131,12 @@ Owns model provider abstraction:
 
 ### Policy Engine
 
-Phase 1 implementation is minimal:
+Phase 1 and post-MVP Alpha implementation is policy-gated:
 
 - allow local model;
 - deny cloud unless explicitly enabled;
-- deny tools because tools are out of scope;
+- allow only configured tool capabilities through ToolGateway and approval policy;
+- allow content retrieval, ingestion and indexing only through configured permission modes;
 - deny autonomous memory writes by default.
 
 ## 4. State Taxonomy
@@ -193,7 +198,8 @@ Decision:
 - MVP runtime uses a custom deterministic workflow behind AgentRuntime.
 - LangGraph is deferred; it may become an adapter/substrate for later loop strategies.
 - Phase 1 selected loop: deterministic memory-augmented workflow.
-- ReAct-style tool loop is deferred until ToolGatewayPort exists.
+- Current post-MVP Alpha adds bounded `tool_react_loop` after ToolGatewayPort
+  and the loop-strategy boundary were introduced.
 - All future loop strategies must define budgets, stopping conditions, policy hooks and emitted events.
 
 ## 9. Extension Points

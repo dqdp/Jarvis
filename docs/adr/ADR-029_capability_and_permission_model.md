@@ -6,14 +6,14 @@ Accepted.
 
 ## Context
 
-The MVP core daemon is local-first, durable and auditable, but it intentionally
-does not implement tools, MCP, RAG/content ingestion, planner-executor, voice,
-Telegram or other integrations.
+The MVP core daemon is local-first, durable and auditable. Current post-MVP
+Alpha has added bounded tool use, approval-gated actions and project-docs
+retrieval, while MCP, planner-executor, voice, Telegram and other external
+integrations remain future scope.
 
-Post-MVP Alpha will add capabilities that can read local data, call tools,
-execute shell commands, access external services, retrieve content and later
-perform side effects. Those capabilities must not be wired directly into
-`AgentRuntime`.
+Post-MVP capabilities can read local data, call tools, execute shell commands,
+access external services, retrieve content and later perform side effects.
+Those capabilities must not be wired directly into `AgentRuntime`.
 
 The existing Phase 1 policy model already handles:
 
@@ -645,8 +645,9 @@ e2e:
   approval_required returns user-visible pending state
 ```
 
-Granted, denied and expired approval execution flows are deferred to the
-approval model/control-channel ADR.
+Granted, denied, expired and cancelled one-shot approval execution flows are
+implemented by PM-05 through API, CLI and ToolGateway validation. Remembered
+approvals remain deferred.
 
 Real external services, real shell side effects and real cloud model calls are
 not required for CI.

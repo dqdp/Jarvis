@@ -78,11 +78,14 @@ request.processing.completed
 
 ## 5. Reconnect
 
-The FastAPI adapter keeps an in-process per-request stream buffer while the
-daemon process is alive, so reconnect to the same process can replay buffered
-runtime/token events without re-running the provider.
+The FastAPI adapter keeps an in-process per-request stream buffer only for
+active subscribers while a request is running. When a request reaches a terminal
+state and active subscribers have drained the terminal event, the live buffer is
+cleaned up.
 
-There is no token replay guarantee after daemon restart.
+Reconnect after terminal cleanup or daemon restart uses durable replay from
+`EventLog`, `assistant_requests` and conversation messages. Token events are
+not persisted, so there is no token-by-token replay guarantee.
 
 Clients recover by reading:
 

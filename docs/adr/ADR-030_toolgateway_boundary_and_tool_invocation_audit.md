@@ -281,8 +281,9 @@ if allow or granted approval:
 ToolGateway must call PolicyPort itself. Callers must not pre-approve tools by
 skipping gateway policy.
 
-Approval transport is deferred to ADR-032. This ADR only defines how ToolGateway
-behaves when policy returns `approval_required`.
+Approval transport is implemented by PM-05 with one-shot approval records,
+redacted HTTP grant/deny endpoints, CLI prompts and SSE/runtime events.
+Remembered approvals and WebSocket transport remain deferred.
 
 ## Initial tool set
 
@@ -482,7 +483,7 @@ e2e:
 Real shell commands, real MCP servers and real external services are not
 required for CI.
 
-## Rollout plan
+## Rollout status
 
 1. Add tool domain schemas.
 2. Add `ToolGatewayPort`.
@@ -491,15 +492,14 @@ required for CI.
 5. Add event types and audit payloads.
 6. Add safe built-in tools.
 7. Add CLI/API diagnostic command to list tools.
-8. Defer loop-strategy architecture to ADR-031.
-9. Defer approval transport until ADR-032.
-10. Defer shell until ADR-033.
-11. Defer bounded tool loop details until ADR-035.
+8. Loop-strategy architecture is covered by ADR-031.
+9. Approval transport is implemented by PM-05 and documented by ADR-032.
+10. Shell sandbox policy is covered by ADR-033.
+11. Bounded tool-loop implementation is covered by ADR-031 and the PM-03
+    slices in `docs/37_post_mvp_tdd_slices_plan.md`.
 
 ## Deferred
 
-- approval API/CLI UX;
-- shell sandbox;
 - MCP server registry;
 - provider-native tool calling;
 - external integrations;

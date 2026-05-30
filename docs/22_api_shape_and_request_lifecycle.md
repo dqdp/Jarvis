@@ -104,6 +104,13 @@ GET  /v1/memories?limit=100&query=optional
 DELETE /v1/memories/{memory_id}
 POST /v1/memories/{memory_id}/archive
 GET  /v1/runtime/status
+GET  /v1/approvals/pending
+POST /v1/approvals/{approval_id}/grant
+POST /v1/approvals/{approval_id}/deny
+POST /v1/content/project-docs/ingest
+POST /v1/content/project-docs/reindex
+GET  /v1/content/sources
+GET  /v1/content/status
 ```
 
 Designed but not implemented in the current baseline:
@@ -220,7 +227,7 @@ Response:
   "conversation_id": "uuid",
   "user_message_id": "uuid",
   "assistant_message_id": "uuid|null",
-  "status": "accepted|running|completed|failed|cancelled",
+  "status": "accepted|running|waiting_approval|completed|failed|cancelled",
   "created_at": "...",
   "started_at": "...",
   "completed_at": "...",
@@ -292,9 +299,10 @@ heartbeat
 Token events are not persisted in event log.
 
 The implemented FastAPI adapter starts runtime execution after message
-submission. Opening the SSE stream subscribes to the in-process event buffer and
-replays buffered events for the same daemon process; terminal state is durable
-through `assistant_requests`, persisted events and conversation messages.
+submission. Opening the SSE stream subscribes to the in-process event buffer for
+active same-process streams. After terminal state and subscriber drain, the live
+buffer is cleaned up and reconnect uses durable replay through
+`assistant_requests`, persisted events and conversation messages.
 
 ---
 
@@ -562,6 +570,7 @@ Allowed MVP statuses:
 ```text
 accepted
 running
+waiting_approval
 completed
 failed
 cancelled

@@ -281,7 +281,7 @@ runtime_budgets:
 
 policy:
   cloud_models_enabled: false
-  tools_enabled: false
+  tools_enabled: true
   autonomous_memory_write_enabled: false
 
   model_access:
