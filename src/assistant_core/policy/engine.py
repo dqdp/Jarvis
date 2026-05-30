@@ -95,6 +95,15 @@ class ConfigPolicyEngine:
         capability = request.capability
         action = self._configured_action(mode, capability)
 
+        if _is_tool_capability(capability) and not self._settings.policy.tools_enabled:
+            return _capability_deny(
+                "tools_disabled",
+                "tool capabilities are disabled by policy",
+                request,
+                mode,
+                scope,
+            )
+
         if request.sensitivity == Sensitivity.SECRET or RiskClass.SECRETS in request.risk_classes:
             return _capability_deny(
                 "secret_access_denied",
@@ -513,6 +522,10 @@ def _capability_value(capability: Capability | str | None) -> str | None:
     if isinstance(capability, Capability):
         return capability.value
     return capability
+
+
+def _is_tool_capability(capability: Capability) -> bool:
+    return capability.value.startswith("tool.")
 
 
 def _allowed_shell_roots(settings: Settings) -> list[Path]:

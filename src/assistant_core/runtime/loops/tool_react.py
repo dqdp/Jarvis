@@ -373,10 +373,22 @@ class ToolReactLoop:
         if observation.status == ToolObservationStatus.APPROVAL_REQUIRED:
             approval_id = observation.metadata.get("approval_id")
             if approval_id is not None and self._approval_store is not None:
+                await self._conversation_store.update_assistant_request_status(
+                    UpdateAssistantRequestStatusCommand(
+                        request_id=request.request_id,
+                        status=RequestStatus.WAITING_APPROVAL,
+                    ),
+                )
                 await self._wait_for_approval(
                     approval_id,
                     loop_deadline=loop_deadline,
                     actor_id=request.user_id,
+                )
+                await self._conversation_store.update_assistant_request_status(
+                    UpdateAssistantRequestStatusCommand(
+                        request_id=request.request_id,
+                        status=RequestStatus.RUNNING,
+                    ),
                 )
                 observation = await self._tool_gateway.invoke(
                     ToolCallRequest(

@@ -112,6 +112,7 @@ class RecordingConversationStore:
             error_message=None,
         )
         self.messages: list[ConversationMessage] = []
+        self.status_history: list[RequestStatus] = [self.request.status]
 
     async def update_assistant_request_status(self, command):
         self.request = replace(
@@ -120,6 +121,7 @@ class RecordingConversationStore:
             error_code=command.error_code,
             error_message=command.error_message,
         )
+        self.status_history.append(command.status)
 
     async def complete_assistant_response(self, command):
         message = ConversationMessage(
@@ -141,6 +143,7 @@ class RecordingConversationStore:
             assistant_message_id=message.message_id,
             completed_at=datetime.now(UTC),
         )
+        self.status_history.append(RequestStatus.COMPLETED)
         return AssistantResponseCompletion(message=message, request=self.request)
 
 
@@ -356,6 +359,65 @@ def test_tool_react_loop_retries_after_granted_approval() -> None:
     assert result.response_text == "approved"
     assert store.request.status == RequestStatus.COMPLETED
     assert EventType.TOOL_CALL_APPROVED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_marks_request_waiting_approval_until_decision() -> None:
+    async def scenario():
+        event_log = InMemoryEventLog()
+        approval_store = InMemoryApprovalStore(event_log=event_log)
+        store = RecordingConversationStore()
+        gateway = ToolGateway(
+            registry=ToolRegistry([fake_echo_tool()]),
+            policy=AllowPolicy(PolicyDecisionOutcome.APPROVAL_REQUIRED),
+            event_log=event_log,
+            approval_store=approval_store,
+        )
+        loop = ToolReactLoop(
+            conversation_store=store,
+            context_assembler=RecordingContextAssembler(),
+            model_router=ScriptedRouter(
+                [
+                    {
+                        "action": "tool_call",
+                        "tool_name": "fake.echo",
+                        "arguments": {"message": "hello"},
+                    },
+                    {"action": "final_answer", "final_answer": "approved"},
+                ],
+            ),
+            event_log=event_log,
+            tool_gateway=gateway,
+            approval_store=approval_store,
+        )
+        task = asyncio.create_task(loop.run_turn(_request(sensitivity=Sensitivity.PUBLIC)))
+        approval_id = None
+        for _ in range(100):
+            events = await event_log.query(EventFilter(request_id="request-tool-react"))
+            approval_event = next(
+                (event for event in events if event.event_type == EventType.APPROVAL_REQUIRED),
+                None,
+            )
+            if approval_event is not None and store.request.status == RequestStatus.WAITING_APPROVAL:
+                approval_id = approval_event.payload["approval_id"]
+                break
+            await asyncio.sleep(0.01)
+        assert approval_id is not None
+        status_while_waiting = store.request.status
+        await approval_store.grant_approval(approval_id, actor_id="user-1")
+        result = await task
+        return status_while_waiting, result, store.status_history
+
+    status_while_waiting, result, status_history = asyncio.run(scenario())
+
+    assert status_while_waiting == RequestStatus.WAITING_APPROVAL
+    assert result.response_text == "approved"
+    assert status_history == [
+        RequestStatus.ACCEPTED,
+        RequestStatus.RUNNING,
+        RequestStatus.WAITING_APPROVAL,
+        RequestStatus.RUNNING,
+        RequestStatus.COMPLETED,
+    ]
 
 
 def test_tool_react_loop_streams_failed_terminal_after_denied_approval() -> None:

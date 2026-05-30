@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def _engine() -> ConfigPolicyEngine:
     settings = ConfigLoader(Path("config")).load("test")
     return ConfigPolicyEngine(settings)
+
+
+def _engine_with_tools_enabled(enabled: bool) -> ConfigPolicyEngine:
+    settings = ConfigLoader(Path("config")).load("test")
+    return ConfigPolicyEngine(
+        replace(settings, policy=replace(settings.policy, tools_enabled=enabled)),
+    )
 
 
 def test_local_model_project_allowed() -> None:
@@ -133,6 +141,37 @@ def test_safe_tool_capability_is_allowed() -> None:
     assert decision.outcome == PolicyDecisionOutcome.ALLOW
     assert decision.allowed is True
     assert decision.code == "allowed_safe_tool"
+
+
+def test_tools_enabled_false_denies_tool_capabilities() -> None:
+    decision = asyncio.run(
+        _engine_with_tools_enabled(False).evaluate_capability_request(
+            CapabilityPolicyRequest(
+                capability=Capability.TOOL_SAFE,
+                risk_classes=frozenset({RiskClass.SAFE}),
+                sensitivity=Sensitivity.PUBLIC,
+            ),
+        ),
+    )
+
+    assert decision.outcome == PolicyDecisionOutcome.DENY
+    assert decision.allowed is False
+    assert decision.code == "tools_disabled"
+
+
+def test_tools_enabled_false_does_not_disable_content_retrieval() -> None:
+    decision = asyncio.run(
+        _engine_with_tools_enabled(False).evaluate_capability_request(
+            CapabilityPolicyRequest(
+                capability=Capability.CONTENT_RETRIEVE,
+                risk_classes=frozenset({RiskClass.READ_ONLY}),
+                sensitivity=Sensitivity.PROJECT,
+            ),
+        ),
+    )
+
+    assert decision.outcome == PolicyDecisionOutcome.ALLOW
+    assert decision.code == "allowed_content_retrieve"
 
 
 def test_network_risk_overrides_allowed_capability() -> None:

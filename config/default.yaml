@@ -141,7 +141,7 @@ runtime_budgets:
 
 policy:
   cloud_models_enabled: false
-  tools_enabled: false
+  tools_enabled: true
   autonomous_memory_write_enabled: false
   model_access:
     local:
@@ -162,6 +162,8 @@ permissions:
     locked_down:
       tool.safe: allow
       content.retrieve: approval_required
+      content.ingest: deny
+      content.index: deny
       context.inspect: allow
       tool.shell.read: approval_required
       tool.system.read.process: approval_required
@@ -176,6 +178,8 @@ permissions:
     developer_local:
       tool.safe: allow
       content.retrieve: allow
+      content.ingest: allow
+      content.index: allow
       context.inspect: allow
       tool.shell.read: allow
       tool.system.read.process: allow
@@ -191,6 +195,8 @@ permissions:
     automation:
       tool.safe: allow
       content.retrieve: allow
+      content.ingest: allow
+      content.index: allow
       context.inspect: allow
       tool.shell.read: allow
       tool.system.read.process: allow
