@@ -170,3 +170,26 @@ def test_tool_proposal_executor_waits_for_approval_and_reinvokes_with_approval_i
     assert observation.status == ToolObservationStatus.COMPLETED
     assert [call.approval_id for call in calls] == [None, "approval-1"]
     assert statuses == [RequestStatus.WAITING_APPROVAL, RequestStatus.RUNNING]
+
+
+def test_tool_proposal_executor_passes_request_working_directory_to_gateway() -> None:
+    async def scenario():
+        gateway = FakeGateway()
+        executor = ToolProposalExecutor(
+            tool_gateway=gateway,
+            conversation_store=FakeConversationStore(),
+        )
+
+        await executor.execute(
+            replace(_loop_request(), working_directory="/tmp/jarvis-project"),
+            ToolProposal(action="tool_call", tool_name="fake.echo", arguments={"message": "hi"}),
+            step_id="step-1",
+            causation_event_id="event-step",
+            used_tool_calls=0,
+            loop_deadline=asyncio.get_running_loop().time() + 1.0,
+        )
+        return gateway.calls
+
+    calls = asyncio.run(scenario())
+
+    assert calls[0].working_directory == "/tmp/jarvis-project"

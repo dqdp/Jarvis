@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import Body, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -46,7 +48,14 @@ from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.ports.conversation_store import ClientMessageIdConflict
 from assistant_core.ports.memory import MemoryStoreError
 from assistant_core.runtime.request_execution import RequestExecutionManager
-from assistant_core.runtime.request_metadata import runtime_request_metadata as _runtime_request_metadata
+from assistant_core.runtime.request_metadata import (
+    LoopSelectionError,
+    emit_loop_selection_failure as _emit_loop_selection_failure,
+    emit_loop_selection_success as _emit_loop_selection_success,
+    resolve_loop_selection_mode as _resolve_loop_selection_mode,
+    runtime_request_metadata as _runtime_request_metadata,
+    static_request_metadata as _static_request_metadata,
+)
 
 
 class _StrictBody(BaseModel):
@@ -65,6 +74,7 @@ class MessageCreateBody(_StrictBody):
     sensitivity: Sensitivity = Sensitivity.PERSONAL
     model_profile: str | None = Field(default=None, min_length=1)
     loop_strategy: str | None = Field(default=None, min_length=1)
+    working_directory: str | None = Field(default=None, min_length=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -102,6 +112,7 @@ def create_app(
     app = FastAPI(title="Jarvis Assistant Core", version="0.0.0", lifespan=lifespan)
     memory_write_service = memory_write or memory_store
     content_retrieval_service = content_retrieval or content_store
+    selection_policy = _without_event_log(policy)
     execution_manager = (
         RequestExecutionManager(
             runtime=runtime,
@@ -192,17 +203,78 @@ def create_app(
 
     @app.post("/v1/conversations/{conversation_id}/messages")
     async def post_message(conversation_id: str, body: MessageCreateBody):
-        submission = await conversation_store.submit_user_message(
-            MessageSubmissionCommand(
-                conversation_id=str(_uuid(conversation_id)),
-                client_message_id=body.client_message_id,
-                content=body.content,
-                sensitivity=body.sensitivity,
-                metadata=body.metadata,
-                request_metadata=_runtime_request_metadata(body, settings),
-            ),
+        resolved_conversation_id = str(_uuid(conversation_id))
+        conversation = await conversation_store.get_conversation(resolved_conversation_id)
+        if conversation is None:
+            raise KeyError("conversation not found")
+        request_id = _request_id_for_client_message(
+            resolved_conversation_id,
+            body.client_message_id,
         )
-        if execution_manager is not None:
+        replay = await _existing_submission_for_client_message(
+            conversation_store,
+            conversation_id=resolved_conversation_id,
+            client_message_id=body.client_message_id,
+        )
+        if replay is not None:
+            if not _is_same_client_message_replay(replay, body):
+                return _error_response(
+                    409,
+                    "conflict",
+                    "client_message_id was already used with different runtime options",
+                    request_id=replay.request.request_id,
+                )
+            submission = replay
+        else:
+            try:
+                request_metadata = await _runtime_request_metadata(
+                    body,
+                    settings,
+                    request_id=request_id,
+                    conversation_id=resolved_conversation_id,
+                    user_id=settings.app.default_user_id,
+                    active_project_namespace=conversation.active_project_namespace,
+                    working_directory=body.working_directory,
+                    policy=selection_policy,
+                    event_log=None,
+                )
+            except LoopSelectionError as exc:
+                failure_request_id = _pre_submit_failure_request_id(
+                    resolved_conversation_id,
+                    body,
+                )
+                failure = _with_loop_selection_request_id(exc, failure_request_id)
+                await _emit_loop_selection_failure(event_log, failure)
+                return _error_response(
+                    400,
+                    "invalid_request",
+                    str(exc),
+                    request_id=failure_request_id,
+                )
+            except ValueError as exc:
+                return _error_response(
+                    400,
+                    "invalid_request",
+                    str(exc),
+                    request_id=request_id,
+                )
+            try:
+                submission = await conversation_store.submit_user_message(
+                    MessageSubmissionCommand(
+                        conversation_id=resolved_conversation_id,
+                        client_message_id=body.client_message_id,
+                        content=body.content,
+                        sensitivity=body.sensitivity,
+                        request_id=request_id,
+                        metadata=body.metadata,
+                        request_metadata=request_metadata.metadata,
+                    ),
+                )
+            except ClientMessageIdConflict as exc:
+                return _error_response(409, "conflict", str(exc), request_id=request_id)
+            if not submission.idempotent_replay:
+                await _emit_loop_selection_success(event_log, request_metadata)
+        if execution_manager is not None and not submission.idempotent_replay:
             await execution_manager.start(submission.request)
         return _json_response(
             202,
@@ -430,6 +502,85 @@ async def _archive_memory(memory_store, *, memory_id: str, reason: str):
 
 def _uuid(value: str) -> UUID:
     return UUID(value)
+
+
+def _request_id_for_client_message(conversation_id: str, client_message_id: str) -> str:
+    return str(
+        uuid5(
+            NAMESPACE_URL,
+            f"jarvis:assistant-request:{conversation_id}:{client_message_id}",
+        ),
+    )
+
+
+def _pre_submit_failure_request_id(conversation_id: str, body: MessageCreateBody) -> str:
+    material = "\x1f".join(
+        (
+            body.client_message_id,
+            sha256(body.content.encode("utf-8")).hexdigest(),
+            body.sensitivity.value,
+            body.model_profile or "",
+            body.loop_strategy or "",
+            body.working_directory or "",
+        ),
+    )
+    fingerprint = sha256(material.encode("utf-8")).hexdigest()
+    return str(
+        uuid5(
+            NAMESPACE_URL,
+            f"jarvis:assistant-request-failure:{conversation_id}:{fingerprint}",
+        ),
+    )
+
+
+def _with_loop_selection_request_id(
+    error: LoopSelectionError,
+    request_id: str,
+) -> LoopSelectionError:
+    return LoopSelectionError(
+        str(error),
+        selection_request=replace(error.selection_request, request_id=request_id),
+        decision=error.decision,
+    )
+
+
+def _without_event_log(policy):
+    if policy is None:
+        return None
+    factory = getattr(policy, "without_event_log", None)
+    if factory is None:
+        return policy
+    return factory()
+
+
+async def _existing_submission_for_client_message(
+    conversation_store,
+    *,
+    conversation_id: str,
+    client_message_id: str,
+):
+    lookup = getattr(conversation_store, "get_submission_by_client_message_id", None)
+    if lookup is None:
+        return None
+    return await lookup(conversation_id, client_message_id)
+
+
+def _is_same_client_message_replay(submission, body: MessageCreateBody) -> bool:
+    if submission.user_message.content != body.content:
+        return False
+    if submission.user_message.sensitivity != body.sensitivity:
+        return False
+    metadata = submission.request.metadata
+    try:
+        requested_mode = _resolve_loop_selection_mode(body.loop_strategy).value
+    except ValueError:
+        return False
+    if metadata.get("requested_loop_mode") != requested_mode:
+        return False
+    for key, value in _static_request_metadata(body).items():
+        if metadata.get(key) != value:
+            return False
+    return True
 
 
 def _namespace_default_sensitivity(settings: Settings, namespace: str) -> Sensitivity:

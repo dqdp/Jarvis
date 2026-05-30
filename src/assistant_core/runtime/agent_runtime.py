@@ -31,6 +31,7 @@ class RuntimeTurnCommand:
     current_message_sensitivity: Sensitivity = Sensitivity.PROJECT
     model_profile: str = "local_main"
     loop_strategy: str = LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value
+    working_directory: str | None = None
     permission_mode: PermissionMode | str | None = None
 
 
@@ -121,5 +122,6 @@ class AgentRuntime:
             strategy_name=strategy_name,
             budget=LoopBudget.from_runtime_budget(budget_config),
             correlation_id=command.request_id,
+            working_directory=command.working_directory,
             permission_mode=command.permission_mode,
         )

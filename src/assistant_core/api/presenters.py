@@ -32,6 +32,9 @@ def message_payload(message) -> dict[str, Any]:
 
 
 def request_payload(request) -> dict[str, Any]:
+    metadata = dict(request.metadata)
+    if metadata.get("working_directory") is not None:
+        metadata["working_directory"] = redacted_scope_value(metadata["working_directory"])
     return {
         "request_id": request.request_id,
         "conversation_id": request.conversation_id,
@@ -46,6 +49,7 @@ def request_payload(request) -> dict[str, Any]:
             if request.error_code is None
             else {"code": request.error_code, "message": request.error_message}
         ),
+        "metadata": metadata,
     }
 
 

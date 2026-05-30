@@ -64,6 +64,12 @@ class ConversationStorePort(Protocol):
         command: MessageSubmissionCommand,
     ) -> MessageSubmission: ...
 
+    async def get_submission_by_client_message_id(
+        self,
+        conversation_id: str,
+        client_message_id: str,
+    ) -> MessageSubmission | None: ...
+
     async def create_assistant_request(
         self,
         command: CreateAssistantRequestCommand,

@@ -62,12 +62,27 @@ class DeterministicIntentClassifier:
                 capability=Capability.TOOL_SYSTEM_READ_RESOURCES,
                 reason_code="system_diagnostics_hint",
             )
-        if _contains_any(text, ("netstat", "listening port", "listening on port", "listening on this port")):
+        if _contains_any(
+            text,
+            ("netstat", "listening port", "listening on port", "listening on this port"),
+        ):
             return _system_diagnostics_classification(
                 capability=Capability.TOOL_SYSTEM_READ_NETWORK,
                 reason_code="system_diagnostics_hint",
             )
-        if _contains_any(text, ("process", "ps ")):
+        if _contains_any(
+            text,
+            (
+                "ps ",
+                "show process",
+                "show processes",
+                "list process",
+                "list processes",
+                "process status",
+                "running process",
+                "running processes",
+            ),
+        ):
             return _system_diagnostics_classification(
                 capability=Capability.TOOL_SYSTEM_READ_PROCESS,
                 reason_code="system_diagnostics_hint",

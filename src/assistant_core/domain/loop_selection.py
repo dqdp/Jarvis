@@ -23,6 +23,7 @@ class LoopSelectionMode(StrEnum):
     AUTO = "auto"
     CHAT = "chat"
     TOOLS = "tools"
+    INVALID_OVERRIDE = "invalid_override"
 
 
 class IntentFamily(StrEnum):

@@ -12,14 +12,19 @@ def with_effective_working_directory(
     request: ToolCallRequest,
     spec: ToolSpec,
 ) -> ToolCallRequest:
-    if request.working_directory is not None or spec.capability not in {
+    if spec.capability not in {
         Capability.TOOL_SHELL_READ,
         *SYSTEM_DIAGNOSTICS_CAPABILITIES,
     }:
         return request
-    cwd = request.arguments.get("cwd")
-    if isinstance(cwd, str) and cwd:
-        return replace(request, working_directory=cwd)
+    cwd = request.working_directory
+    if cwd is None:
+        return request
+    arguments = request.arguments
+    if arguments.get("cwd") != cwd:
+        arguments = {**arguments, "cwd": cwd}
+    if request.working_directory != cwd or arguments is not request.arguments:
+        return replace(request, arguments=arguments, working_directory=cwd)
     return request
 
 

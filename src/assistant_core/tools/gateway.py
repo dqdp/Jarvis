@@ -32,6 +32,8 @@ from assistant_core.tools.events import (
     audited_tool_event_payload as _audited_tool_event_payload,
     classified_event_type as _classified_event_type,
     denied_event_type as _denied_event_type,
+    is_shell_spec as _is_shell_spec,
+    is_system_diagnostics_spec as _is_system_diagnostics_spec,
     tool_event_payload as _tool_event_payload,
     tool_output_sensitivity as _tool_output_sensitivity,
 )
@@ -127,6 +129,7 @@ class ToolGateway:
             await self._audit.record_observation(request, observation, policy_decision_id=None)
             return observation
 
+        request = _with_effective_working_directory(request, spec)
         validation_error = _validate_arguments(spec, request.arguments)
         if validation_error is not None:
             observation = _empty_observation(
@@ -148,7 +151,30 @@ class ToolGateway:
             await self._audit.record_observation(request, observation, policy_decision_id=None)
             return observation
 
-        request = _with_effective_working_directory(request, spec)
+        if _requires_caller_working_directory(spec) and request.working_directory is None:
+            observation = _empty_observation(
+                request,
+                ToolObservationStatus.DENIED,
+                started_at,
+                tool_call_id=tool_call_id,
+                error={
+                    "code": "working_directory_required",
+                    "message": "working directory is required",
+                },
+                sensitivity=_tool_output_sensitivity(request, spec),
+            )
+            await self._audit.record_event(
+                EventType.TOOL_CALL_DENIED,
+                request,
+                tool_call_id=tool_call_id,
+                payload=_tool_event_payload(
+                    spec,
+                    error_code="working_directory_required",
+                ),
+            )
+            await self._audit.record_observation(request, observation, policy_decision_id=None)
+            return observation
+
         tool_classification = await self._classify_tool_if_supported(adapter, request)
         classified_event_type = _classified_event_type(spec)
         if tool_classification is not None and classified_event_type is not None:
@@ -375,3 +401,7 @@ class ToolGateway:
         if not isinstance(result, ToolClassificationResult):
             raise TypeError("tool classifier must return ToolClassificationResult")
         return result
+
+
+def _requires_caller_working_directory(spec: ToolSpec) -> bool:
+    return _is_shell_spec(spec) or _is_system_diagnostics_spec(spec)

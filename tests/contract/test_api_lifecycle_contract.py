@@ -14,11 +14,14 @@ from sqlalchemy import text
 
 from assistant_core.api.app import create_app
 from assistant_core.config.settings import ConfigLoader
+from assistant_core.domain.events import EventType
 from assistant_core.models.fake_provider import FakeEmbeddingProvider
+from assistant_core.ports.event_log import EventFilter
 from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.storage.conversation_store import PostgresConversationStore
 from assistant_core.storage.content_store import PostgresContentStore
 from assistant_core.storage.database import assert_test_database_url, create_database_engine
+from assistant_core.storage.event_log import PostgresEventLog
 from assistant_core.storage.memory_store import PostgresMemoryStore
 from assistant_core.storage.migrations import run_migrations
 
@@ -69,16 +72,20 @@ def app_parts():
     asyncio.run(_truncate_api(database_url))
     engine = create_database_engine(database_url)
     settings = ConfigLoader(Path("config")).load("test")
+    event_log = PostgresEventLog(engine)
+    policy = ConfigPolicyEngine(settings, event_log=event_log)
     app = create_app(
         conversation_store=PostgresConversationStore(engine),
         memory_store=PostgresMemoryStore(
             engine=engine,
             settings=settings,
-            policy=ConfigPolicyEngine(settings),
+            policy=policy,
             embedding_port=FakeEmbeddingProvider(),
         ),
         content_store=PostgresContentStore(engine=engine, embedding_port=FakeEmbeddingProvider()),
         settings=settings,
+        event_log=event_log,
+        policy=policy,
     )
     app.state.engine = engine
     assert isinstance(app, FastAPI)
@@ -481,6 +488,523 @@ def test_idempotent_message_submit(app_parts) -> None:
     assert second["idempotent_replay"] is True
 
 
+def test_client_message_id_reuse_with_different_sensitivity_returns_409(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        path = f"/v1/conversations/{conversation['conversation_id']}/messages"
+        await _request(
+            app_parts,
+            "POST",
+            path,
+            {
+                "client_message_id": "client-sensitivity-conflict",
+                "content": "same content",
+                "sensitivity": "project",
+            },
+        )
+        return await _request(
+            app_parts,
+            "POST",
+            path,
+            {
+                "client_message_id": "client-sensitivity-conflict",
+                "content": "same content",
+                "sensitivity": "secret",
+            },
+        )
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 409
+    assert payload["error"]["code"] == "conflict"
+
+
+def test_message_without_loop_strategy_uses_auto_mode(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        status, accepted = await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-auto-default",
+                "content": "hello",
+                "sensitivity": "project",
+            },
+        )
+        assert status == 202
+        return await _request(app_parts, "GET", f"/v1/requests/{accepted['request_id']}")
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 200
+    assert payload["metadata"]["requested_loop_mode"] == "auto"
+    assert payload["metadata"]["selected_loop_strategy"] == "memory_augmented_answer"
+    assert payload["metadata"]["loop_strategy"] == "memory_augmented_answer"
+    assert payload["metadata"]["model_profile"] == "local_main"
+
+
+def test_auto_mode_persists_requested_mode_and_selected_loop_metadata(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        status, accepted = await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-auto-explicit",
+                "content": "what is listening on port 8080?",
+                "sensitivity": "project",
+                "loop_strategy": "auto",
+                "working_directory": str(Path.cwd()),
+            },
+        )
+        assert status == 202
+        return await _request(app_parts, "GET", f"/v1/requests/{accepted['request_id']}")
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 200
+    metadata = payload["metadata"]
+    assert metadata["requested_loop_mode"] == "auto"
+    assert metadata["selected_loop_strategy"] == "tool_react_loop"
+    assert metadata["loop_strategy"] == "tool_react_loop"
+    assert metadata["selected_model_profile"] == "local_structured"
+    assert metadata["model_profile"] == "local_structured"
+    assert metadata["loop_selection_status"] == "selected"
+    assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
+
+
+def test_auto_mode_emits_loop_selection_event(app_parts) -> None:
+    async def scenario():
+        settings = ConfigLoader(Path("config")).load("test")
+        engine = app_parts.state.engine
+        event_log = PostgresEventLog(engine)
+        policy = ConfigPolicyEngine(settings, event_log=event_log)
+        app = create_app(
+            conversation_store=PostgresConversationStore(engine),
+            memory_store=PostgresMemoryStore(
+                engine=engine,
+                settings=settings,
+                policy=policy,
+                embedding_port=FakeEmbeddingProvider(),
+            ),
+            content_store=PostgresContentStore(engine=engine, embedding_port=FakeEmbeddingProvider()),
+            settings=settings,
+            event_log=event_log,
+            policy=policy,
+        )
+        conversation = await _create_conversation(app)
+        status, accepted = await _request(
+            app,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-auto-events",
+                "content": "check cpu temperature",
+                "sensitivity": "project",
+                "working_directory": str(Path.cwd()),
+            },
+        )
+        assert status == 202
+        events = await event_log.query(EventFilter(request_id=accepted["request_id"]))
+        return accepted, events
+
+    accepted, events = asyncio.run(scenario())
+
+    event_types = [event.event_type for event in events]
+    assert EventType.LOOP_SELECTION_STARTED in event_types
+    assert EventType.LOOP_SELECTION_COMPLETED in event_types
+    completed = next(
+        event for event in events if event.event_type is EventType.LOOP_SELECTION_COMPLETED
+    )
+    assert completed.payload["request_id"] == accepted["request_id"]
+    assert completed.payload["selected_loop_strategy"] == "tool_react_loop"
+    assert "check cpu temperature" not in json.dumps(completed.payload)
+    assert "user_input" not in completed.payload
+    assert "prompt" not in completed.payload
+
+
+def test_idempotent_replay_does_not_emit_duplicate_loop_selection_events(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        path = f"/v1/conversations/{conversation['conversation_id']}/messages"
+        body = {
+            "client_message_id": "client-auto-event-replay",
+            "content": "hello",
+            "sensitivity": "project",
+        }
+        status, first = await _request(app_parts, "POST", path, body)
+        assert status == 202
+        status, second = await _request(app_parts, "POST", path, body)
+        assert status == 202
+        event_log = PostgresEventLog(app_parts.state.engine)
+        events = await event_log.query(EventFilter(request_id=first["request_id"]))
+        return first, second, events
+
+    first, second, events = asyncio.run(scenario())
+
+    assert second["request_id"] == first["request_id"]
+    assert second["idempotent_replay"] is True
+    assert [
+        event.event_type for event in events if event.event_type is EventType.LOOP_SELECTION_STARTED
+    ] == [EventType.LOOP_SELECTION_STARTED]
+    assert [
+        event.event_type for event in events if event.event_type is EventType.LOOP_SELECTION_COMPLETED
+    ] == [EventType.LOOP_SELECTION_COMPLETED]
+
+
+def test_conflicting_client_message_id_does_not_emit_loop_selection_events(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        path = f"/v1/conversations/{conversation['conversation_id']}/messages"
+        await _request(
+            app_parts,
+            "POST",
+            path,
+            {
+                "client_message_id": "client-conflict-no-selection-event",
+                "content": "same",
+                "sensitivity": "project",
+            },
+        )
+        status, payload = await _request(
+            app_parts,
+            "POST",
+            path,
+            {
+                "client_message_id": "client-conflict-no-selection-event",
+                "content": "different",
+                "sensitivity": "project",
+            },
+        )
+        event_log = PostgresEventLog(app_parts.state.engine)
+        events = await event_log.query(
+            EventFilter(
+                request_id=payload["error"]["request_id"],
+            ),
+        )
+        return status, payload, events
+
+    status, payload, events = asyncio.run(scenario())
+
+    assert status == 409
+    assert payload["error"]["code"] == "conflict"
+    assert [
+        event.event_type for event in events if event.event_type is EventType.LOOP_SELECTION_STARTED
+    ] == [EventType.LOOP_SELECTION_STARTED]
+    assert [
+        event.event_type for event in events if event.event_type is EventType.LOOP_SELECTION_COMPLETED
+    ] == [EventType.LOOP_SELECTION_COMPLETED]
+
+
+def test_model_profile_selection_failure_emits_loop_selection_failed_event(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        status, payload = await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-selection-profile-failed-event",
+                "content": "what is listening on port 8080?",
+                "sensitivity": "project",
+                "model_profile": "local_main",
+                "working_directory": str(Path.cwd()),
+            },
+        )
+        event_log = PostgresEventLog(app_parts.state.engine)
+        events = await event_log.query(EventFilter(request_id=payload["error"]["request_id"]))
+        return status, payload, events
+
+    status, payload, events = asyncio.run(scenario())
+
+    assert status == 400
+    assert payload["error"]["message"] == "model profile purpose is not valid for selected loop"
+    assert EventType.LOOP_SELECTION_STARTED in [event.event_type for event in events]
+    assert EventType.LOOP_SELECTION_FAILED in [event.event_type for event in events]
+    assert EventType.LOOP_SELECTION_COMPLETED not in [event.event_type for event in events]
+    failed = next(event for event in events if event.event_type is EventType.LOOP_SELECTION_FAILED)
+    assert failed.payload["decision_status"] == "invalid_override"
+    assert failed.payload["reason_code"] == "model_profile_invalid_for_selected_loop"
+
+
+def test_invalid_loop_strategy_emits_loop_selection_failed_event(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        status, payload = await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-selection-invalid-mode",
+                "content": "hello",
+                "sensitivity": "project",
+                "loop_strategy": "unsafe_loop",
+            },
+        )
+        event_log = PostgresEventLog(app_parts.state.engine)
+        events = await event_log.query(EventFilter(request_id=payload["error"]["request_id"]))
+        return status, payload, events
+
+    status, payload, events = asyncio.run(scenario())
+
+    assert status == 400
+    assert payload["error"]["message"] == "loop strategy is not configured"
+    assert EventType.LOOP_SELECTION_STARTED in [event.event_type for event in events]
+    assert EventType.LOOP_SELECTION_FAILED in [event.event_type for event in events]
+    assert EventType.LOOP_SELECTION_COMPLETED not in [event.event_type for event in events]
+    started = next(event for event in events if event.event_type is EventType.LOOP_SELECTION_STARTED)
+    failed = next(event for event in events if event.event_type is EventType.LOOP_SELECTION_FAILED)
+    assert started.payload["requested_mode"] == "invalid_override"
+    assert failed.payload["requested_mode"] == "invalid_override"
+    assert failed.payload["decision_status"] == "invalid_override"
+
+
+def test_failed_pre_submit_selection_does_not_collide_with_later_accepted_request(
+    app_parts,
+) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        path = f"/v1/conversations/{conversation['conversation_id']}/messages"
+        status, failed = await _request(
+            app_parts,
+            "POST",
+            path,
+            {
+                "client_message_id": "client-retry-after-selection-failure",
+                "content": "show cpu usage",
+                "sensitivity": "project",
+            },
+        )
+        assert status == 400
+        status, accepted = await _request(
+            app_parts,
+            "POST",
+            path,
+            {
+                "client_message_id": "client-retry-after-selection-failure",
+                "content": "hello",
+                "sensitivity": "project",
+            },
+        )
+        assert status == 202
+        event_log = PostgresEventLog(app_parts.state.engine)
+        failed_events = await event_log.query(
+            EventFilter(request_id=failed["error"]["request_id"]),
+        )
+        accepted_events = await event_log.query(EventFilter(request_id=accepted["request_id"]))
+        return failed, accepted, failed_events, accepted_events
+
+    failed, accepted, failed_events, accepted_events = asyncio.run(scenario())
+
+    assert failed["error"]["request_id"] != accepted["request_id"]
+    assert EventType.LOOP_SELECTION_FAILED in [event.event_type for event in failed_events]
+    assert EventType.LOOP_SELECTION_FAILED not in [
+        event.event_type for event in accepted_events
+    ]
+
+
+def test_model_profile_matches_selected_loop(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        status, accepted = await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-auto-model-profile",
+                "content": "show cpu usage",
+                "sensitivity": "project",
+                "working_directory": str(Path.cwd()),
+            },
+        )
+        assert status == 202
+        return await _request(app_parts, "GET", f"/v1/requests/{accepted['request_id']}")
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 200
+    assert payload["metadata"]["selected_loop_strategy"] == "tool_react_loop"
+    assert payload["metadata"]["selected_model_profile"] == "local_structured"
+    assert payload["metadata"]["model_profile"] == "local_structured"
+
+
+def test_tools_disabled_does_not_silently_fallback_to_chat(app_parts) -> None:
+    async def scenario():
+        settings = ConfigLoader(Path("config")).load("test")
+        disabled_settings = replace(
+            settings,
+            policy=replace(settings.policy, tools_enabled=False),
+        )
+        engine = app_parts.state.engine
+        app = create_app(
+            conversation_store=PostgresConversationStore(engine),
+            memory_store=PostgresMemoryStore(
+                engine=engine,
+                settings=disabled_settings,
+                policy=ConfigPolicyEngine(disabled_settings),
+                embedding_port=FakeEmbeddingProvider(),
+            ),
+            settings=disabled_settings,
+        )
+        conversation = await _create_conversation(app)
+        return await _request(
+            app,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-tools-disabled-auto",
+                "content": "show cpu usage",
+                "sensitivity": "project",
+            },
+        )
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 400
+    assert payload["error"]["code"] == "invalid_request"
+    assert payload["error"]["message"] == "tool loop is disabled by policy"
+
+
+def test_tool_loop_budget_without_tool_calls_rejects_before_request_persistence(app_parts) -> None:
+    async def scenario():
+        settings = ConfigLoader(Path("config")).load("test")
+        budget = replace(settings.runtime_budgets["tool_react_loop"], max_tool_calls=0)
+        budget_settings = replace(
+            settings,
+            runtime_budgets={**settings.runtime_budgets, "tool_react_loop": budget},
+        )
+        engine = app_parts.state.engine
+        event_log = PostgresEventLog(engine)
+        policy = ConfigPolicyEngine(budget_settings, event_log=event_log)
+        conversation_store = PostgresConversationStore(engine)
+        app = create_app(
+            conversation_store=conversation_store,
+            memory_store=PostgresMemoryStore(
+                engine=engine,
+                settings=budget_settings,
+                policy=policy,
+                embedding_port=FakeEmbeddingProvider(),
+            ),
+            content_store=PostgresContentStore(engine=engine, embedding_port=FakeEmbeddingProvider()),
+            settings=budget_settings,
+            event_log=event_log,
+            policy=policy,
+        )
+        conversation = await _create_conversation(app)
+        status, payload = await _request(
+            app,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-tool-loop-budget-zero",
+                "content": "show cpu usage",
+                "sensitivity": "project",
+                "working_directory": str(Path.cwd()),
+            },
+        )
+        request = await conversation_store.get_assistant_request(payload["error"]["request_id"])
+        events = await event_log.query(EventFilter(request_id=payload["error"]["request_id"]))
+        return status, payload, request, events
+
+    status, payload, request, events = asyncio.run(scenario())
+
+    assert status == 400
+    assert payload["error"]["code"] == "invalid_request"
+    assert payload["error"]["message"] == "tool loop is not executable by runtime budget"
+    assert request is None
+    assert EventType.LOOP_SELECTION_STARTED in [event.event_type for event in events]
+    assert EventType.LOOP_SELECTION_FAILED in [event.event_type for event in events]
+    failed = next(event for event in events if event.event_type is EventType.LOOP_SELECTION_FAILED)
+    assert failed.payload["reason_code"] == "selected_tool_loop_budget_unavailable"
+
+
+def test_tool_auto_requires_explicit_working_directory_scope(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        return await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-auto-without-working-directory",
+                "content": "show cpu usage",
+                "sensitivity": "project",
+            },
+        )
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 400
+    assert payload["error"]["code"] == "invalid_request"
+    assert payload["error"]["message"] == "tool loop is rejected by policy"
+    assert payload["error"]["request_id"]
+
+
+def test_explicit_tools_mode_is_rejected_when_tools_disabled(app_parts) -> None:
+    async def scenario():
+        settings = ConfigLoader(Path("config")).load("test")
+        disabled_settings = replace(
+            settings,
+            policy=replace(settings.policy, tools_enabled=False),
+        )
+        engine = app_parts.state.engine
+        app = create_app(
+            conversation_store=PostgresConversationStore(engine),
+            memory_store=PostgresMemoryStore(
+                engine=engine,
+                settings=disabled_settings,
+                policy=ConfigPolicyEngine(disabled_settings),
+                embedding_port=FakeEmbeddingProvider(),
+            ),
+            settings=disabled_settings,
+        )
+        conversation = await _create_conversation(app)
+        return await _request(
+            app,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-tools-disabled-mode",
+                "content": "hello",
+                "sensitivity": "project",
+                "loop_strategy": "tools",
+            },
+        )
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 400
+    assert payload["error"]["code"] == "invalid_request"
+    assert payload["error"]["message"] == "tool loop is disabled by policy"
+
+
+def test_request_metadata_keeps_selected_model_profile_resolution_after_loop_selection(
+    app_parts,
+) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        return await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-auto-profile-after-selection",
+                "content": "what is listening on port 8080?",
+                "sensitivity": "project",
+                "model_profile": "local_main",
+                "working_directory": str(Path.cwd()),
+            },
+        )
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 400
+    assert payload["error"]["code"] == "invalid_request"
+    assert payload["error"]["message"] == "model profile purpose is not valid for selected loop"
+
+
 def test_conflicting_client_message_id_returns_409(app_parts) -> None:
     async def scenario():
         conversation = await _create_conversation(app_parts)
@@ -690,7 +1214,7 @@ def test_post_message_rejects_model_profile_with_wrong_purpose(app_parts) -> Non
 
     assert status == 400
     assert payload["error"]["code"] == "invalid_request"
-    assert payload["error"]["message"] == "model profile purpose is not valid for loop strategy"
+    assert payload["error"]["message"] == "model profile purpose is not valid for selected loop"
 
 
 def test_validation_error_does_not_echo_raw_secret_input(app_parts) -> None:

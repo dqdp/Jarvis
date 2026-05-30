@@ -270,6 +270,7 @@ class PostgresConversationStore:
                         connection,
                         existing_message,
                         content_hash,
+                        command.sensitivity,
                         command.request_metadata,
                     )
 
@@ -315,10 +316,32 @@ class PostgresConversationStore:
                     connection,
                     existing_message,
                     _content_hash(command.content),
+                    command.sensitivity,
                     command.request_metadata,
                 )
 
         return MessageSubmission(user_message=message, request=request)
+
+    async def get_submission_by_client_message_id(
+        self,
+        conversation_id: str,
+        client_message_id: str,
+    ) -> MessageSubmission | None:
+        async with self.engine.connect() as connection:
+            existing_message = await _select_message_by_client_id(
+                connection,
+                conversation_id,
+                client_message_id,
+            )
+            if existing_message is None:
+                return None
+            message = _row_to_message(existing_message)
+            request = await _select_request_by_user_message(connection, message.message_id)
+            return MessageSubmission(
+                user_message=message,
+                request=_row_to_request(request),
+                idempotent_replay=True,
+            )
 
     async def create_assistant_request(
         self,
@@ -457,12 +480,17 @@ async def _idempotent_submission_from_existing(
     connection: AsyncConnection,
     existing_message: Mapping[str, Any],
     content_hash: str,
+    sensitivity: Sensitivity,
     request_metadata: dict[str, Any],
 ) -> MessageSubmission:
     message = _row_to_message(existing_message)
     if message.content_hash != content_hash:
         raise ClientMessageIdConflict(
             "client_message_id was already used with different content",
+        )
+    if message.sensitivity != sensitivity:
+        raise ClientMessageIdConflict(
+            "client_message_id was already used with different sensitivity",
         )
     request = await _select_request_by_user_message(connection, message.message_id)
     if dict(request["metadata"]) != request_metadata:

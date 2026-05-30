@@ -26,6 +26,9 @@ class ConfigPolicyEngine:
         self._settings = settings
         self._event_log = event_log
 
+    def without_event_log(self) -> ConfigPolicyEngine:
+        return ConfigPolicyEngine(self._settings)
+
     async def evaluate_model_request(
         self,
         request: ModelPolicyRequest,

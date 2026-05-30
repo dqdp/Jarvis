@@ -31,16 +31,27 @@ from assistant_core.runtime.loop_selection import (
     FakeIntentClassifier,
     LoopStrategySelector,
 )
+from assistant_core.runtime.request_metadata import resolve_loop_selection_mode
 
 
 pytestmark = pytest.mark.unit
 
 
 def test_loop_selection_mode_accepts_auto_chat_tools() -> None:
-    assert [mode.value for mode in LoopSelectionMode] == ["auto", "chat", "tools"]
+    assert [
+        LoopSelectionMode.AUTO.value,
+        LoopSelectionMode.CHAT.value,
+        LoopSelectionMode.TOOLS.value,
+    ] == ["auto", "chat", "tools"]
     assert LoopSelectionMode("auto") is LoopSelectionMode.AUTO
     assert LoopSelectionMode("chat") is LoopSelectionMode.CHAT
     assert LoopSelectionMode("tools") is LoopSelectionMode.TOOLS
+    assert LoopSelectionMode("invalid_override") is LoopSelectionMode.INVALID_OVERRIDE
+
+
+def test_internal_invalid_override_mode_is_not_user_selectable() -> None:
+    with pytest.raises(ValueError, match="loop strategy is not configured"):
+        resolve_loop_selection_mode("invalid_override")
 
 
 def test_loop_selection_request_rejects_missing_required_fields() -> None:
@@ -629,6 +640,17 @@ def test_deterministic_classifier_routes_process_listening_on_port_to_network_di
     assert classification.intent_family is IntentFamily.SYSTEM_DIAGNOSTICS
     assert classification.candidate_capabilities
     assert classification.candidate_capabilities[0].capability is Capability.TOOL_SYSTEM_READ_NETWORK
+
+
+def test_deterministic_classifier_does_not_route_generic_process_word_to_tools() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="same process replay")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.ORDINARY_CHAT
+    assert classification.candidate_capabilities == ()
 
 
 def test_deterministic_classifier_keeps_general_network_question_as_chat() -> None:

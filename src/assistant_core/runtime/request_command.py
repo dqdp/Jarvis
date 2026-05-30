@@ -30,5 +30,6 @@ class RuntimeTurnCommandBuilder:
             current_message_sensitivity=user_message.sensitivity,
             model_profile=request_record.metadata.get("model_profile", "local_main"),
             loop_strategy=request_record.metadata.get("loop_strategy", "memory_augmented_answer"),
+            working_directory=request_record.metadata.get("working_directory"),
             permission_mode=self._settings.permissions.mode,
         )

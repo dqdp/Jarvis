@@ -110,9 +110,34 @@ The selector pipeline is:
 5. choose concrete loop strategy or fail/ask/fallback according to confidence.
 ```
 
+Before a request is persisted, the selected concrete loop must also be
+executable under the active runtime budget. `tool_react_loop` is unavailable
+when its runtime budget is missing, `allow_tools` is false, or
+`max_tool_calls <= 0`; this must produce a redacted loop-selection failure
+rather than an accepted request that fails later in runtime execution.
+
 ## Routing model
 
-The final selection/request metadata payload is:
+The final persisted request metadata payload is intentionally compact:
+
+```text
+requested_loop_mode
+selected_loop_strategy
+selected_model_profile, resolved after selected_loop_strategy is known
+loop_selection_status
+loop_selection_reason_code
+loop_selection_confidence
+loop_selection_intent_family
+loop_selection_requires_tools
+loop_selection_requires_live_state
+loop_selection_policy_outcome
+loop_selection_approval_possible
+requested_model_profile
+working_directory, execution-only and redacted from public API payloads
+working_directory_scope
+```
+
+The redacted selection decision/event payload may additionally include:
 
 ```text
 requested_mode
@@ -162,6 +187,10 @@ chat
 tools
 ```
 
+`invalid_override` is an internal audit-only mode used for rejected malformed
+overrides. It is not accepted as a user-facing mode and never reaches runtime
+execution.
+
 `LoopSelectionMode` is not the same thing as `LoopStrategyName`.
 
 ### LoopSelectionRequest
@@ -191,7 +220,21 @@ or request metadata as a raw full prompt.
 
 `working_directory` may be passed to `PolicyPort` for shell and system
 diagnostics scope checks. It is not classifier evidence and must not be emitted
-in loop-selection event payloads.
+in loop-selection event payloads. It may be persisted in request metadata so the
+accepted request can later execute tools with the same caller-provided scope,
+but public request payloads must redact it and expose only scope presence.
+
+The request lifecycle must not silently replace a missing `working_directory`
+with the daemon current working directory. Tool-loop selection that requires
+filesystem, shell or system-diagnostics scope must use an explicit caller
+scope, or fail through policy with a redacted `request.loop_selection.failed`
+event.
+
+Pre-submit selection failures are correlated with a deterministic failure
+request id derived from the client message id and a redacted payload
+fingerprint. Accepted requests keep the stable request id derived from
+`conversation_id + client_message_id`, so a failed attempt cannot poison a later
+accepted retry's audit chain.
 
 ### IntentFamily
 
@@ -576,6 +619,7 @@ the normal user path.
 Overrides remain policy-gated:
 
 - `tools` fails when tools are disabled;
+- `tools` fails when the selected tool loop has no executable runtime budget;
 - `chat` cannot execute tools;
 - `auto` cannot bypass capability policy;
 - `model_profile` override must still match the selected loop purpose.
@@ -786,14 +830,18 @@ PM-08d CLI tool/RAG/approval readiness surface
 5. Change request metadata resolution so missing `loop_strategy` means `auto`.
 6. Persist selected concrete loop strategy and requested mode in request
    metadata.
-7. Add redacted selection events.
-8. Add CLI/API explicit overrides for `auto`, `chat` and `tools`.
-9. Add slash command `/mode auto|chat|tools` for interactive CLI.
-10. Make CLI tool/RAG/approval rendering usable from the normal interactive
+7. Allocate a stable pre-submit request id from `conversation_id` and
+   `client_message_id` for accepted requests, and a separate deterministic
+   failure request id for rejected pre-submit selection attempts so failed
+   attempts cannot collide with later accepted retries.
+8. Add redacted selection events.
+9. Add CLI/API explicit overrides for `auto`, `chat` and `tools`.
+10. Add slash command `/mode auto|chat|tools` for interactive CLI.
+11. Make CLI tool/RAG/approval rendering usable from the normal interactive
     flow.
-11. Ensure `/cancel` and Ctrl-C leave the interactive session usable.
-12. Keep `auto` as default for CLI and API.
-13. Add optional local structured classifier as a later adapter after the port,
+12. Ensure `/cancel` and Ctrl-C leave the interactive session usable.
+13. Keep `auto` as default for CLI and API.
+14. Add optional local structured classifier as a later adapter after the port,
     selector, observability and fallback behavior are green.
 
 ## Deferred

@@ -554,6 +554,7 @@ def test_runtime_app_factory_registers_project_shell_read_tool() -> None:
                     model_profile="local_structured",
                     loop_strategy=LoopStrategyName.TOOL_REACT_LOOP.value,
                     permission_mode="developer_local",
+                    working_directory=str(Path.cwd()),
                 ),
             )
             events = await event_log.query(EventFilter(request_id=submission.request.request_id))
@@ -628,6 +629,7 @@ def test_runtime_app_factory_registers_system_diagnostics_tool() -> None:
                         model_profile="local_structured",
                         loop_strategy=LoopStrategyName.TOOL_REACT_LOOP.value,
                         permission_mode="developer_local",
+                        working_directory=str(Path.cwd()),
                     ),
                 )
             except RuntimeError:

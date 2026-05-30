@@ -178,6 +178,60 @@ def test_system_diagnostics_tool_executes_allowed_argv_command(tmp_path: Path) -
     assert policy.requests[0].risk_classes == frozenset({RiskClass.READ_ONLY})
 
 
+def test_system_diagnostics_tool_uses_request_working_directory_when_cwd_missing(
+    tmp_path: Path,
+) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(exit_code=0, stdout="123 ollama\n", stderr=""),
+    )
+    gateway, policy, _event_log = _gateway(tmp_path, executor)
+
+    observation = asyncio.run(
+        gateway.invoke(
+            ToolCallRequest(
+                tool_name="tool.system.read.process",
+                arguments={"argv": ["ps", "-Ao", "pid,comm,command"]},
+                request_id="req-system-diagnostics-contract",
+                conversation_id="conv-system-diagnostics-contract",
+                user_id="user-system-diagnostics-contract",
+                working_directory=str(tmp_path),
+                sensitivity=Sensitivity.INFRA,
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert executor.calls[0]["cwd"] == tmp_path
+    assert policy.requests[0].working_directory == str(tmp_path)
+
+
+def test_system_diagnostics_tool_does_not_use_cwd_argument_as_request_scope(
+    tmp_path: Path,
+) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(exit_code=0, stdout="123 ollama\n", stderr=""),
+    )
+    gateway, policy, _event_log = _gateway(tmp_path, executor)
+
+    observation = asyncio.run(
+        gateway.invoke(
+            ToolCallRequest(
+                tool_name="tool.system.read.process",
+                arguments={"argv": ["ps", "-Ao", "pid,comm,command"], "cwd": str(tmp_path)},
+                request_id="req-system-diagnostics-contract",
+                conversation_id="conv-system-diagnostics-contract",
+                user_id="user-system-diagnostics-contract",
+                sensitivity=Sensitivity.INFRA,
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.DENIED
+    assert observation.error["code"] == "working_directory_required"
+    assert executor.calls == []
+    assert policy.requests == []
+
+
 def test_system_diagnostics_tool_returns_bounded_stdout(tmp_path: Path) -> None:
     executor = RecordingDiagnosticsExecutor(
         ShellExecutionResult(exit_code=0, stdout="a\nb\nc\nd\n", stderr=""),

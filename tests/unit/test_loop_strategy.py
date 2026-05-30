@@ -90,6 +90,24 @@ def test_loop_execution_request_requires_strategy_name_and_budget() -> None:
         LoopExecutionRequest(**{**base, "budget": None})
 
 
+def test_loop_execution_request_preserves_working_directory_scope() -> None:
+    request = LoopExecutionRequest(
+        request_id="request-1",
+        conversation_id="conversation-1",
+        user_message_id="message-1",
+        user_id="user-1",
+        user_input="hello",
+        active_project_namespace="project.personal_assistant",
+        current_message_sensitivity=Sensitivity.PROJECT,
+        model_profile="local_main",
+        strategy_name=LoopStrategyName.TOOL_REACT_LOOP,
+        budget=_budget(),
+        working_directory="/tmp/jarvis-project",
+    )
+
+    assert request.working_directory == "/tmp/jarvis-project"
+
+
 def test_loop_execution_result_reports_model_and_tool_call_counts() -> None:
     result = LoopExecutionResult(
         status=LoopStatus.COMPLETED,

@@ -79,6 +79,7 @@ class LoopExecutionRequest:
     strategy_name: LoopStrategyName | str
     budget: LoopBudget
     correlation_id: str | None = None
+    working_directory: str | None = None
     permission_mode: PermissionMode | str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 

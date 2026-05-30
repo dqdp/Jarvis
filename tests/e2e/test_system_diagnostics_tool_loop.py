@@ -230,6 +230,7 @@ async def _run_system_diagnostics_loop(
             loop_strategy="tool_react_loop",
             model_profile="local_structured",
             permission_mode="developer_local",
+            working_directory=str(Path.cwd()),
         )
         try:
             result = await runtime.run_turn(command)

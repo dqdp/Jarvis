@@ -344,6 +344,30 @@ def test_client_message_id_conflict_different_content(store) -> None:
         asyncio.run(scenario())
 
 
+def test_client_message_id_conflict_different_sensitivity(store) -> None:
+    async def scenario():
+        conversation = await _conversation(store)
+        await store.submit_user_message(
+            MessageSubmissionCommand(
+                conversation_id=conversation.conversation_id,
+                client_message_id="client-conflict-sensitivity",
+                content="same content",
+                sensitivity=Sensitivity.PROJECT,
+            ),
+        )
+        await store.submit_user_message(
+            MessageSubmissionCommand(
+                conversation_id=conversation.conversation_id,
+                client_message_id="client-conflict-sensitivity",
+                content="same content",
+                sensitivity=Sensitivity.SECRET,
+            ),
+        )
+
+    with pytest.raises(ClientMessageIdConflict):
+        asyncio.run(scenario())
+
+
 def test_client_message_id_conflict_different_request_metadata(store) -> None:
     async def scenario():
         conversation = await _conversation(store)

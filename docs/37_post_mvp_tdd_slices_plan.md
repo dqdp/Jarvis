@@ -2467,6 +2467,7 @@ test_model_profile_matches_selected_loop
 test_tools_disabled_does_not_silently_fallback_to_chat
 test_explicit_tools_mode_is_rejected_when_tools_disabled
 test_request_metadata_keeps_selected_model_profile_resolution_after_loop_selection
+test_tool_loop_budget_without_tool_calls_rejects_before_request_persistence
 ```
 
 Architecture tests:
@@ -2494,7 +2495,17 @@ api/request lifecycle:
   accept auto/chat/tools user-facing modes
   route missing loop_strategy to requested_mode=auto
   call LoopStrategySelector before AgentRuntime execution
+  allocate a stable pre-submit request_id from conversation_id + client_message_id
+    so accepted request lifecycle and idempotent retries share correlation
+  allocate a separate deterministic pre-submit failure request_id for rejected
+    selection attempts so a failed attempt cannot collide with a later accepted
+    retry that reuses the same client_message_id
+  do not default missing working_directory to the daemon cwd; tool intents that
+    need scope must provide explicit working_directory or fail through policy
+  persist explicit working_directory for execution only; redact it from public
+    request payloads and expose working_directory_scope for status/debug output
   persist requested_mode separately from selected_loop_strategy
+  validate the selected loop runtime budget before request persistence
   resolve model_profile after selected_loop_strategy is known
   emit redacted loop-selection started/completed/failed events
 ```
@@ -2506,6 +2517,7 @@ API clients can omit loop_strategy and get auto routing;
 explicit chat/tools overrides still work;
 selected concrete loop and selected model profile are visible in request metadata;
 tools-disabled tool intent fails clearly rather than hallucinating live state;
+tool-loop budget mismatch fails before request persistence or runtime execution;
 no real LLM, shell or diagnostics calls are required for API contract tests.
 ```
 
@@ -2700,6 +2712,7 @@ LoopSelectionMode:
   auto
   chat
   tools
+  invalid_override, internal audit-only mode for rejected malformed overrides
 
 IntentFamily:
   ordinary_chat
@@ -2751,6 +2764,7 @@ requested_mode
 user_input
 current_message_sensitivity
 active_project_namespace
+working_directory
 permission_mode
 available_capabilities
 available_tools_summary

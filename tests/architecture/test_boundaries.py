@@ -346,6 +346,33 @@ def test_api_facade_does_not_own_request_execution_runtime() -> None:
     assert (SRC_ROOT / "runtime" / "request_lifecycle.py").is_file()
 
 
+def test_api_transport_does_not_own_loop_selection_rules() -> None:
+    source = (SRC_ROOT / "api" / "app.py").read_text(encoding="utf-8")
+
+    assert "LoopStrategySelector" not in source
+    assert "DeterministicIntentClassifier" not in source
+    assert "IntentFamily" not in source
+    assert "CapabilityCandidate" not in source
+
+
+def test_request_metadata_does_not_call_tool_adapters() -> None:
+    _assert_no_import_prefixes(
+        [SRC_ROOT / "runtime" / "request_metadata.py"],
+        {
+            "assistant_core.tools",
+            "assistant_core.ports.tools",
+        },
+    )
+
+
+def test_loop_selection_events_do_not_include_raw_prompt() -> None:
+    source = (SRC_ROOT / "runtime" / "request_metadata.py").read_text(encoding="utf-8")
+
+    assert '"user_input"' not in source
+    assert '"prompt"' not in source
+    assert '"raw_prompt"' not in source
+
+
 def test_request_execution_manager_delegates_stateful_subsystems() -> None:
     source = (SRC_ROOT / "runtime" / "request_execution.py").read_text(encoding="utf-8")
 

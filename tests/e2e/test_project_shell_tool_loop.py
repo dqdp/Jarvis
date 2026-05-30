@@ -195,6 +195,7 @@ async def _run_project_shell_loop(structured_responses: list[dict]):
             loop_strategy="tool_react_loop",
             model_profile="local_structured",
             permission_mode="developer_local",
+            working_directory=str(Path.cwd()),
         )
         try:
             result = await runtime.run_turn(command)

@@ -91,6 +91,7 @@ class ToolProposalExecutor:
                 step_id=step_id,
                 user_id=request.user_id,
                 project_namespace=request.active_project_namespace,
+                working_directory=request.working_directory,
                 sensitivity=request.current_message_sensitivity,
                 permission_mode=request.permission_mode,
                 approval_id=approval_id,
