@@ -50,6 +50,7 @@ async def _truncate_content(database_url: str) -> None:
     engine = create_database_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(text("set local jarvis.allow_events_truncate = 'on'"))
             await connection.execute(
                 text(
                     "truncate table content_embeddings, content_chunks, content_sources, events "
@@ -298,19 +299,58 @@ def test_retrieval_records_empty_result_event(store_factory) -> None:
     assert event.payload["full_content_stored"] is False
 
 
-def test_retrieval_always_excludes_secret_chunks(store_factory) -> None:
+def test_query_embedding_failure_records_content_retrieval_failed_event(store_factory) -> None:
+    async def scenario():
+        store = store_factory(RecordingEmbeddingPort())
+        await _sync_one(store)
+        request_id = _id("query-embedding-failed")
+        retrieval_store = PostgresContentStore(
+            engine=store.engine,
+            embedding_port=RecordingEmbeddingPort(fail_times=1),
+            settings=_SettingsStub(model="local_embedding", dimension=5),
+        )
+        hits = await retrieval_store.retrieve(
+            ContentRetrievalQuery(
+                text="alpha project docs",
+                request_id=request_id,
+                correlation_id=request_id,
+                sensitivity=Sensitivity.PROJECT,
+            ),
+        )
+        events = await PostgresEventLog(store.engine).query(EventFilter(request_id=request_id))
+        return hits, events
+
+    hits, events = asyncio.run(scenario())
+
+    assert hits == []
+    event = next(event for event in events if event.event_type is EventType.CONTENT_RETRIEVAL_FAILED)
+    assert event.payload["reason"] == "query_embedding_failed"
+    assert event.payload["error_type"] == "RuntimeError"
+    assert event.payload["full_query_stored"] is False
+
+
+def test_secret_content_rows_are_rejected_by_database(store_factory) -> None:
     async def scenario():
         store = store_factory(RecordingEmbeddingPort())
         chunk = await _sync_one(store)
         async with store.engine.begin() as connection:
-            await connection.execute(
-                text("update content_sources set sensitivity = 'secret' where source_id = cast(:source_id as uuid)"),
-                {"source_id": chunk.source_id},
-            )
-            await connection.execute(
-                text("update content_chunks set sensitivity = 'secret' where chunk_id = cast(:chunk_id as uuid)"),
-                {"chunk_id": chunk.chunk_id},
-            )
+            with pytest.raises(Exception):
+                await connection.execute(
+                    text(
+                        "update content_sources set sensitivity = 'secret' "
+                        "where source_id = cast(:source_id as uuid)",
+                    ),
+                    {"source_id": chunk.source_id},
+                )
+        async with store.engine.begin() as connection:
+            with pytest.raises(Exception):
+                await connection.execute(
+                    text(
+                        "update content_chunks set sensitivity = 'secret' "
+                        "where chunk_id = cast(:chunk_id as uuid)",
+                    ),
+                    {"chunk_id": chunk.chunk_id},
+                )
         return await store.retrieve(
             ContentRetrievalQuery(
                 text="alpha project docs",
@@ -319,18 +359,22 @@ def test_retrieval_always_excludes_secret_chunks(store_factory) -> None:
             ),
         )
 
-    assert asyncio.run(scenario()) == []
+    assert len(asyncio.run(scenario())) == 1
 
 
-def test_retrieval_always_excludes_secret_sources(store_factory) -> None:
+def test_secret_content_sources_are_rejected_by_database(store_factory) -> None:
     async def scenario():
         store = store_factory(RecordingEmbeddingPort())
         chunk = await _sync_one(store)
         async with store.engine.begin() as connection:
-            await connection.execute(
-                text("update content_sources set sensitivity = 'secret' where source_id = cast(:source_id as uuid)"),
-                {"source_id": chunk.source_id},
-            )
+            with pytest.raises(Exception):
+                await connection.execute(
+                    text(
+                        "update content_sources set sensitivity = 'secret' "
+                        "where source_id = cast(:source_id as uuid)",
+                    ),
+                    {"source_id": chunk.source_id},
+                )
         return await store.retrieve(
             ContentRetrievalQuery(
                 text="alpha project docs",
@@ -339,7 +383,7 @@ def test_retrieval_always_excludes_secret_sources(store_factory) -> None:
             ),
         )
 
-    assert asyncio.run(scenario()) == []
+    assert len(asyncio.run(scenario())) == 1
 
 
 def test_embedding_model_change_reindexes_current_chunk(store_factory) -> None:

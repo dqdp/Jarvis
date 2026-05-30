@@ -72,6 +72,7 @@ class EventType(StrEnum):
     CONTENT_EMBEDDING_CREATED = "content.embedding.created"
     CONTENT_EMBEDDING_FAILED = "content.embedding.failed"
     CONTENT_RETRIEVED = "content.retrieved"
+    CONTENT_RETRIEVAL_FAILED = "content.retrieval.failed"
     TOOL_OBSERVATION_RECORDED = "tool.observation.recorded"
     APPROVAL_REQUIRED = "approval.required"
     APPROVAL_GRANTED = "approval.granted"

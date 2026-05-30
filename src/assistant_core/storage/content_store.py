@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -314,7 +315,11 @@ class PostgresContentStore:
         return _row_to_embedding(row)
 
     async def retrieve(self, query: ContentRetrievalQuery) -> list[ContentHit]:
-        if self._embedding_port is None or not query.text.strip():
+        if not query.text.strip():
+            await self._record_content_retrieval_failed("empty_query", query=query)
+            return []
+        if self._embedding_port is None:
+            await self._record_content_retrieval_failed("embedding_port_missing", query=query)
             return []
         source_types = (
             [_source_type(value).value for value in query.source_types]
@@ -361,7 +366,12 @@ class PostgresContentStore:
             response = await self._embedding_port.embed(
                 GenerateEmbeddingCommand(texts=[query.text], sensitivity=query.sensitivity),
             )
-        except Exception:
+        except Exception as exc:
+            await self._record_content_retrieval_failed(
+                "query_embedding_failed",
+                query=query,
+                error_type=type(exc).__name__,
+            )
             return []
         query_vector = response.vectors[0]
         hits = [
@@ -490,6 +500,24 @@ class PostgresContentStore:
                 _content_retrieved_event(
                     hits,
                     query=query,
+                    embedding_profile=self._embedding_profile,
+                ),
+            )
+
+    async def _record_content_retrieval_failed(
+        self,
+        reason: str,
+        *,
+        query: ContentRetrievalQuery,
+        error_type: str | None = None,
+    ) -> None:
+        async with self.engine.begin() as connection:
+            await insert_event(
+                connection,
+                _content_retrieval_failed_event(
+                    reason=reason,
+                    query=query,
+                    error_type=error_type,
                     embedding_profile=self._embedding_profile,
                 ),
             )
@@ -860,6 +888,50 @@ def _content_retrieved_event(
         },
         metadata={},
     )
+
+
+def _content_retrieval_failed_event(
+    *,
+    reason: str,
+    query: ContentRetrievalQuery,
+    error_type: str | None,
+    embedding_profile: str,
+) -> EventEnvelope:
+    now = _now()
+    payload = {
+        "reason": reason,
+        "query_hash": _query_hash(query.text),
+        "embedding_profile": embedding_profile,
+        "full_query_stored": False,
+    }
+    if error_type is not None:
+        payload["error_type"] = error_type
+    return EventEnvelope(
+        event_id=_new_id(),
+        event_seq=0,
+        event_type=EventType.CONTENT_RETRIEVAL_FAILED,
+        event_version=1,
+        occurred_at=now,
+        recorded_at=now,
+        conversation_id=query.conversation_id,
+        request_id=query.request_id,
+        correlation_id=query.correlation_id,
+        causation_id=query.causation_id,
+        parent_event_id=None,
+        actor_type=ActorType.SYSTEM,
+        actor_id=None,
+        source_component="content_store",
+        source_node=None,
+        sensitivity=query.sensitivity,
+        visibility=EventVisibility.INTERNAL,
+        idempotency_key=None,
+        payload=payload,
+        metadata={},
+    )
+
+
+def _query_hash(text: str) -> str:
+    return f"sha256:{sha256(text.encode('utf-8')).hexdigest()}"
 
 
 def _max_retrieval_sensitivity(
