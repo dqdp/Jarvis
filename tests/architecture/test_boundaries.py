@@ -289,6 +289,25 @@ def test_model_router_does_not_execute_tools() -> None:
     )
 
 
+def test_model_provider_adapters_do_not_import_router_facade() -> None:
+    adapter_paths = [
+        SRC_ROOT / "models" / "fake_provider.py",
+        SRC_ROOT / "models" / "local_openai.py",
+        SRC_ROOT / "models" / "ollama.py",
+    ]
+
+    _assert_no_import_prefixes(adapter_paths, {"assistant_core.models.router"})
+    assert (SRC_ROOT / "ports" / "model_provider.py").is_file()
+
+
+def test_model_router_uses_model_provider_port_contract() -> None:
+    source = (SRC_ROOT / "models" / "router.py").read_text(encoding="utf-8")
+
+    assert "ModelProviderPort" in source
+    assert "providers: dict[str, object]" not in source
+    assert "type: ignore[attr-defined]" not in source
+
+
 def test_context_assembler_does_not_execute_tools() -> None:
     _assert_no_import_prefixes(
         _python_files("context_assembly"),
@@ -311,6 +330,68 @@ def test_cli_api_do_not_import_concrete_tool_adapters() -> None:
     )
 
 
+def test_api_facade_does_not_own_request_execution_runtime() -> None:
+    app_path = SRC_ROOT / "api" / "app.py"
+    source = app_path.read_text(encoding="utf-8")
+
+    assert "class _RequestExecutionManager" not in source
+    assert "class RequestExecutionManager" not in source
+    assert "def _resolve_loop_strategy" not in source
+    assert "def _resolve_model_profile" not in source
+    assert (SRC_ROOT / "runtime" / "request_execution.py").is_file()
+    assert (SRC_ROOT / "runtime" / "request_metadata.py").is_file()
+    assert (SRC_ROOT / "runtime" / "request_streaming.py").is_file()
+    assert (SRC_ROOT / "runtime" / "request_stream_buffer.py").is_file()
+    assert (SRC_ROOT / "runtime" / "request_command.py").is_file()
+    assert (SRC_ROOT / "runtime" / "request_lifecycle.py").is_file()
+
+
+def test_request_execution_manager_delegates_stateful_subsystems() -> None:
+    source = (SRC_ROOT / "runtime" / "request_execution.py").read_text(encoding="utf-8")
+
+    assert "class RequestStreamBuffer" not in source
+    assert "class RuntimeTurnCommandBuilder" not in source
+    assert "class RequestLifecycleService" not in source
+    assert "self._events:" not in source
+    assert "self._conditions:" not in source
+    assert "self._active_streams:" not in source
+    assert "from assistant_core.runtime.agent_runtime import RuntimeTurnCommand" not in source
+
+
+def test_api_has_split_transport_components() -> None:
+    expected_modules = [
+        SRC_ROOT / "api" / "errors.py",
+        SRC_ROOT / "api" / "health.py",
+        SRC_ROOT / "api" / "presenters.py",
+        SRC_ROOT / "api" / "sse.py",
+    ]
+
+    assert [path.name for path in expected_modules if not path.is_file()] == []
+
+
+def test_cli_entrypoint_delegates_to_cli_app_components() -> None:
+    entrypoint = SRC_ROOT / "cli.py"
+    source = entrypoint.read_text(encoding="utf-8")
+    expected_modules = [
+        SRC_ROOT / "cli_app" / "client.py",
+        SRC_ROOT / "cli_app" / "config.py",
+        SRC_ROOT / "cli_app" / "commands.py",
+        SRC_ROOT / "cli_app" / "chat_flow.py",
+        SRC_ROOT / "cli_app" / "interactive.py",
+        SRC_ROOT / "cli_app" / "line_reader.py",
+        SRC_ROOT / "cli_app" / "renderers.py",
+        SRC_ROOT / "cli_app" / "sse.py",
+        SRC_ROOT / "cli_app" / "utils.py",
+    ]
+
+    assert [path.name for path in expected_modules if not path.is_file()] == []
+    assert "class HttpJarvisClient" not in source
+    assert "class TerminalInteractiveLineReader" not in source
+    assert "async def run_interactive_chat" not in source
+
+    assert not (SRC_ROOT / "cli_app" / "core.py").exists()
+
+
 def test_toolgateway_does_not_import_loop_strategies() -> None:
     if not (SRC_ROOT / "tools").exists():
         pytest.fail("PM-02 requires the tools package")
@@ -321,6 +402,36 @@ def test_toolgateway_does_not_import_loop_strategies() -> None:
             "assistant_core.loops",
         },
     )
+
+
+def test_toolgateway_is_thin_facade_over_internal_services() -> None:
+    expected_modules = [
+        SRC_ROOT / "tools" / "authorization.py",
+        SRC_ROOT / "tools" / "approval_flow.py",
+        SRC_ROOT / "tools" / "approval_coordination.py",
+        SRC_ROOT / "tools" / "audit.py",
+        SRC_ROOT / "tools" / "execution.py",
+        SRC_ROOT / "tools" / "events.py",
+        SRC_ROOT / "tools" / "results.py",
+    ]
+
+    assert [path.name for path in expected_modules if not path.is_file()] == []
+    gateway_source = (SRC_ROOT / "tools" / "gateway.py").read_text(encoding="utf-8")
+    execution_source = (SRC_ROOT / "tools" / "execution.py").read_text(encoding="utf-8")
+
+    assert "async def _execute_adapter" not in gateway_source
+    assert "async def execute_adapter" in execution_source
+    assert "CreateApprovalCommand" not in gateway_source
+    assert "EventEnvelope(" not in gateway_source
+
+
+def test_tool_react_loop_delegates_approval_and_proposal_execution() -> None:
+    loop_source = (SRC_ROOT / "runtime" / "loops" / "tool_react.py").read_text(encoding="utf-8")
+
+    assert (SRC_ROOT / "runtime" / "loops" / "tool_approval.py").is_file()
+    assert (SRC_ROOT / "runtime" / "loops" / "tool_proposal_executor.py").is_file()
+    assert "async def _wait_for_approval" not in loop_source
+    assert "async def _execute_tool_proposal" not in loop_source
 
 
 def test_loop_strategies_do_not_import_storage_adapters() -> None:
@@ -472,6 +583,49 @@ def test_memory_subsystem_does_not_import_content_retrieval_storage() -> None:
         assert "content_retrieval" not in source
 
 
+def test_storage_adapters_do_not_import_content_application_services() -> None:
+    _assert_no_import_prefixes(
+        [SRC_ROOT / "storage" / "content_store.py"],
+        {"assistant_core.content_retrieval.project_docs"},
+    )
+
+
+def test_storage_workflows_have_application_service_boundaries() -> None:
+    expected_modules = [
+        SRC_ROOT / "content_retrieval" / "indexing_service.py",
+        SRC_ROOT / "content_retrieval" / "retrieval_service.py",
+        SRC_ROOT / "memory" / "write_service.py",
+    ]
+
+    assert [path.name for path in expected_modules if not path.is_file()] == []
+
+
+def test_application_service_boundaries_do_not_contain_placeholders() -> None:
+    boundary_modules = [
+        SRC_ROOT / "content_retrieval" / "indexing_service.py",
+        SRC_ROOT / "content_retrieval" / "retrieval_service.py",
+        SRC_ROOT / "memory" / "write_service.py",
+    ]
+
+    offenders = [
+        str(path.relative_to(PROJECT_ROOT))
+        for path in boundary_modules
+        if "NotImplementedError" in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []
+
+
+def test_runtime_factory_wires_application_workflow_services() -> None:
+    source = (SRC_ROOT / "app_factory.py").read_text(encoding="utf-8")
+
+    assert "ContentIndexingService" in source
+    assert "ContentRetrievalService" in source
+    assert "MemoryWriteService" in source
+    assert "content_retrieval=content_retrieval" in source
+    assert "memory_write=memory_write" in source
+
+
 def test_agent_runtime_does_not_import_content_storage_adapters() -> None:
     _assert_no_import_prefixes(
         [SRC_ROOT / "runtime" / "agent_runtime.py"],
@@ -521,3 +675,54 @@ def test_content_retrieval_does_not_write_memory_tables() -> None:
         assert "assistant_core.ports.memory" not in imported
         for fragment in forbidden_fragments:
             assert fragment not in lowered
+
+
+def test_context_assembler_has_internal_component_boundaries() -> None:
+    expected_modules = [
+        SRC_ROOT / "context_assembly" / "retrieval.py",
+        SRC_ROOT / "context_assembly" / "policy_filter.py",
+        SRC_ROOT / "context_assembly" / "rendering.py",
+        SRC_ROOT / "context_assembly" / "manifest.py",
+        SRC_ROOT / "context_assembly" / "audit.py",
+        SRC_ROOT / "context_assembly" / "trimming.py",
+    ]
+
+    assert [path.name for path in expected_modules if not path.is_file()] == []
+
+
+def test_context_assembler_audit_and_trimming_are_real_boundaries() -> None:
+    deterministic_source = (
+        SRC_ROOT / "context_assembly" / "deterministic.py"
+    ).read_text(encoding="utf-8")
+    audit_source = (SRC_ROOT / "context_assembly" / "audit.py").read_text(encoding="utf-8")
+    trimming_source = (
+        SRC_ROOT / "context_assembly" / "trimming.py"
+    ).read_text(encoding="utf-8")
+
+    assert "class ContextAssemblyAuditRecorder" in audit_source
+    assert "def apply_token_budget" in trimming_source
+    assert "def apply_message_count_limit" in trimming_source
+    assert "EventEnvelope(" not in deterministic_source
+    assert "def _apply_token_budget" not in deterministic_source
+    assert "def _apply_message_count_limit" not in deterministic_source
+
+
+def test_known_facades_stay_below_god_module_size() -> None:
+    max_lines_by_path = {
+        SRC_ROOT / "api" / "app.py": 650,
+        SRC_ROOT / "cli.py": 250,
+        SRC_ROOT / "cli_app" / "client.py": 320,
+        SRC_ROOT / "cli_app" / "commands.py": 250,
+        SRC_ROOT / "cli_app" / "chat_flow.py": 420,
+        SRC_ROOT / "cli_app" / "line_reader.py": 300,
+        SRC_ROOT / "cli_app" / "renderers.py": 220,
+        SRC_ROOT / "tools" / "gateway.py": 850,
+        SRC_ROOT / "context_assembly" / "deterministic.py": 780,
+    }
+    offenders = [
+        f"{path.relative_to(PROJECT_ROOT)} has {len(path.read_text(encoding='utf-8').splitlines())} lines"
+        for path, max_lines in max_lines_by_path.items()
+        if path.is_file() and len(path.read_text(encoding="utf-8").splitlines()) > max_lines
+    ]
+
+    assert offenders == []

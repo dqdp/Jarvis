@@ -24,6 +24,8 @@ docs/27_tdd_implementation_slices_plan.md
 - Do not log raw full prompts by default.
 - Do not make real LLM calls required for CI.
 - Use fake model/embedding providers for tests.
+- Do not let facade modules become implementation dumps.
+- Do not ignore obviously growing files, classes or methods when a slice touches them.
 - If implementation order must change, update `docs/27_tdd_implementation_slices_plan.md`.
 - If architecture must change, update the relevant ADR.
 
@@ -190,6 +192,40 @@ ContextAssembler must not call provider-specific model clients.
 Memory subsystem must not store document chunks.
 
 ModelRouter must consult PolicyPort before provider calls.
+
+## Facade and complexity discipline
+
+Every implementation slice must keep architectural responsibilities explicit.
+
+Watch for these design smells while editing code:
+
+```text
+large files that keep accumulating unrelated behavior;
+classes that act as facade, service, adapter and serializer at the same time;
+methods that combine validation, orchestration, persistence, policy and formatting;
+API/CLI entrypoints that contain runtime or business logic;
+storage adapters that own application workflows;
+tool adapters that own approval, policy or audit lifecycle;
+provider adapters that import router/facade implementation details;
+tests that become mini-frameworks because production boundaries are unclear.
+```
+
+Facade modules are allowed to coordinate dependencies, but they must stay thin.
+They should delegate real work to explicit services, ports, adapters, presenters
+or lifecycle components.
+
+When a touched file, class or method is already large or gains a second
+responsibility, choose one of these actions before finishing the slice:
+
+```text
+extract the responsibility behind a clear boundary;
+add or update an architecture test that protects the intended boundary;
+record a follow-up in the slice plan if extraction would exceed the current slice;
+update the relevant ADR if the boundary decision changed.
+```
+
+Do not add new feature behavior to a known god-module without first checking
+whether the change belongs in a new service/module.
 
 ## Implementation method per slice
 
