@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from assistant_core.config.settings import ConfigLoader
 from assistant_core.context_assembly.deterministic import (
     ContextPolicyDenied,
     DeterministicContextAssembler,
@@ -215,6 +216,7 @@ def _assembler(
     memory_fails: bool = False,
     event_log: InMemoryEventLog | None = None,
     policy: FakePolicy | None = None,
+    settings=None,
 ) -> DeterministicContextAssembler:
     retrieval = content_retrieval or FakeContentRetrieval(content_hits or [])
     return DeterministicContextAssembler(
@@ -223,6 +225,7 @@ def _assembler(
         content_retrieval=retrieval,
         event_log=event_log or InMemoryEventLog(),
         policy=policy or FakePolicy(),
+        settings=settings,
     )
 
 
@@ -436,6 +439,39 @@ def test_retrieves_active_memories() -> None:
 
     assert context.manifest.used_memory_ids == ["mem-project"]
     assert "project memory" in _section(context, "project_or_environment_memory").content
+
+
+def test_context_manifest_uses_configured_retrieval_parameters() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+    settings = replace(
+        settings,
+        memory=replace(
+            settings.memory,
+            retrieval=replace(settings.memory.retrieval, max_hits_total=3),
+        ),
+        context_assembly=replace(
+            settings.context_assembly,
+            context_budget={
+                **settings.context_assembly.context_budget,
+                "content_hits_max": 2,
+            },
+        ),
+    )
+    retrieval = FakeContentRetrieval([_content_hit("guide")])
+    context = asyncio.run(
+        _assembler(
+            memories=[MemoryHit(memory=_memory("project"), score=0.9)],
+            content_retrieval=retrieval,
+            settings=settings,
+        ).assemble(_request()),
+    )
+
+    assert context.manifest.retrieval_parameters == {
+        "max_hits_total": 3,
+        "content_hits_max": 2,
+        "query_source": "current_user_message",
+    }
+    assert retrieval.queries[0].limit == 2
 
 
 def test_excludes_secret_memories_and_messages() -> None:

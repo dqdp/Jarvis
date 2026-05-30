@@ -109,6 +109,7 @@
       "environment.inference_node"
     ],
     "retrieval_parameters": {
+      "content_hits_max": 4,
       "max_hits_total": 8,
       "query_source": "current_user_message"
     },

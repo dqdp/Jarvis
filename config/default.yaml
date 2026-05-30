@@ -104,6 +104,7 @@ context_assembly:
       - output_contract
   conversation_window:
     max_messages: 12
+    source_limit: 1000
     max_tokens: 3000
     include_roles: [user, assistant]
     exclude_sensitivity: [secret]
@@ -111,6 +112,7 @@ context_assembly:
   context_budget:
     max_input_tokens: 12000
     memory_tokens_max: 2500
+    content_hits_max: 4
     recent_conversation_tokens_max: 6000
 
 runtime_budgets:
