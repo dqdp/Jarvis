@@ -39,6 +39,7 @@ async def _truncate_approvals(database_url: str) -> None:
     engine = create_database_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(text("set local jarvis.allow_events_truncate = 'on'"))
             await connection.execute(
                 text(
                     "truncate table approvals, events restart identity cascade",
@@ -139,6 +140,25 @@ def test_approval_store_grants_pending_approval(store_parts) -> None:
 
     assert granted.status == ApprovalStatus.GRANTED
     assert EventType.APPROVAL_GRANTED in [event.event_type for event in events]
+
+
+def test_approval_store_redacts_secret_like_decision_reason(store_parts) -> None:
+    store, _event_log = store_parts
+
+    async def scenario():
+        created = await store.create_approval(_command())
+        granted = await store.grant_approval(
+            created.approval_id,
+            actor_id="user-1",
+            reason="temporary token github_pat_1234567890abcdef",
+        )
+        loaded = await store.get_approval(created.approval_id)
+        return granted, loaded
+
+    granted, loaded = asyncio.run(scenario())
+
+    assert granted.decision_reason == "<redacted>"
+    assert loaded.decision_reason == "<redacted>"
 
 
 def test_approval_store_denies_pending_approval(store_parts) -> None:

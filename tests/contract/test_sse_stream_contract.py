@@ -18,8 +18,14 @@ from sqlalchemy import text
 from assistant_core.api.app import create_app
 from assistant_core.config.settings import ConfigLoader
 from assistant_core.context_assembly.deterministic import DeterministicContextAssembler
+from assistant_core.domain.conversations import (
+    CreateConversationCommand,
+    MessageSubmissionCommand,
+    UpdateAssistantRequestStatusCommand,
+)
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
 from assistant_core.domain.messages import MessageRole
+from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.models.fake_provider import FakeEmbeddingProvider, FakeModelProvider
 from assistant_core.models.router import ModelRouter
@@ -50,6 +56,7 @@ async def _truncate_stream(database_url: str) -> None:
     engine = create_database_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(text("set local jarvis.allow_events_truncate = 'on'"))
             await connection.execute(
                 text(
                     "truncate table content_embeddings, content_chunks, content_sources, "
@@ -121,6 +128,7 @@ def stream_parts():
         settings=settings,
         policy=ConfigPolicyEngine(settings),
     )
+    apps: list[FastAPI] = []
 
     def make_app(provider: FakeModelProvider, *, settings_override=None, runtime_override=None):
         app_settings = settings_override or settings
@@ -157,13 +165,21 @@ def stream_parts():
         app.state.test_engine = engine
         app.state.test_conversation_store = conversation_store
         app.state.test_model_invocations = PostgresModelInvocationRepository(engine)
+        apps.append(app)
         assert isinstance(app, FastAPI)
         return app
 
     try:
         yield make_app, event_log
     finally:
-        asyncio.run(engine.dispose())
+        async def cleanup() -> None:
+            for app in apps:
+                manager = getattr(app.state, "request_execution_manager", None)
+                if manager is not None:
+                    await manager.shutdown()
+            await engine.dispose()
+
+        asyncio.run(cleanup())
 
 
 async def _request(app, method: str, path: str, body: dict[str, Any] | None = None):
@@ -562,8 +578,9 @@ def test_cancel_running_request_is_bounded_when_provider_resists_cancellation(st
             cancel_status, cancel_payload = await asyncio.wait_for(cancel_task, timeout=0.5)
         finally:
             provider.release.set()
-            with suppress(Exception):
+            with suppress(asyncio.CancelledError, RuntimeError):
                 await cancel_task
+            await app.state.request_execution_manager.shutdown()
         request = await _wait_request_status(app, submitted["request_id"], "cancelled")
         return cancel_status, cancel_payload, request
 
@@ -838,3 +855,119 @@ def test_completed_request_stream_reconnect_does_not_rerun_provider(stream_parts
     assert second_status == 200
     assert second_events[-1][0] == "request.processing.completed"
     assert stream_calls == 1
+
+
+def test_completed_request_reconnect_uses_durable_replay_after_live_buffer_cleanup(
+    stream_parts,
+) -> None:
+    async def scenario():
+        make_app, event_log = stream_parts
+        provider = FakeModelProvider(stream_tokens=["A"])
+        app = make_app(provider)
+        submitted = await _accepted_message(
+            app,
+            client_message_id="client-same-process-replay",
+            content="same process replay",
+        )
+        await _request(app, "GET", f"/v1/requests/{submitted['request_id']}/stream")
+        now = datetime.now(UTC)
+        await event_log.append(
+            EventEnvelope(
+                event_id=str(uuid4()),
+                event_seq=0,
+                event_type=EventType.CONTEXT_ASSEMBLED,
+                event_version=1,
+                occurred_at=now,
+                recorded_at=now,
+                conversation_id=submitted["conversation_id"],
+                request_id=submitted["request_id"],
+                correlation_id=submitted["request_id"],
+                causation_id=None,
+                parent_event_id=None,
+                actor_type=ActorType.SYSTEM,
+                actor_id=None,
+                source_component="test",
+                source_node=None,
+                sensitivity=Sensitivity.PROJECT,
+                visibility=EventVisibility.INTERNAL,
+                idempotency_key=None,
+                payload={
+                    "context_manifest_id": "same-process-replay-manifest",
+                    "raw_prompt": "must not leak",
+                },
+                metadata={},
+            ),
+        )
+        _, reconnect_raw = await _request(
+            app,
+            "GET",
+            f"/v1/requests/{submitted['request_id']}/stream",
+        )
+        return _sse_events(reconnect_raw), provider.stream_calls
+
+    events, stream_calls = asyncio.run(scenario())
+
+    assert "same-process-replay-manifest" in json.dumps(events)
+    assert "must not leak" not in json.dumps(events)
+    assert stream_calls == 1
+
+
+def test_waiting_approval_request_without_active_task_fails_as_orphaned(stream_parts) -> None:
+    async def scenario():
+        make_app, _ = stream_parts
+        base_settings = ConfigLoader(Path("config")).load("test")
+        timeout_settings = replace(
+            base_settings,
+            api=replace(
+                base_settings.api,
+                request_timeout_seconds=0,
+                sse_heartbeat_seconds=0,
+            ),
+        )
+        app = make_app(FakeModelProvider(stream_tokens=["SHOULD_NOT_RUN"]), settings_override=timeout_settings)
+        store = app.state.test_conversation_store
+        conversation = await store.create_conversation(
+            CreateConversationCommand(
+                user_id="local_user",
+                title="waiting approval orphan",
+                active_project_namespace="project.personal_assistant",
+            ),
+        )
+        submission = await store.submit_user_message(
+            MessageSubmissionCommand(
+                conversation_id=conversation.conversation_id,
+                client_message_id="client-waiting-approval-orphan",
+                content="needs approval",
+                sensitivity=Sensitivity.PROJECT,
+            ),
+        )
+        await store.update_assistant_request_status(
+            UpdateAssistantRequestStatusCommand(
+                request_id=submission.request.request_id,
+                status=RequestStatus.RUNNING,
+            ),
+        )
+        await store.update_assistant_request_status(
+            UpdateAssistantRequestStatusCommand(
+                request_id=submission.request.request_id,
+                status=RequestStatus.WAITING_APPROVAL,
+            ),
+        )
+        status, raw = await asyncio.wait_for(
+            _request(app, "GET", f"/v1/requests/{submission.request.request_id}/stream"),
+            timeout=1,
+        )
+        request_status, request_payload = await _json_request(
+            app,
+            "GET",
+            f"/v1/requests/{submission.request.request_id}",
+        )
+        return status, _sse_events(raw), request_status, request_payload
+
+    status, events, request_status, request_payload = asyncio.run(scenario())
+
+    assert status == 200
+    assert request_status == 200
+    assert events[-1][0] == EventType.REQUEST_PROCESSING_FAILED.value
+    assert request_payload["status"] == "failed"
+    assert request_payload["error"]["code"] == "orphaned_waiting_approval_request"

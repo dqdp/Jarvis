@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,7 @@ async def _truncate_runtime_app(database_url: str) -> None:
     engine = create_database_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(text("set local jarvis.allow_events_truncate = 'on'"))
             await connection.execute(
                 text(
                     "truncate table content_embeddings, content_chunks, content_sources, "
@@ -79,6 +81,18 @@ def _sse_event_payloads(raw: str) -> list[tuple[str, dict[str, Any]]]:
     return events
 
 
+class BlockingStreamModelProvider(FakeModelProvider):
+    def __init__(self) -> None:
+        super().__init__(stream_tokens=["unreachable"])
+        self.started = asyncio.Event()
+
+    async def stream_chat(self, request):
+        self.stream_calls += 1
+        self.started.set()
+        await asyncio.Event().wait()
+        yield "unreachable"
+
+
 def test_runtime_app_factory_builds_dogfood_app_with_fake_providers() -> None:
     database_url = _database_url()
     assert_test_database_url(database_url)
@@ -96,6 +110,7 @@ def test_runtime_app_factory_builds_dogfood_app_with_fake_providers() -> None:
             settings=settings,
             providers={
                 "local_main": model_provider,
+                "local_structured": FakeModelProvider(),
                 "local_embedding": embedding_provider,
             },
         )
@@ -163,6 +178,248 @@ def test_runtime_app_factory_builds_dogfood_app_with_fake_providers() -> None:
     assert request_status["status"] == "completed"
     assert stream_calls == 1
     assert embed_calls == 1
+
+
+def test_runtime_app_factory_dispose_shutdowns_active_request_tasks() -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        model_provider = BlockingStreamModelProvider()
+        runtime_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            providers={
+                "local_main": model_provider,
+                "local_structured": FakeModelProvider(),
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        disposed = False
+        try:
+            app = runtime_app.app
+            _, conversation_raw = await _request(
+                app,
+                "POST",
+                "/v1/conversations",
+                {"title": "factory dispose", "active_project_namespace": "project.personal_assistant"},
+            )
+            conversation = json.loads(conversation_raw)
+            status_code, message_raw = await _request(
+                app,
+                "POST",
+                f"/v1/conversations/{conversation['conversation_id']}/messages",
+                {
+                    "client_message_id": "client-factory-dispose",
+                    "content": "hold the provider open",
+                    "sensitivity": "project",
+                },
+            )
+            submitted = json.loads(message_raw)
+            manager = app.state.request_execution_manager
+            await asyncio.wait_for(model_provider.started.wait(), timeout=1.0)
+            assert status_code == 202
+            assert submitted["request_id"] in manager._tasks
+
+            await runtime_app.dispose()
+            disposed = True
+            return submitted["request_id"] in manager._tasks
+        finally:
+            if not disposed:
+                await runtime_app.dispose()
+
+    task_still_tracked = asyncio.run(scenario())
+
+    assert task_still_tracked is False
+
+
+def test_runtime_app_factory_health_reports_missing_inference_provider() -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        runtime_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            providers={"local_embedding": FakeEmbeddingProvider()},
+        )
+        try:
+            status, health_raw = await _request(runtime_app.app, "GET", "/v1/health")
+            return status, json.loads(health_raw)
+        finally:
+            await runtime_app.dispose()
+
+    status, health = asyncio.run(scenario())
+
+    assert status == 503
+    assert health["status"] == "not_ready"
+    assert health["readiness"]["checks"]["inference"] == "failed"
+    assert "local_main" in health["readiness"]["reasons"]["inference"]
+
+
+def test_runtime_app_factory_exposes_project_docs_content_ops(tmp_path: Path) -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+    (tmp_path / "README.md").write_text("# Readme\nalpha project docs\n", encoding="utf-8")
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "guide.md").write_text("# Guide\nbeta project docs\n", encoding="utf-8")
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        runtime_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            project_root=tmp_path,
+            providers={
+                "local_main": FakeModelProvider(stream_tokens=["OK"]),
+                "local_structured": FakeModelProvider(),
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        try:
+            app = runtime_app.app
+            ingest_status, ingest_raw = await _request(
+                app,
+                "POST",
+                "/v1/content/project-docs/ingest",
+            )
+            sources_status, sources_raw = await _request(app, "GET", "/v1/content/sources")
+            status_code, status_raw = await _request(app, "GET", "/v1/content/status")
+            (docs_dir / "guide.md").write_text("# Guide\nupdated project docs\n", encoding="utf-8")
+            reindex_status, reindex_raw = await _request(
+                app,
+                "POST",
+                "/v1/content/project-docs/reindex",
+            )
+            return (
+                ingest_status,
+                json.loads(ingest_raw),
+                sources_status,
+                json.loads(sources_raw),
+                status_code,
+                json.loads(status_raw),
+                reindex_status,
+                json.loads(reindex_raw),
+            )
+        finally:
+            await runtime_app.dispose()
+
+    (
+        ingest_status,
+        ingest,
+        sources_status,
+        sources,
+        status_code,
+        content_status,
+        reindex_status,
+        reindex,
+    ) = asyncio.run(scenario())
+
+    assert ingest_status == 200
+    assert ingest["seen_sources"] == 2
+    assert sources_status == 200
+    assert {source["path"] for source in sources["sources"]} == {"README.md", "docs/guide.md"}
+    assert status_code == 200
+    assert content_status["sources"]["total"] == 2
+    assert content_status["chunks"]["total"] >= 2
+    assert reindex_status == 200
+    assert reindex["updated_sources"] >= 1
+
+
+def test_runtime_app_factory_content_ops_require_policy_allow(tmp_path: Path) -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+    (tmp_path / "README.md").write_text("# Readme\nalpha project docs\n", encoding="utf-8")
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        modes = {name: dict(actions) for name, actions in settings.permissions.modes.items()}
+        modes["developer_local"]["content.retrieve"] = "deny"
+        modes["developer_local"]["content.ingest"] = "deny"
+        modes["developer_local"]["content.index"] = "deny"
+        settings = replace(settings, permissions=replace(settings.permissions, modes=modes))
+        runtime_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            project_root=tmp_path,
+            providers={
+                "local_main": FakeModelProvider(stream_tokens=["OK"]),
+                "local_structured": FakeModelProvider(),
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        try:
+            ingest_status, ingest_raw = await _request(
+                runtime_app.app,
+                "POST",
+                "/v1/content/project-docs/ingest",
+            )
+            reindex_status, reindex_raw = await _request(
+                runtime_app.app,
+                "POST",
+                "/v1/content/project-docs/reindex",
+            )
+            sources_status, sources_raw = await _request(
+                runtime_app.app,
+                "GET",
+                "/v1/content/sources",
+            )
+            status_status, status_raw = await _request(
+                runtime_app.app,
+                "GET",
+                "/v1/content/status",
+            )
+            return (
+                ingest_status,
+                json.loads(ingest_raw),
+                reindex_status,
+                json.loads(reindex_raw),
+                sources_status,
+                json.loads(sources_raw),
+                status_status,
+                json.loads(status_raw),
+            )
+        finally:
+            await runtime_app.dispose()
+
+    (
+        ingest_status,
+        ingest,
+        reindex_status,
+        reindex,
+        sources_status,
+        sources,
+        status_status,
+        content_status,
+    ) = asyncio.run(scenario())
+
+    assert ingest_status == 403
+    assert ingest["error"]["code"] == "capability_denied"
+    assert reindex_status == 403
+    assert reindex["error"]["code"] == "capability_denied"
+    assert sources_status == 403
+    assert sources["error"]["code"] == "capability_denied"
+    assert status_status == 403
+    assert content_status["error"]["code"] == "capability_denied"
 
 
 def test_runtime_app_factory_registers_tool_react_loop() -> None:
@@ -432,22 +689,23 @@ def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
 
         await _truncate_runtime_app(database_url)
         settings = ConfigLoader(Path("config")).load("test")
+        structured_provider = FakeModelProvider(
+            structured_text_responses=[
+                json.dumps(
+                    {
+                        "action": "tool_call",
+                        "tool_name": "fake.echo",
+                        "arguments": {"message": "api"},
+                    },
+                ),
+                json.dumps({"action": "final_answer", "final_answer": "api"}),
+            ],
+        )
         runtime_app = create_runtime_app(
             database_url=database_url,
             settings=settings,
             providers={
-                "local_structured": FakeModelProvider(
-                    structured_text_responses=[
-                        json.dumps(
-                            {
-                                "action": "tool_call",
-                                "tool_name": "fake.echo",
-                                "arguments": {"message": "api"},
-                            },
-                        ),
-                        json.dumps({"action": "final_answer", "final_answer": "api"}),
-                    ],
-                ),
+                "local_structured": structured_provider,
                 "local_embedding": FakeEmbeddingProvider(),
             },
         )
@@ -468,9 +726,7 @@ def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
                     "client_message_id": "client-factory-api-tool-loop",
                     "content": "use fake echo",
                     "sensitivity": "project",
-                    "model_profile": "local_structured",
                     "loop_strategy": LoopStrategyName.TOOL_REACT_LOOP.value,
-                    "permission_mode": "developer_local",
                 },
             )
             submitted = json.loads(message_raw)
@@ -486,13 +742,17 @@ def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
                 _sse_events(stream_raw),
                 _sse_event_payloads(stream_raw),
                 [event.event_type for event in events],
+                structured_provider.structured_calls,
             )
         finally:
             await runtime_app.dispose()
 
-    status_code, stream_events, stream_payloads, event_types = asyncio.run(scenario())
+    status_code, stream_events, stream_payloads, event_types, structured_calls = asyncio.run(
+        scenario(),
+    )
 
     assert status_code == 202
     assert stream_events[-1] == "request.processing.completed"
     assert stream_payloads[-1][1]["event_id"]
     assert EventType.TOOL_CALL_COMPLETED in event_types
+    assert structured_calls == 2

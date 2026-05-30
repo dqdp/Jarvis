@@ -24,8 +24,9 @@ from assistant_core.domain.conversations import (
     UpdateAssistantRequestStatusCommand,
 )
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
+from assistant_core.domain.loops import LoopStrategyName
 from assistant_core.domain.memory import ArchiveMemoryCommand, CreateMemoryCommand, MemoryType
-from assistant_core.domain.policy import PermissionMode
+from assistant_core.domain.policy import Capability, CapabilityPolicyRequest, RiskClass
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.ports.conversation_store import (
@@ -52,7 +53,6 @@ class MessageCreateBody(_StrictBody):
     sensitivity: Sensitivity = Sensitivity.PERSONAL
     model_profile: str | None = Field(default=None, min_length=1)
     loop_strategy: str | None = Field(default=None, min_length=1)
-    permission_mode: PermissionMode | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -80,6 +80,9 @@ def create_app(
     runtime=None,
     event_log=None,
     approval_store=None,
+    inference_health=None,
+    content_ingestion=None,
+    policy=None,
     lifespan=None,
 ) -> FastAPI:
     app = FastAPI(title="Jarvis Assistant Core", version="0.0.0", lifespan=lifespan)
@@ -94,6 +97,7 @@ def create_app(
         if runtime is not None and event_log is not None
         else None
     )
+    app.state.request_execution_manager = execution_manager
 
     @app.exception_handler(ClientMessageIdConflict)
     async def _client_message_conflict(_request: Request, exc: ClientMessageIdConflict):
@@ -139,6 +143,7 @@ def create_app(
             conversation_store,
             memory_store,
             content_store=content_store,
+            inference_health=inference_health,
         )
         return _json_response(200 if payload["status"] == "ready" else 503, payload)
 
@@ -178,7 +183,7 @@ def create_app(
                 content=body.content,
                 sensitivity=body.sensitivity,
                 metadata=body.metadata,
-                request_metadata=_runtime_request_metadata(body),
+                request_metadata=_runtime_request_metadata(body, settings),
             ),
         )
         if execution_manager is not None:
@@ -329,6 +334,70 @@ def create_app(
     async def get_runtime_status():
         return _runtime_status_payload(settings)
 
+    @app.post("/v1/content/project-docs/ingest")
+    async def post_content_project_docs_ingest():
+        if content_ingestion is None:
+            return _error_response(404, "not_found", "content ingestion is not configured")
+        denied = await _authorize_content_operation(
+            policy,
+            settings=settings,
+            capability=Capability.CONTENT_INGEST,
+            operation="project_docs_ingest",
+        )
+        if denied is not None:
+            return denied
+        result = await content_ingestion.ingest()
+        return _content_ingestion_payload(result)
+
+    @app.post("/v1/content/project-docs/reindex")
+    async def post_content_project_docs_reindex():
+        if content_ingestion is None:
+            return _error_response(404, "not_found", "content ingestion is not configured")
+        denied = await _authorize_content_operation(
+            policy,
+            settings=settings,
+            capability=Capability.CONTENT_INDEX,
+            operation="project_docs_reindex",
+        )
+        if denied is not None:
+            return denied
+        result = await content_ingestion.ingest()
+        return _content_ingestion_payload(result)
+
+    @app.get("/v1/content/sources")
+    async def get_content_sources():
+        if content_store is None:
+            return _error_response(404, "not_found", "content store is not configured")
+        denied = await _authorize_content_operation(
+            policy,
+            settings=settings,
+            capability=Capability.CONTENT_RETRIEVE,
+            operation="content_sources",
+        )
+        if denied is not None:
+            return denied
+        sources = await content_store.list_sources()
+        return {"sources": [_content_source_payload(source) for source in sources]}
+
+    @app.get("/v1/content/status")
+    async def get_content_status():
+        if content_store is None:
+            return _error_response(404, "not_found", "content store is not configured")
+        denied = await _authorize_content_operation(
+            policy,
+            settings=settings,
+            capability=Capability.CONTENT_RETRIEVE,
+            operation="content_status",
+        )
+        if denied is not None:
+            return denied
+        sources = await content_store.list_sources()
+        chunks = await content_store.list_chunks()
+        return {
+            "sources": _content_status_summary(sources),
+            "chunks": _content_status_summary(chunks),
+        }
+
     return app
 
 
@@ -343,15 +412,54 @@ async def _archive_memory(memory_store, *, memory_id: str, reason: str):
     return _memory_lifecycle_payload(memory)
 
 
-def _runtime_request_metadata(body: MessageCreateBody) -> dict[str, str]:
-    metadata: dict[str, str] = {}
-    if body.model_profile is not None:
-        metadata["model_profile"] = body.model_profile
-    if body.loop_strategy is not None:
-        metadata["loop_strategy"] = body.loop_strategy
-    if body.permission_mode is not None:
-        metadata["permission_mode"] = body.permission_mode.value
-    return metadata
+def _runtime_request_metadata(body: MessageCreateBody, settings: Settings) -> dict[str, str]:
+    loop_strategy = _resolve_loop_strategy(body.loop_strategy, settings)
+    return {
+        "loop_strategy": loop_strategy.value,
+        "model_profile": _resolve_model_profile(body.model_profile, loop_strategy, settings),
+    }
+
+
+def _resolve_loop_strategy(
+    requested: str | None,
+    settings: Settings,
+) -> LoopStrategyName:
+    value = requested or LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value
+    try:
+        loop_strategy = LoopStrategyName(value)
+    except ValueError as exc:
+        raise ValueError("loop strategy is not configured") from exc
+    if loop_strategy.value not in settings.runtime_budgets:
+        raise ValueError("loop strategy is not configured")
+    if loop_strategy is LoopStrategyName.TOOL_REACT_LOOP and not settings.policy.tools_enabled:
+        raise ValueError("tool loop is disabled by policy")
+    return loop_strategy
+
+
+def _resolve_model_profile(
+    requested: str | None,
+    loop_strategy: LoopStrategyName,
+    settings: Settings,
+) -> str:
+    profile_name = requested or _default_model_profile(loop_strategy)
+    profile = settings.model_profiles.get(profile_name)
+    if profile is None or not profile.enabled or profile.cloud:
+        raise ValueError("model profile is not available for this request")
+    if profile.purpose != _required_model_profile_purpose(loop_strategy):
+        raise ValueError("model profile purpose is not valid for loop strategy")
+    return profile_name
+
+
+def _default_model_profile(loop_strategy: LoopStrategyName) -> str:
+    if loop_strategy is LoopStrategyName.TOOL_REACT_LOOP:
+        return "local_structured"
+    return "local_main"
+
+
+def _required_model_profile_purpose(loop_strategy: LoopStrategyName) -> str:
+    if loop_strategy is LoopStrategyName.TOOL_REACT_LOOP:
+        return "structured"
+    return "chat"
 
 
 class _RequestExecutionManager:
@@ -372,6 +480,7 @@ class _RequestExecutionManager:
         self._tasks: dict[str, asyncio.Task] = {}
         self._events: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         self._conditions: dict[str, asyncio.Condition] = {}
+        self._active_streams: dict[str, int] = {}
         self._lock: asyncio.Lock | None = None
 
     async def start(self, request_record) -> None:
@@ -409,22 +518,23 @@ class _RequestExecutionManager:
         cancelled = await self._mark_cancelled(request_record)
         return cancelled
 
+    async def shutdown(self) -> None:
+        tasks = [task for task in self._tasks.values() if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+        self._events.clear()
+        self._conditions.clear()
+        self._active_streams.clear()
+
     async def stream(self, request_id: str):
+        self._active_streams[request_id] = self._active_streams.get(request_id, 0) + 1
         index = 0
         heartbeat_seconds = max(0.001, float(self._settings.api.sse_heartbeat_seconds))
-        while True:
-            buffered = self._events.get(request_id, [])
-            while index < len(buffered):
-                event_type, data = buffered[index]
-                index += 1
-                yield _sse(event_type, data)
-                if event_type in _TERMINAL_EVENT_TYPES:
-                    return
-
-            request_record = await self._conversation_store.get_assistant_request(request_id)
-            if request_record is None:
-                raise KeyError("request not found")
-            if request_record.status in _TERMINAL_REQUEST_STATUSES:
+        try:
+            while True:
                 buffered = self._events.get(request_id, [])
                 while index < len(buffered):
                     event_type, data = buffered[index]
@@ -432,45 +542,82 @@ class _RequestExecutionManager:
                     yield _sse(event_type, data)
                     if event_type in _TERMINAL_EVENT_TYPES:
                         return
-                if index == 0:
-                    async for item in _event_log_stream(self._event_log, request_record):
-                        yield item
-                elif not _has_terminal_event(buffered[:index]):
-                    yield await _terminal_sse_from_log(self._event_log, request_record)
-                return
+                request_record = await self._conversation_store.get_assistant_request(request_id)
+                if request_record is None:
+                    raise KeyError("request not found")
+                if request_record.status in _TERMINAL_REQUEST_STATUSES:
+                    buffered = self._events.get(request_id, [])
+                    while index < len(buffered):
+                        event_type, data = buffered[index]
+                        index += 1
+                        yield _sse(event_type, data)
+                        if event_type in _TERMINAL_EVENT_TYPES:
+                            return
+                    if index == 0:
+                        async for item in _event_log_stream(self._event_log, request_record):
+                            yield item
+                    elif not _has_terminal_event(buffered[:index]):
+                        yield await _terminal_sse_from_log(self._event_log, request_record)
+                    return
 
-            task = self._tasks.get(request_id)
-            if (
-                task is None or task.done()
-            ) and request_record.status in {
-                RequestStatus.ACCEPTED,
-                RequestStatus.RUNNING,
-            } and _request_execution_age_seconds(request_record) >= float(
-                self._settings.api.request_timeout_seconds,
-            ):
-                error_code = (
-                    "orphaned_running_request"
-                    if request_record.status == RequestStatus.RUNNING
-                    else "orphaned_accepted_request"
-                )
-                failed = await self._mark_failed(
-                    request_record,
-                    code=error_code,
-                    message="request execution task is not active",
-                )
-                yield _terminal_sse(failed)
-                return
+                task = self._tasks.get(request_id)
+                if (
+                    task is None or task.done()
+                ) and request_record.status in {
+                    RequestStatus.ACCEPTED,
+                    RequestStatus.RUNNING,
+                    RequestStatus.WAITING_APPROVAL,
+                } and _request_execution_age_seconds(request_record) >= float(
+                    self._settings.api.request_timeout_seconds,
+                ):
+                    error_code = _orphaned_request_error_code(request_record.status)
+                    if (
+                        request_record.status == RequestStatus.WAITING_APPROVAL
+                        and self._approval_store is not None
+                    ):
+                        await self._approval_store.cancel_pending_for_request(
+                            request_record.request_id,
+                            actor_id=self._settings.app.default_user_id,
+                            reason="request execution task is not active",
+                        )
+                    failed = await self._mark_failed(
+                        request_record,
+                        code=error_code,
+                        message="request execution task is not active",
+                    )
+                    yield _terminal_sse(failed)
+                    return
 
-            condition = self._condition(request_id)
-            wait_seconds = heartbeat_seconds
-            task = self._tasks.get(request_id)
-            if task is None or task.done():
-                wait_seconds = min(heartbeat_seconds, 0.05)
-            try:
-                async with condition:
-                    await asyncio.wait_for(condition.wait(), timeout=wait_seconds)
-            except TimeoutError:
-                yield _sse("heartbeat", {"request_id": request_id})
+                condition = self._condition(request_id)
+                wait_seconds = heartbeat_seconds
+                task = self._tasks.get(request_id)
+                if task is None or task.done():
+                    wait_seconds = min(heartbeat_seconds, 0.05)
+                try:
+                    async with condition:
+                        await asyncio.wait_for(condition.wait(), timeout=wait_seconds)
+                except TimeoutError:
+                    yield _sse("heartbeat", {"request_id": request_id})
+        finally:
+            active_count = self._active_streams.get(request_id, 0) - 1
+            if active_count > 0:
+                self._active_streams[request_id] = active_count
+            else:
+                self._active_streams.pop(request_id, None)
+            await self._cleanup_terminal_state(request_id)
+
+    async def _cleanup_terminal_state(self, request_id: str) -> None:
+        if self._active_streams.get(request_id, 0) > 0:
+            return
+        request_record = await self._conversation_store.get_assistant_request(request_id)
+        if request_record is None or request_record.status not in _TERMINAL_REQUEST_STATUSES:
+            return
+        task = self._tasks.get(request_id)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            return
+        self._tasks.pop(request_id, None)
+        self._events.pop(request_id, None)
+        self._conditions.pop(request_id, None)
 
     async def _execute_request(self, request_id: str) -> None:
         request_record = await self._conversation_store.get_assistant_request(request_id)
@@ -505,6 +652,8 @@ class _RequestExecutionManager:
                     code="background_task_failed",
                     message="request failed in background execution",
                 )
+        finally:
+            await self._cleanup_terminal_state(command.request_id)
 
     async def _runtime_command(self, request_record):
         from assistant_core.runtime.agent_runtime import RuntimeTurnCommand
@@ -528,7 +677,7 @@ class _RequestExecutionManager:
             current_message_sensitivity=user_message.sensitivity,
             model_profile=request_record.metadata.get("model_profile", "local_main"),
             loop_strategy=request_record.metadata.get("loop_strategy", "memory_augmented_answer"),
-            permission_mode=request_record.metadata.get("permission_mode"),
+            permission_mode=self._settings.permissions.mode,
         )
 
     async def _mark_cancelled(self, request_record):
@@ -616,6 +765,8 @@ class _RequestExecutionManager:
         condition = self._condition(request_id)
         async with condition:
             condition.notify_all()
+        if event_type in _TERMINAL_EVENT_TYPES:
+            await self._cleanup_terminal_state(request_id)
 
     def _condition(self, request_id: str) -> asyncio.Condition:
         condition = self._conditions.get(request_id)
@@ -640,6 +791,14 @@ _TERMINAL_EVENT_TYPES = {
     EventType.REQUEST_PROCESSING_FAILED.value,
     EventType.REQUEST_PROCESSING_CANCELLED.value,
 }
+
+
+def _orphaned_request_error_code(status: RequestStatus) -> str:
+    if status == RequestStatus.RUNNING:
+        return "orphaned_running_request"
+    if status == RequestStatus.WAITING_APPROVAL:
+        return "orphaned_waiting_approval_request"
+    return "orphaned_accepted_request"
 _STREAM_REPLAY_EVENT_TYPES = {
     EventType.REQUEST_PROCESSING_STARTED.value,
     EventType.CONTEXT_ASSEMBLY_STARTED.value,
@@ -740,32 +899,65 @@ def _validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-async def _health_payload(conversation_store, memory_store, *, content_store=None) -> dict[str, Any]:
-    checks = {
-        "conversation_store": await _component_health(conversation_store),
-        "memory_store": await _component_health(memory_store),
-    }
-    if content_store is not None:
-        checks["content_store"] = await _component_health(content_store)
+async def _health_payload(
+    conversation_store,
+    memory_store,
+    *,
+    content_store=None,
+    inference_health=None,
+) -> dict[str, Any]:
+    checks: dict[str, str] = {}
+    reasons: dict[str, str] = {}
+    for name, component in (
+        ("conversation_store", conversation_store),
+        ("memory_store", memory_store),
+        ("content_store", content_store),
+        ("inference", inference_health),
+    ):
+        if component is None:
+            continue
+        status, reason = await _component_health(component)
+        checks[name] = status
+        if reason:
+            reasons[name] = reason
     ready = all(value == "ok" for value in checks.values())
     return {
         "status": "ready" if ready else "not_ready",
         "liveness": {"status": "ok"},
-        "readiness": {"status": "ok" if ready else "failed", "checks": checks},
+        "readiness": {
+            "status": "ok" if ready else "failed",
+            "checks": checks,
+            "reasons": reasons,
+        },
     }
 
 
-async def _component_health(component) -> str:
+async def _component_health(component) -> tuple[str, str | None]:
+    health_status = getattr(component, "health_status", None)
+    if health_status is not None:
+        try:
+            result = health_status()
+            if hasattr(result, "__await__"):
+                result = await result
+        except Exception as exc:
+            return "failed", type(exc).__name__
+        if isinstance(result, dict):
+            status = result.get("status")
+            reason = result.get("reason")
+            if status in {"ok", "ready"}:
+                return "ok", None
+            return "failed", str(reason) if reason else None
+
     health_check = getattr(component, "health_check", None)
     if health_check is None:
-        return "ok"
+        return "ok", None
     try:
         result = health_check()
         if hasattr(result, "__await__"):
             result = await result
-    except Exception:
-        return "failed"
-    return "ok" if result else "failed"
+    except Exception as exc:
+        return "failed", type(exc).__name__
+    return ("ok", None) if result else ("failed", "health check returned false")
 
 
 async def _event_log_stream(event_log, request_record):
@@ -1059,6 +1251,79 @@ def _memory_lifecycle_payload(memory) -> dict[str, Any]:
         "archived_at": memory.archived_at,
         "archive_reason": memory.archive_reason,
     }
+
+
+def _content_ingestion_payload(result) -> dict[str, Any]:
+    return {
+        "seen_sources": result.seen_sources,
+        "created_sources": result.created_sources,
+        "updated_sources": result.updated_sources,
+        "deleted_sources": result.deleted_sources,
+        "created_chunks": result.created_chunks,
+        "stale_chunks": result.stale_chunks,
+        "deleted_chunks": result.deleted_chunks,
+    }
+
+
+async def _authorize_content_operation(
+    policy,
+    *,
+    settings: Settings,
+    capability: Capability,
+    operation: str,
+) -> JSONResponse | None:
+    if policy is None:
+        return _error_response(
+            503,
+            "policy_not_configured",
+            "policy engine is required for content operations",
+        )
+    decision = await policy.evaluate_capability_request(
+        CapabilityPolicyRequest(
+            capability=capability,
+            risk_classes=frozenset({RiskClass.READ_ONLY}),
+            sensitivity=Sensitivity.PROJECT,
+            permission_mode=settings.permissions.mode,
+            user_id=settings.app.default_user_id,
+            project_namespace="project.personal_assistant",
+            redacted_payload={"operation": operation},
+        ),
+    )
+    if decision.allowed:
+        return None
+    return _error_response(
+        403,
+        decision.code,
+        decision.reason,
+        details={
+            "capability": capability.value,
+            "outcome": str(decision.outcome.value if hasattr(decision.outcome, "value") else decision.outcome),
+        },
+    )
+
+
+def _content_source_payload(source) -> dict[str, Any]:
+    return {
+        "source_id": source.source_id,
+        "source_type": source.source_type.value,
+        "path": source.path.as_posix(),
+        "uri": source.uri,
+        "title": source.title,
+        "content_hash": source.content_hash,
+        "status": source.status.value,
+        "sensitivity": source.sensitivity.value,
+        "last_seen_at": source.last_seen_at,
+        "indexed_at": source.indexed_at,
+        "metadata": source.metadata,
+    }
+
+
+def _content_status_summary(records) -> dict[str, Any]:
+    by_status: dict[str, int] = {}
+    for record in records:
+        status = record.status.value
+        by_status[status] = by_status.get(status, 0) + 1
+    return {"total": len(records), "by_status": by_status}
 
 
 def _runtime_status_payload(settings: Settings) -> dict[str, Any]:

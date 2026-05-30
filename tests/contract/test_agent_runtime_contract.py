@@ -20,6 +20,7 @@ from assistant_core.domain.conversations import (
 )
 from assistant_core.domain.events import EventType
 from assistant_core.domain.loops import LoopExecutionResult, LoopStatus, LoopStrategyName
+from assistant_core.domain.loops import LoopStreamEvent
 from assistant_core.domain.memory import MemoryQuery
 from assistant_core.domain.messages import ChatMessage, MessageRole, TextPart
 from assistant_core.domain.models import ChatModelResponse
@@ -55,6 +56,7 @@ async def _truncate_runtime(database_url: str) -> None:
     engine = create_database_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(text("set local jarvis.allow_events_truncate = 'on'"))
             await connection.execute(
                 text(
                     "truncate table content_embeddings, content_chunks, content_sources, "
@@ -132,6 +134,10 @@ class RecordingDelegatedStrategy:
             context_manifest_refs=("manifest-1",),
             degraded=False,
         )
+
+    async def stream_turn(self, request):
+        self.requests.append(request)
+        yield LoopStreamEvent("token", {"delta": "delegated"})
 
 
 class RecordingDelegatedRegistry:
@@ -402,6 +408,44 @@ def test_agent_runtime_delegates_to_strategy_registry() -> None:
     result, registry, strategy = asyncio.run(scenario())
 
     assert result.response_text == "delegated answer"
+    assert registry.selected_names == [LoopStrategyName.MEMORY_AUGMENTED_ANSWER]
+    assert strategy.requests[0].budget.max_tool_calls == 0
+    assert strategy.requests[0].permission_mode == PermissionMode.LOCKED_DOWN
+
+
+def test_agent_runtime_stream_uses_same_strategy_request_shape() -> None:
+    async def scenario():
+        strategy = RecordingDelegatedStrategy()
+        registry = RecordingDelegatedRegistry(strategy)
+        runtime = AgentRuntime(
+            conversation_store=object(),
+            context_assembler=object(),
+            model_router=object(),
+            event_log=InMemoryEventLog(),
+            settings=ConfigLoader(Path("config")).load("test"),
+            loop_strategy_registry=registry,
+        )
+        emitted = [
+            event
+            async for event in runtime.stream_turn(
+                RuntimeTurnCommand(
+                    request_id="request-1",
+                    conversation_id="conversation-1",
+                    user_message_id="message-1",
+                    user_id="user-1",
+                    user_input="hello",
+                    active_project_namespace="project.personal_assistant",
+                    permission_mode=PermissionMode.LOCKED_DOWN,
+                ),
+            )
+        ]
+        return emitted, registry, strategy
+
+    emitted, registry, strategy = asyncio.run(scenario())
+
+    assert [(event.event_type, event.data) for event in emitted] == [
+        ("token", {"delta": "delegated"}),
+    ]
     assert registry.selected_names == [LoopStrategyName.MEMORY_AUGMENTED_ANSWER]
     assert strategy.requests[0].budget.max_tool_calls == 0
     assert strategy.requests[0].permission_mode == PermissionMode.LOCKED_DOWN

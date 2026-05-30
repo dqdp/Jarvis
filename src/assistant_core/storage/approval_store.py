@@ -20,6 +20,7 @@ from assistant_core.domain.approvals import (
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
 from assistant_core.domain.policy import Capability, RiskClass
 from assistant_core.domain.sensitivity import Sensitivity
+from assistant_core.ports.event_log import redact_sensitive_text
 from assistant_core.ports.event_log import EventLogPort
 
 
@@ -287,7 +288,7 @@ def _approval_values(approval: ApprovalRequest) -> dict[str, Any]:
         "redacted_payload": approval.redacted_payload,
         "requested_by": approval.requested_by,
         "decision_actor_id": approval.decision_actor_id,
-        "decision_reason": approval.decision_reason,
+        "decision_reason": redact_sensitive_text(approval.decision_reason),
         "created_at": approval.created_at,
         "updated_at": datetime.now(UTC),
         "expires_at": approval.expires_at,

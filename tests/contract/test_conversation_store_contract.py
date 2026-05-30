@@ -53,6 +53,7 @@ async def _truncate_storage(database_url: str) -> None:
     engine = create_database_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(text("set local jarvis.allow_events_truncate = 'on'"))
             await connection.execute(
                 text(
                     "truncate table assistant_requests, messages, conversations, events "
@@ -646,6 +647,18 @@ def test_request_status_transitions(store) -> None:
                 status=RequestStatus.RUNNING,
             ),
         )
+        waiting_approval = await store.update_assistant_request_status(
+            UpdateAssistantRequestStatusCommand(
+                request_id=request.request.request_id,
+                status=RequestStatus.WAITING_APPROVAL,
+            ),
+        )
+        resumed = await store.update_assistant_request_status(
+            UpdateAssistantRequestStatusCommand(
+                request_id=request.request.request_id,
+                status=RequestStatus.RUNNING,
+            ),
+        )
         assistant_message = await store.append_message(
             AppendMessageCommand(
                 message_id=_id("msg-completed"),
@@ -670,12 +683,16 @@ def test_request_status_transitions(store) -> None:
                     status=RequestStatus.RUNNING,
                 ),
             )
-        return running, completed
+        return running, waiting_approval, resumed, completed
 
-    running, completed = asyncio.run(scenario())
+    running, waiting_approval, resumed, completed = asyncio.run(scenario())
 
     assert running.status == RequestStatus.RUNNING
     assert running.started_at is not None
+    assert waiting_approval.status == RequestStatus.WAITING_APPROVAL
+    assert waiting_approval.started_at == running.started_at
+    assert resumed.status == RequestStatus.RUNNING
+    assert resumed.started_at == running.started_at
     assert completed.status == RequestStatus.COMPLETED
     assert completed.completed_at is not None
 

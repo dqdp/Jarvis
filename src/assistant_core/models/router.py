@@ -63,6 +63,35 @@ class ModelRouter:
         self._providers = providers
         self._event_log = event_log
 
+    async def health_status(self) -> dict[str, str]:
+        required_profiles = [
+            name
+            for name, profile in self._settings.model_profiles.items()
+            if profile.enabled and not profile.cloud
+        ]
+        missing_profiles = [
+            profile_name
+            for profile_name in required_profiles
+            if not self._has_provider_for_profile(profile_name)
+        ]
+        if missing_profiles:
+            return {
+                "status": "failed",
+                "reason": f"missing providers: {', '.join(sorted(missing_profiles))}",
+            }
+        unhealthy_profiles: list[str] = []
+        for profile_name in required_profiles:
+            profile = self._settings.model_profiles[profile_name]
+            provider = self._provider(profile.provider, profile_name=profile_name)
+            if not await _provider_health(provider):
+                unhealthy_profiles.append(profile_name)
+        if unhealthy_profiles:
+            return {
+                "status": "failed",
+                "reason": f"unhealthy providers: {', '.join(sorted(unhealthy_profiles))}",
+            }
+        return {"status": "ok"}
+
     async def chat(self, request: ChatModelRequest) -> ChatModelResponse:
         profile = self._profile(request.profile)
         await self._authorize(profile, request.sensitivity, request.request_id, request.conversation_id)
@@ -215,6 +244,10 @@ class ModelRouter:
         if provider is None:
             raise ModelProviderError(f"provider is not registered: {name}")
         return provider
+
+    def _has_provider_for_profile(self, profile_name: str) -> bool:
+        profile = self._settings.model_profiles[profile_name]
+        return profile_name in self._providers or profile.provider in self._providers
 
     async def _authorize(
         self,
@@ -415,3 +448,28 @@ def _profile_name(settings: Settings, profile: ModelProfileConfig) -> str:
         if candidate is profile:
             return name
     raise ModelProviderError("model profile is not registered in settings")
+
+
+async def _provider_health(provider: object) -> bool:
+    health_status = getattr(provider, "health_status", None)
+    if health_status is not None:
+        try:
+            result = health_status()
+            if hasattr(result, "__await__"):
+                result = await result
+        except Exception:
+            return False
+        if isinstance(result, dict):
+            return result.get("status") in {"ok", "ready"}
+        return bool(result)
+
+    health_check = getattr(provider, "health_check", None)
+    if health_check is None:
+        return True
+    try:
+        result = health_check()
+        if hasattr(result, "__await__"):
+            result = await result
+    except Exception:
+        return False
+    return bool(result)

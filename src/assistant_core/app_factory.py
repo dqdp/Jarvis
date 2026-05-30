@@ -10,6 +10,11 @@ from fastapi import FastAPI
 
 from assistant_core.api.app import create_app
 from assistant_core.config.settings import ConfigLoader, Settings
+from assistant_core.content_retrieval.project_docs import (
+    MarkdownChunker,
+    ProjectDocsIngestionService,
+    ProjectDocsSourceScanner,
+)
 from assistant_core.context_assembly.deterministic import DeterministicContextAssembler
 from assistant_core.models.embedding_port import ModelRouterEmbeddingPort
 from assistant_core.models.local_openai import (
@@ -55,6 +60,7 @@ class RuntimeApplication:
     runtime: AgentRuntime
 
     async def dispose(self) -> None:
+        await _shutdown_request_execution_manager(self.app)
         await self.engine.dispose()
 
 
@@ -63,6 +69,7 @@ def create_runtime_app(
     database_url: str,
     settings: Settings,
     providers: dict[str, object] | None = None,
+    project_root: Path | None = None,
     run_database_migrations: bool = False,
 ) -> RuntimeApplication:
     if run_database_migrations:
@@ -91,6 +98,12 @@ def create_runtime_app(
         engine=engine,
         settings=settings,
         embedding_port=ModelRouterEmbeddingPort(router=router, profile="local_embedding"),
+    )
+    content_project_root = (project_root or Path(os.environ.get("JARVIS_PROJECT_ROOT", "."))).resolve()
+    content_ingestion = ProjectDocsIngestionService(
+        store=content_store,
+        scanner=ProjectDocsSourceScanner(project_root=content_project_root),
+        chunker=MarkdownChunker(),
     )
     context_assembler = DeterministicContextAssembler(
         conversation_store=conversation_store,
@@ -147,6 +160,7 @@ def create_runtime_app(
         try:
             yield
         finally:
+            await _shutdown_request_execution_manager(_app)
             await engine.dispose()
 
     app = create_app(
@@ -157,12 +171,22 @@ def create_runtime_app(
         runtime=runtime,
         event_log=event_log,
         approval_store=approval_store,
+        inference_health=router,
+        content_ingestion=content_ingestion,
+        policy=policy,
         lifespan=lifespan,
     )
     runtime_app = RuntimeApplication(app=app, engine=engine, settings=settings, runtime=runtime)
     app.state.runtime_application = runtime_app
 
     return runtime_app
+
+
+async def _shutdown_request_execution_manager(app: FastAPI) -> None:
+    manager = getattr(app.state, "request_execution_manager", None)
+    shutdown = getattr(manager, "shutdown", None)
+    if shutdown is not None:
+        await shutdown()
 
 
 def build_local_providers(

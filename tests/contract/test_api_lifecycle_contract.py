@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -47,6 +48,7 @@ async def _truncate_api(database_url: str) -> None:
     engine = create_database_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(text("set local jarvis.allow_events_truncate = 'on'"))
             await connection.execute(
                 text(
                     "truncate table content_embeddings, content_chunks, content_sources, "
@@ -395,42 +397,34 @@ def test_archive_memory_endpoint_archives_record(app_parts) -> None:
     assert "summary" not in payload
 
 
-def test_archive_memory_endpoint_does_not_disclose_secret_memory_content(app_parts) -> None:
+def test_archive_memory_endpoint_never_discloses_memory_content(app_parts) -> None:
     async def scenario():
-        async with app_parts.state.engine.begin() as connection:
-            await connection.execute(
-                text(
-                    """
-                    insert into memories (
-                      memory_id, namespace, memory_type, content, summary,
-                      content_hash, sensitivity, confidence, importance,
-                      status, indexing_status, source_event_ids, supersedes_memory_ids,
-                      revision, created_at, updated_at, metadata
-                    )
-                    values (
-                      '11111111-1111-1111-1111-111111111111',
-                      'project.personal_assistant', 'fact',
-                      'secret archive payload', 'secret summary', 'sha256:secret',
-                      'secret', 1, 1, 'active', 'embedding_pending',
-                      '{}', '{}', 1, now(), now(), '{}'
-                    )
-                    """,
-                ),
-            )
+        _, memory = await _request(
+            app_parts,
+            "POST",
+            "/v1/memories",
+            {
+                "namespace": "project.personal_assistant",
+                "memory_type": "fact",
+                "content": "private archive payload",
+                "summary": "private summary",
+                "sensitivity": "project",
+            },
+        )
         return await _request(
             app_parts,
             "POST",
-            "/v1/memories/11111111-1111-1111-1111-111111111111/archive",
+            f"/v1/memories/{memory['memory_id']}/archive",
         )
 
     status, payload = asyncio.run(scenario())
 
     assert status == 200
-    assert payload["memory_id"] == "11111111-1111-1111-1111-111111111111"
     assert payload["status"] == "archived"
     assert "content" not in payload
     assert "summary" not in payload
-    assert "secret archive payload" not in json.dumps(payload)
+    assert "private archive payload" not in json.dumps(payload)
+    assert "private summary" not in json.dumps(payload)
 
 
 def test_get_runtime_status_exposes_active_local_profile(app_parts) -> None:
@@ -571,6 +565,132 @@ def test_post_message_rejects_extra_fields(app_parts) -> None:
     assert status == 400
     assert payload["error"]["code"] == "invalid_request"
     assert payload["error"]["details"]["errors"][0]["type"] == "extra_forbidden"
+
+
+def test_post_message_rejects_client_permission_mode(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        return await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-permission-mode",
+                "content": "hello",
+                "sensitivity": "project",
+                "permission_mode": "developer_local",
+            },
+        )
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 400
+    assert payload["error"]["code"] == "invalid_request"
+    assert payload["error"]["details"]["errors"][0]["type"] == "extra_forbidden"
+
+
+def test_post_message_rejects_unknown_loop_strategy(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        return await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-unknown-loop",
+                "content": "hello",
+                "sensitivity": "project",
+                "loop_strategy": "unsafe_loop",
+            },
+        )
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 400
+    assert payload["error"]["code"] == "invalid_request"
+    assert payload["error"]["message"] == "loop strategy is not configured"
+
+
+def test_post_message_rejects_tool_loop_when_tools_disabled(app_parts) -> None:
+    async def scenario():
+        settings = ConfigLoader(Path("config")).load("test")
+        disabled_settings = replace(
+            settings,
+            policy=replace(settings.policy, tools_enabled=False),
+        )
+        engine = app_parts.state.engine
+        app = create_app(
+            conversation_store=PostgresConversationStore(engine),
+            memory_store=PostgresMemoryStore(
+                engine=engine,
+                settings=disabled_settings,
+                policy=ConfigPolicyEngine(disabled_settings),
+                embedding_port=FakeEmbeddingProvider(),
+            ),
+            settings=disabled_settings,
+        )
+        conversation = await _create_conversation(app)
+        return await _request(
+            app,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-tools-disabled-loop",
+                "content": "hello",
+                "sensitivity": "project",
+                "loop_strategy": "tool_react_loop",
+            },
+        )
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 400
+    assert payload["error"]["code"] == "invalid_request"
+    assert payload["error"]["message"] == "tool loop is disabled by policy"
+
+
+def test_post_message_rejects_unauthorized_model_profile(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        return await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-cloud-model",
+                "content": "hello",
+                "sensitivity": "project",
+                "model_profile": "cloud_reasoning",
+            },
+        )
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 400
+    assert payload["error"]["code"] == "invalid_request"
+    assert payload["error"]["message"] == "model profile is not available for this request"
+
+
+def test_post_message_rejects_model_profile_with_wrong_purpose(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        return await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-embedding-model",
+                "content": "hello",
+                "sensitivity": "project",
+                "model_profile": "local_embedding",
+            },
+        )
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 400
+    assert payload["error"]["code"] == "invalid_request"
+    assert payload["error"]["message"] == "model profile purpose is not valid for loop strategy"
 
 
 def test_validation_error_does_not_echo_raw_secret_input(app_parts) -> None:

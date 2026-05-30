@@ -57,9 +57,22 @@ def test_sensitivity_enum_values() -> None:
 
 def test_request_status_transitions() -> None:
     assert RequestStatus.CANCELLED.value == "cancelled"
+    assert RequestStatus.WAITING_APPROVAL.value == "waiting_approval"
     assert is_request_status_transition_allowed(
         RequestStatus.ACCEPTED,
         RequestStatus.RUNNING,
+    )
+    assert is_request_status_transition_allowed(
+        RequestStatus.RUNNING,
+        RequestStatus.WAITING_APPROVAL,
+    )
+    assert is_request_status_transition_allowed(
+        RequestStatus.WAITING_APPROVAL,
+        RequestStatus.RUNNING,
+    )
+    assert is_request_status_transition_allowed(
+        RequestStatus.WAITING_APPROVAL,
+        RequestStatus.FAILED,
     )
     assert is_request_status_transition_allowed(
         RequestStatus.ACCEPTED,

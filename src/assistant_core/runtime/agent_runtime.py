@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from assistant_core.config.settings import Settings
 from assistant_core.domain.conversations import ConversationMessage
@@ -48,6 +49,12 @@ class RuntimeStreamEvent:
     data: dict
 
 
+@dataclass(frozen=True)
+class _LoopExecutionPlan:
+    request: LoopExecutionRequest
+    strategy: Any
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -72,9 +79,8 @@ class AgentRuntime:
         )
 
     async def run_turn(self, command: RuntimeTurnCommand) -> RuntimeTurnResult:
-        request = self._loop_execution_request(command)
-        strategy = self._loop_strategy_registry.get(request.strategy_name)
-        result = await strategy.run_turn(request)
+        plan = self._loop_execution_plan(command)
+        result = await plan.strategy.run_turn(plan.request)
         return RuntimeTurnResult(
             request_id=command.request_id,
             response_text=result.response_text,
@@ -84,10 +90,16 @@ class AgentRuntime:
         )
 
     async def stream_turn(self, command: RuntimeTurnCommand):
-        request = self._loop_execution_request(command)
-        strategy = self._loop_strategy_registry.get(request.strategy_name)
-        async for event in strategy.stream_turn(request):
+        plan = self._loop_execution_plan(command)
+        async for event in plan.strategy.stream_turn(plan.request):
             yield RuntimeStreamEvent(event.event_type, event.data)
+
+    def _loop_execution_plan(self, command: RuntimeTurnCommand) -> _LoopExecutionPlan:
+        request = self._loop_execution_request(command)
+        return _LoopExecutionPlan(
+            request=request,
+            strategy=self._loop_strategy_registry.get(request.strategy_name),
+        )
 
     def _loop_execution_request(self, command: RuntimeTurnCommand) -> LoopExecutionRequest:
         try:

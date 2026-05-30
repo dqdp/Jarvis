@@ -262,6 +262,25 @@ def test_profile_specific_provider_overrides_shared_provider(model_repo) -> None
     assert profile_provider.chat_calls == 1
 
 
+def test_model_router_health_uses_shared_provider_resolution(model_repo) -> None:
+    router = _router(model_repo)
+
+    assert asyncio.run(router.health_status()) == {"status": "ok"}
+
+
+def test_model_router_health_checks_provider_liveness(model_repo) -> None:
+    class UnhealthyProvider(FakeModelProvider):
+        async def health_check(self) -> bool:
+            return False
+
+    router = _router(model_repo, model_provider=UnhealthyProvider())
+
+    status = asyncio.run(router.health_status())
+
+    assert status["status"] == "failed"
+    assert "local_main" in status["reason"]
+
+
 def test_stream_chat_emits_normalized_tokens(model_repo) -> None:
     async def scenario():
         provider = FakeModelProvider(stream_tokens=["A", "B"])
