@@ -605,6 +605,42 @@ def test_cli_does_not_duplicate_selector_rules() -> None:
     assert offenders == []
 
 
+def test_cli_rendering_does_not_execute_tools() -> None:
+    _assert_no_import_prefixes(
+        [SRC_ROOT / "cli.py", *_python_files("cli_app")],
+        {
+            "assistant_core.tools",
+            "assistant_core.ports.tools",
+            "subprocess",
+            "asyncio.subprocess",
+        },
+    )
+
+
+def test_cli_approval_controls_call_api_not_toolgateway_directly() -> None:
+    _assert_no_import_prefixes(
+        [SRC_ROOT / "cli.py", *_python_files("cli_app")],
+        {
+            "assistant_core.approvals",
+            "assistant_core.ports.approvals",
+            "assistant_core.tools.approval_coordination",
+            "assistant_core.tools.gateway",
+        },
+    )
+
+
+def test_voice_readiness_surface_does_not_add_voice_dependencies() -> None:
+    forbidden_fragments = {"speech_recognition", "pyaudio", "sounddevice", "whisper", "tts"}
+    offenders: list[str] = []
+    for path in [SRC_ROOT / "cli.py", *_python_files("cli_app")]:
+        source = path.read_text(encoding="utf-8").lower()
+        for fragment in forbidden_fragments:
+            if fragment in source:
+                offenders.append(f"{path.relative_to(PROJECT_ROOT)} contains {fragment}")
+
+    assert offenders == []
+
+
 def test_tool_react_loop_uses_toolgateway_port_not_adapters() -> None:
     loop_path = SRC_ROOT / "runtime" / "loops" / "tool_react.py"
     assert loop_path.is_file()

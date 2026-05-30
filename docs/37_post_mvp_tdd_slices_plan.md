@@ -2594,11 +2594,15 @@ test_cli_plain_question_uses_memory_loop
 test_cli_project_docs_question_uses_rag_without_tool_loop
 test_cli_system_diagnostics_question_uses_tool_loop
 test_cli_project_shell_question_uses_tool_loop
+test_cli_auto_tool_intent_submits_caller_working_directory
+test_http_submit_message_sends_working_directory_when_provided
 test_cli_tool_intent_approval_flow_still_works
 test_cli_approval_prompt_can_approve_deny_and_cancel
 test_cli_cancel_active_request_keeps_interactive_session_usable
 test_cli_tool_flow_renders_action_approval_observation_without_raw_json_noise
 test_cli_tool_unavailable_message_is_clear_when_policy_denies
+test_request_stream_buffer_replays_public_tool_lifecycle_events_without_raw_output
+test_tool_react_loop_streams_public_tool_lifecycle_events
 ```
 
 Architecture tests:
@@ -2624,6 +2628,8 @@ Implementation:
 cli:
   render selected mode/loop/result in user-facing language
   render tool proposals, approval prompts and observations consistently
+  send caller working_directory with CLI chat submissions so backend policy can
+    authorize project shell and system diagnostics scope
   support approve/deny/cancel from the normal interactive flow
   make Ctrl-C and /cancel return to a usable prompt
   keep RAG answers citation-oriented and not tool-loop-looking
@@ -2638,6 +2644,7 @@ Acceptance:
 plain text CLI can automatically answer ordinary questions;
 plain text CLI can automatically retrieve Project Docs RAG citations;
 plain text CLI can automatically route live project/system inspection to tools;
+project/system tool routing has explicit caller scope from the CLI working directory;
 approval-required tool flow is understandable and controllable from CLI;
 cancel/interrupt does not break the session;
 tool flow output is not raw JSON-first;

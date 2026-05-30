@@ -36,6 +36,7 @@ from assistant_core.ports.model_router import ModelRouterPort
 from assistant_core.ports.tools import ToolGatewayPort
 from assistant_core.runtime.loops.tool_approval import ApprovalWaiter
 from assistant_core.runtime.loops.tool_proposal_executor import ToolProposalExecutor
+from assistant_core.runtime.request_streaming import public_stream_data
 
 
 TOOL_PROPOSAL_SCHEMA = {
@@ -266,13 +267,13 @@ class ToolReactLoop:
 
     async def stream_turn(self, request: LoopExecutionRequest):
         task = asyncio.create_task(self.run_turn(request))
-        seen_approval_events: set[str] = set()
+        seen_stream_events: set[str] = set()
         try:
             while not task.done():
-                async for event in self._approval_stream_events(request, seen_approval_events):
+                async for event in self._public_stream_events(request, seen_stream_events):
                     yield event
                 await asyncio.wait({task}, timeout=0.05)
-            async for event in self._approval_stream_events(request, seen_approval_events):
+            async for event in self._public_stream_events(request, seen_stream_events):
                 yield event
             result = await task
         except Exception:
@@ -323,25 +324,28 @@ class ToolReactLoop:
                 return event
         return None
 
-    async def _approval_stream_events(
+    async def _public_stream_events(
         self,
         request: LoopExecutionRequest,
         seen_event_ids: set[str],
     ):
         events = await self._event_log.query(EventFilter(request_id=request.request_id))
         for event in events:
-            if event.event_type not in _APPROVAL_STREAM_EVENT_TYPES:
+            if event.event_type not in _USER_STREAM_EVENT_TYPES:
                 continue
             if event.event_id in seen_event_ids:
                 continue
             seen_event_ids.add(event.event_id)
             yield LoopStreamEvent(
                 event.event_type.value,
-                {
-                    "request_id": request.request_id,
-                    "event_id": event.event_id,
-                    **event.payload,
-                },
+                public_stream_data(
+                    event.event_type.value,
+                    {
+                        "request_id": request.request_id,
+                        "event_id": event.event_id,
+                        **event.payload,
+                    },
+                ),
             )
 
     async def _complete(
@@ -534,12 +538,25 @@ def _wall_time_expired(deadline: float) -> bool:
     return asyncio.get_running_loop().time() >= deadline
 
 
-_APPROVAL_STREAM_EVENT_TYPES = {
+_USER_STREAM_EVENT_TYPES = {
     EventType.APPROVAL_REQUIRED,
     EventType.APPROVAL_GRANTED,
     EventType.APPROVAL_DENIED,
     EventType.APPROVAL_EXPIRED,
     EventType.APPROVAL_CANCELLED,
+    EventType.TOOL_SHELL_STARTED,
+    EventType.TOOL_SHELL_COMPLETED,
+    EventType.TOOL_SHELL_DENIED,
+    EventType.TOOL_SHELL_FAILED,
+    EventType.TOOL_SHELL_TIMEOUT,
+    EventType.TOOL_SHELL_OUTPUT_TRUNCATED,
+    EventType.TOOL_SYSTEM_DIAGNOSTICS_STARTED,
+    EventType.TOOL_SYSTEM_DIAGNOSTICS_COMPLETED,
+    EventType.TOOL_SYSTEM_DIAGNOSTICS_DENIED,
+    EventType.TOOL_SYSTEM_DIAGNOSTICS_FAILED,
+    EventType.TOOL_SYSTEM_DIAGNOSTICS_TIMEOUT,
+    EventType.TOOL_SYSTEM_DIAGNOSTICS_OUTPUT_TRUNCATED,
+    EventType.TOOL_SYSTEM_DIAGNOSTICS_UNAVAILABLE,
 }
 
 

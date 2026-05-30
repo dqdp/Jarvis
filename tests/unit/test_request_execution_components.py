@@ -136,6 +136,36 @@ def test_request_stream_buffer_filters_and_replays_public_events() -> None:
     assert "secret" not in events[1].data
 
 
+def test_request_stream_buffer_replays_public_tool_lifecycle_events_without_raw_output() -> None:
+    async def scenario():
+        buffer = RequestStreamBuffer()
+        published = await buffer.publish(
+            "request-1",
+            EventType.TOOL_SHELL_COMPLETED.value,
+            {
+                "tool_name": "tool.shell.read.project",
+                "argv": ["rg", "needle", "docs"],
+                "cwd": "/Users/alex/Jarvis",
+                "exit_code": 0,
+                "output_bytes": 42,
+                "stdout": "raw output must not stream",
+            },
+        )
+        return published, buffer.events_from("request-1", 0)
+
+    published, events = asyncio.run(scenario())
+
+    assert published is True
+    assert events[0].event_type == EventType.TOOL_SHELL_COMPLETED.value
+    assert events[0].data == {
+        "request_id": "request-1",
+        "tool_name": "tool.shell.read.project",
+        "argv": ["rg", "needle", "docs"],
+        "exit_code": 0,
+        "output_bytes": 42,
+    }
+
+
 def test_runtime_turn_command_builder_uses_request_metadata_and_user_message() -> None:
     async def scenario():
         settings = ConfigLoader("config").load("test")

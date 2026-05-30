@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-import json
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
 
@@ -12,11 +12,14 @@ from assistant_core.cli_app.client import CliUserError, JarvisClient
 from assistant_core.cli_app.config import DEFAULT_MEMORY_TYPE, LOOP_STRATEGY_CHOICES
 from assistant_core.cli_app.line_reader import create_interactive_line_reader
 from assistant_core.cli_app.renderers import (
+    is_tool_stream_event,
     write_conversation_list,
     write_interactive_help,
     write_memory_list,
     write_model_status,
+    write_request_error,
     write_status,
+    write_tool_stream_event,
 )
 from assistant_core.cli_app.utils import _display_text, _required_str
 
@@ -39,8 +42,10 @@ async def run_interactive_chat(
     sensitivity: str,
     title: str | None,
     loop_strategy: str | None = None,
+    working_directory: str | None = None,
 ) -> int:
     state = ChatShellState(conversation_id=None, next_title=title, loop_strategy=loop_strategy)
+    request_working_directory = working_directory or str(Path.cwd())
     line_reader = create_interactive_line_reader(
         stdin=stdin,
         stdout=stdout,
@@ -178,6 +183,7 @@ async def run_interactive_chat(
                 content=line,
                 sensitivity=sensitivity,
                 loop_strategy=state.loop_strategy,
+                working_directory=request_working_directory,
                 client_message_id=None,
                 assistant_prefix="assistant> ",
                 stdin=stdin,
@@ -199,6 +205,7 @@ async def submit_and_stream_message(
     content: str,
     sensitivity: str,
     loop_strategy: str | None = None,
+    working_directory: str | None = None,
     client_message_id: str | None,
     assistant_prefix: str | None,
     stdin: TextIO = sys.stdin,
@@ -210,6 +217,7 @@ async def submit_and_stream_message(
         content=content,
         sensitivity=sensitivity,
         loop_strategy=loop_strategy,
+        working_directory=working_directory,
     )
     request_id = _required_str(submitted, "request_id")
     if on_request_started is not None:
@@ -222,10 +230,13 @@ async def submit_and_stream_message(
             if event_type == "token":
                 stdout.write(data.get("delta", ""))
                 stdout.flush()
+            elif is_tool_stream_event(event_type):
+                if assistant_prefix is not None:
+                    stdout.write("\n")
+                write_tool_stream_event(stdout, event_type=event_type, data=data)
             elif event_type == "request.processing.failed":
                 stdout.write("\n")
-                stdout.write(json.dumps(data.get("error", data), ensure_ascii=False))
-                stdout.write("\n")
+                write_request_error(stdout, data)
                 return 1
             elif event_type == "request.processing.cancelled":
                 stdout.write("\n")
@@ -234,12 +245,15 @@ async def submit_and_stream_message(
             elif event_type == "approval.required":
                 if assistant_prefix is not None:
                     stdout.write("\n")
-                await handle_approval_prompt(
+                cancelled = await handle_approval_prompt(
                     client=client,
                     stdout=stdout,
                     stdin=stdin,
                     data=data,
+                    request_id=request_id,
                 )
+                if cancelled:
+                    return 130
     except (asyncio.CancelledError, KeyboardInterrupt):
         stdout.write("\n")
         await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
@@ -254,13 +268,14 @@ async def handle_approval_prompt(
     stdout: TextIO,
     stdin: TextIO,
     data: dict[str, Any],
-) -> None:
+    request_id: str | None = None,
+) -> bool:
     approval_id = _required_str(data, "approval_id")
     approval = await client.get_approval(approval_id)
     status = str(approval.get("status") or data.get("status") or "")
     if status == "expired":
         stdout.write("approval> expired\n")
-        return
+        return False
     capability = _display_text(approval.get("capability") or data.get("capability"))
     summary = _approval_summary(approval, data)
     stdout.write(f"approval> {capability} wants to perform {summary}\n")
@@ -270,9 +285,12 @@ async def handle_approval_prompt(
         answer = stdin.readline()
     except KeyboardInterrupt:
         stdout.write("\n")
-        await client.deny_approval(approval_id)
-        stdout.write("approval> denied\n")
-        return
+        await _cancel_request_from_approval_prompt(
+            client=client,
+            request_id=request_id,
+            stdout=stdout,
+        )
+        return True
     normalized = answer.strip().lower()
     if normalized in {"y", "yes"}:
         try:
@@ -280,18 +298,26 @@ async def handle_approval_prompt(
         except CliUserError as exc:
             if _approval_error_is_expired(exc):
                 stdout.write("approval> expired\n")
-                return
+                return False
             raise
         stdout.write("approval> granted\n")
-        return
+        return False
+    if normalized in {"c", "cancel"}:
+        await _cancel_request_from_approval_prompt(
+            client=client,
+            request_id=request_id,
+            stdout=stdout,
+        )
+        return True
     try:
         await client.deny_approval(approval_id)
     except CliUserError as exc:
         if _approval_error_is_expired(exc):
             stdout.write("approval> expired\n")
-            return
+            return False
         raise
     stdout.write("approval> denied\n")
+    return False
 
 
 def _approval_summary(approval: dict[str, Any], event_data: dict[str, Any]) -> str:
@@ -313,6 +339,19 @@ def _approval_summary(approval: dict[str, Any], event_data: dict[str, Any]) -> s
 def _approval_error_is_expired(exc: CliUserError) -> bool:
     message = str(exc).lower()
     return "approval_expired" in message or "expired" in message
+
+
+async def _cancel_request_from_approval_prompt(
+    *,
+    client: JarvisClient,
+    request_id: str | None,
+    stdout: TextIO,
+) -> None:
+    if request_id is None:
+        stdout.write("approval> cancelled\n")
+        return
+    await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
+    stdout.write("approval> cancelled\n")
 
 
 def _display_loop_mode(loop_strategy: str | None) -> str:

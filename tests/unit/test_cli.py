@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from io import StringIO
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -67,6 +68,7 @@ class FakeCliClient:
         content: str,
         sensitivity: str,
         loop_strategy: str | None = None,
+        working_directory: str | None = None,
     ):
         payload = {
             "conversation_id": conversation_id,
@@ -76,6 +78,8 @@ class FakeCliClient:
         }
         if loop_strategy is not None:
             payload["loop_strategy"] = loop_strategy
+        if working_directory is not None:
+            payload["working_directory"] = working_directory
         self.calls.append(
             (
                 "submit_message",
@@ -199,6 +203,35 @@ class ServerCancelledStreamCliClient(FakeCliClient):
         self.calls.append(("stream_request", request_id))
         yield "request.processing.cancelled", {
             "error": {"code": "cancelled", "message": "request cancelled"},
+        }
+
+
+class ToolEventStreamCliClient(FakeCliClient):
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        yield "tool.shell.started", {
+            "tool_name": "tool.shell.read.project",
+            "argv": ["rg", "ToolGatewayPort", "docs"],
+        }
+        yield "tool.shell.completed", {
+            "tool_name": "tool.shell.read.project",
+            "exit_code": 0,
+            "output_bytes": 42,
+            "truncated": False,
+        }
+        yield "token", {"delta": "ToolGatewayPort is documented."}
+        yield "request.processing.completed", {"assistant_message_id": "message-1"}
+
+
+class ToolUnavailableCliClient(FakeCliClient):
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        yield "request.processing.failed", {
+            "error": {
+                "code": "working_directory_required",
+                "message": "tool loop is rejected by policy",
+                "details": {"raw": "hidden"},
+            },
         }
 
 
@@ -424,13 +457,14 @@ def test_cli_chat_creates_conversation_and_streams_tokens() -> None:
         ),
         (
             "submit_message",
-            {
-                "conversation_id": "conversation-1",
-                "client_message_id": "client-1",
-                "content": "hello",
-                "sensitivity": "project",
-            },
-        ),
+                {
+                    "conversation_id": "conversation-1",
+                    "client_message_id": "client-1",
+                    "content": "hello",
+                    "sensitivity": "project",
+                    "working_directory": str(Path.cwd()),
+                },
+            ),
         ("stream_request", "request-1"),
     ]
 
@@ -480,6 +514,48 @@ def test_http_submit_message_omits_loop_strategy_for_default_auto(monkeypatch) -
     assert "loop_strategy" not in recorded["json"]
 
 
+def test_http_submit_message_sends_working_directory_when_provided(monkeypatch) -> None:
+    recorded: dict[str, Any] = {}
+
+    class Response:
+        status_code = 202
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"request_id": "request-1"}
+
+    class RecordingAsyncClient:
+        def __init__(self, *, base_url: str, timeout=None) -> None:
+            self.base_url = base_url
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def post(self, path: str, *, json: dict[str, Any]) -> Response:
+            recorded["json"] = json
+            return Response()
+
+    monkeypatch.setattr(cli_client_module.httpx, "AsyncClient", RecordingAsyncClient)
+
+    asyncio.run(
+        cli.HttpJarvisClient("http://testserver").submit_message(
+            conversation_id="conversation-1",
+            client_message_id="client-1",
+            content="show cpu usage",
+            sensitivity="project",
+            working_directory="/tmp/project",
+        )
+    )
+
+    assert recorded["json"]["working_directory"] == "/tmp/project"
+
+
 def test_cli_chat_accepts_loop_strategy_override() -> None:
     stdout = StringIO()
     clients: list[FakeCliClient] = []
@@ -513,9 +589,92 @@ def test_cli_chat_accepts_loop_strategy_override() -> None:
             "client_message_id": "client-tools",
             "content": "inspect project",
             "sensitivity": "project",
+            "working_directory": str(Path.cwd()),
             "loop_strategy": "tools",
         },
     )
+
+
+def test_cli_auto_tool_intent_submits_caller_working_directory() -> None:
+    stdout = StringIO()
+    clients: list[FakeCliClient] = []
+
+    def client_factory(base_url: str) -> FakeCliClient:
+        client = FakeCliClient(base_url)
+        clients.append(client)
+        return client
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "show", "cpu", "usage"],
+            client_factory=client_factory,
+            stdout=stdout,
+        ),
+    )
+
+    assert exit_code == 0
+    submitted = clients[0].calls[1][1]
+    assert "loop_strategy" not in submitted
+    assert submitted["working_directory"] == str(Path.cwd())
+
+
+def test_cli_project_docs_question_uses_auto_without_tool_override() -> None:
+    stdout = StringIO()
+    clients: list[FakeCliClient] = []
+
+    def client_factory(base_url: str) -> FakeCliClient:
+        client = FakeCliClient(base_url)
+        clients.append(client)
+        return client
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "where", "does", "ADR-035", "describe", "routing?"],
+            client_factory=client_factory,
+            stdout=stdout,
+        ),
+    )
+
+    assert exit_code == 0
+    submitted = clients[0].calls[1][1]
+    assert "loop_strategy" not in submitted
+    assert submitted["working_directory"] == str(Path.cwd())
+
+
+def test_cli_tool_flow_renders_action_and_observation_without_raw_json_noise() -> None:
+    stdout = StringIO()
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "inspect", "project"],
+            client_factory=ToolEventStreamCliClient,
+            stdout=stdout,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "tool> running tool.shell.read.project rg ToolGatewayPort docs" in output
+    assert "tool> completed tool.shell.read.project exit=0 bytes=42" in output
+    assert "ToolGatewayPort is documented." in output
+    assert "{" not in output
+
+
+def test_cli_tool_unavailable_message_is_clear_when_policy_denies() -> None:
+    stdout = StringIO()
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "show", "cpu", "usage"],
+            client_factory=ToolUnavailableCliClient,
+            stdout=stdout,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 1
+    assert "error> tool loop is rejected by policy (working_directory_required)" in output
+    assert "{" not in output
 
 
 def test_cli_chat_cancels_server_request_when_stream_is_interrupted() -> None:
@@ -802,13 +961,14 @@ def test_cli_without_subcommand_starts_interactive_chat() -> None:
         ),
         (
             "submit_message",
-            {
-                "conversation_id": "conversation-1",
-                "client_message_id": clients[0].calls[1][1]["client_message_id"],
-                "content": "hello",
-                "sensitivity": "project",
-            },
-        ),
+                {
+                    "conversation_id": "conversation-1",
+                    "client_message_id": clients[0].calls[1][1]["client_message_id"],
+                    "content": "hello",
+                    "sensitivity": "project",
+                    "working_directory": str(Path.cwd()),
+                },
+            ),
         ("stream_request", "request-1"),
     ]
 
@@ -933,13 +1093,14 @@ def test_cli_interactive_slash_commands_manage_session_and_memory() -> None:
         ),
         (
             "submit_message",
-            {
-                "conversation_id": "conversation-1",
-                "client_message_id": clients[0].calls[3][1]["client_message_id"],
-                "content": "hello again",
-                "sensitivity": "project",
-            },
-        ),
+                {
+                    "conversation_id": "conversation-1",
+                    "client_message_id": clients[0].calls[3][1]["client_message_id"],
+                    "content": "hello again",
+                    "sensitivity": "project",
+                    "working_directory": str(Path.cwd()),
+                },
+            ),
         ("stream_request", "request-1"),
     ]
 
@@ -1213,6 +1374,28 @@ def test_empty_cli_approval_input_denies() -> None:
     assert ("grant_approval", "approval-1") not in client.calls
 
 
+def test_cancel_cli_approval_input_marks_prompt_cancelled() -> None:
+    client = ApprovalPromptCliClient("http://test")
+    stdout = StringIO()
+
+    asyncio.run(
+        cli.submit_and_stream_message(
+            client=client,
+            stdout=stdout,
+            stdin=StringIO("cancel\n"),
+            conversation_id="conversation-1",
+            content="use tool",
+            sensitivity="project",
+            client_message_id="client-approval",
+            assistant_prefix=None,
+        ),
+    )
+
+    assert ("cancel_request", "request-1") in client.calls
+    assert ("deny_approval", "approval-1") not in client.calls
+    assert "approval> cancelled" in stdout.getvalue()
+
+
 def test_yes_cli_approval_input_grants() -> None:
     client = ApprovalPromptCliClient("http://test")
 
@@ -1249,7 +1432,8 @@ def test_cli_ctrl_c_denies_or_cancels_local_wait() -> None:
         ),
     )
 
-    assert ("deny_approval", "approval-1") in client.calls
+    assert ("cancel_request", "request-1") in client.calls
+    assert ("deny_approval", "approval-1") not in client.calls
 
 
 def test_cli_reports_expired_approval() -> None:

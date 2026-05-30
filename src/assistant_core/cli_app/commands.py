@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import sys
+from pathlib import Path
 from typing import TextIO
 
 from assistant_core.cli_app.client import CliUserError, HttpJarvisClient, JarvisClient
@@ -59,6 +60,7 @@ async def _run_command(
             sensitivity=DEFAULT_SENSITIVITY,
             title=None,
             loop_strategy=None,
+            working_directory=str(Path.cwd()),
         )
 
     if args.command == "health":
@@ -77,6 +79,7 @@ async def _run_command(
                 sensitivity=args.sensitivity,
                 title=args.title,
                 loop_strategy=args.loop_strategy,
+                working_directory=args.working_directory or str(Path.cwd()),
             )
         conversation_id = args.conversation_id
         if conversation_id is None:
@@ -92,6 +95,7 @@ async def _run_command(
             content=" ".join(args.message),
             sensitivity=args.sensitivity,
             loop_strategy=args.loop_strategy,
+            working_directory=args.working_directory or str(Path.cwd()),
             client_message_id=args.client_message_id,
             assistant_prefix=None,
             stdin=stdin,
@@ -164,6 +168,7 @@ def _parser() -> argparse.ArgumentParser:
     chat.add_argument("--sensitivity", default=DEFAULT_SENSITIVITY)
     chat.add_argument("--title")
     chat.add_argument("--loop-strategy", choices=LOOP_STRATEGY_CHOICES)
+    chat.add_argument("--working-directory")
 
     memory = subparsers.add_parser("memory")
     memory_subparsers = memory.add_subparsers(dest="memory_command", required=True)

@@ -146,7 +146,61 @@ async def write_memory_list(
             f"{_display_text(memory.get('content'))}\n"
         )
 
+
+def is_tool_stream_event(event_type: str) -> bool:
+    return event_type.startswith("tool.shell.") or event_type.startswith("tool.system.diagnostics.")
+
+
+def write_tool_stream_event(stdout: TextIO, *, event_type: str, data: dict) -> None:
+    tool_name = _display_text(data.get("tool_name"))
+    if event_type.endswith(".started"):
+        argv = _display_argv(data.get("argv"))
+        suffix = f" {argv}" if argv else ""
+        stdout.write(f"tool> running {tool_name}{suffix}\n")
+        return
+    if event_type.endswith(".completed"):
+        details = []
+        if data.get("exit_code") is not None:
+            details.append(f"exit={_display_text(data.get('exit_code'))}")
+        if data.get("output_bytes") is not None:
+            details.append(f"bytes={_display_text(data.get('output_bytes'))}")
+        suffix = f" {' '.join(details)}" if details else ""
+        stdout.write(f"tool> completed {tool_name}{suffix}\n")
+        return
+    if event_type.endswith(".denied"):
+        code = _display_text(data.get("error_code") or data.get("policy_outcome"))
+        suffix = f" ({code})" if code else ""
+        stdout.write(f"tool> denied {tool_name}{suffix}\n")
+        return
+    if event_type.endswith(".unavailable"):
+        source = _display_text(data.get("source") or data.get("family"))
+        suffix = f" {source}" if source else ""
+        stdout.write(f"tool> unavailable {tool_name}{suffix}\n")
+        return
+    stdout.write(f"tool> {_display_text(event_type)} {tool_name}\n")
+
+
+def write_request_error(stdout: TextIO, data: dict) -> None:
+    error = data.get("error")
+    if not isinstance(error, dict):
+        stdout.write(f"error> {_display_text(data)}\n")
+        return
+    message = _display_text(error.get("message") or "request failed")
+    code = _display_text(error.get("code"))
+    if code:
+        stdout.write(f"error> {message} ({code})\n")
+        return
+    stdout.write(f"error> {message}\n")
+
+
+def _display_argv(value) -> str:
+    if not isinstance(value, list):
+        return ""
+    return " ".join(_display_text(item) for item in value)
+
+
 __all__ = [
+    "is_tool_stream_event",
     "write_content_ingest",
     "write_content_reindex",
     "write_content_sources",
@@ -155,6 +209,8 @@ __all__ = [
     "write_interactive_help",
     "write_memory_list",
     "write_model_status",
+    "write_request_error",
     "write_slash_command_menu",
     "write_status",
+    "write_tool_stream_event",
 ]

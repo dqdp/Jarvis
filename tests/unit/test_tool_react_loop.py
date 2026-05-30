@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 
 from assistant_core.config.settings import ConfigLoader
+from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
 from assistant_core.domain.loops import (
     LoopBudget,
     LoopExecutionRequest,
@@ -341,6 +343,83 @@ def test_tool_react_loop_streams_final_answer_token_and_terminal_event() -> None
     ]
     assert events[-1].event_type == "request.processing.completed"
     assert events[-1].data["event_id"] == "event-request.processing.completed"
+
+
+def test_tool_react_loop_streams_public_tool_lifecycle_events() -> None:
+    class Gateway:
+        def __init__(self, event_log: FakeEventLog) -> None:
+            self._event_log = event_log
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            await self._event_log.append(
+                EventEnvelope(
+                    event_id="",
+                    event_seq=0,
+                    event_type=EventType.TOOL_SHELL_STARTED,
+                    event_version=1,
+                    occurred_at=now,
+                    recorded_at=now,
+                    conversation_id=request.conversation_id,
+                    request_id=request.request_id,
+                    correlation_id=request.correlation_id,
+                    causation_id=request.causation_event_id,
+                    parent_event_id=None,
+                    actor_type=ActorType.TOOL,
+                    actor_id=None,
+                    source_component="test",
+                    source_node=None,
+                    sensitivity=Sensitivity.PROJECT,
+                    visibility=EventVisibility.USER_VISIBLE,
+                    idempotency_key=None,
+                    payload={
+                        "tool_name": request.tool_name,
+                        "capability": "tool.shell.read",
+                        "argv": ["rg", "needle", "docs"],
+                        "stdout": "raw output must not stream",
+                    },
+                )
+            )
+            return ToolObservation.empty(
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                sensitivity=request.sensitivity,
+                started_at=now,
+                completed_at=now,
+            )
+
+    async def scenario():
+        event_log = FakeEventLog()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredRouter(
+                [
+                    {
+                        "action": "tool_call",
+                        "tool_name": "tool.shell.read.project",
+                        "arguments": {},
+                    },
+                    {"action": "final_answer", "final_answer": "done"},
+                ],
+            ),
+            event_log=event_log,
+            tool_gateway=Gateway(event_log),
+        )
+        return [event async for event in loop.stream_turn(_request())]
+
+    events = asyncio.run(scenario())
+    tool_events = [event for event in events if event.event_type == EventType.TOOL_SHELL_STARTED.value]
+
+    assert tool_events
+    assert tool_events[0].data["tool_name"] == "tool.shell.read.project"
+    assert tool_events[0].data["argv"] == ["rg", "needle", "docs"]
+    assert "raw output must not stream" not in repr(tool_events[0].data)
 
 
 class FakeConversationStore:
