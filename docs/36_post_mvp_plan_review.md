@@ -97,8 +97,9 @@ checkpointed as a resumable workflow.
 Required follow-up:
 
 ```text
-ADR-037 Scheduler and durable background workflows
-workflow checkpoint/resume slice before planner-executor or long automations
+ADR-036 Graph runtime adapter and LangGraph adoption gate
+then ADR-038 Scheduler and durable background workflows
+workflow checkpoint/resume decision before planner-executor or long automations
 ```
 
 ### Tool observation storage is still narrow
@@ -110,7 +111,7 @@ large artifacts still need a dedicated artifact store.
 Required follow-up:
 
 ```text
-ADR-044 Artifact storage
+ADR-045 Artifact storage
 large-output artifact references before broad MCP/file/integration tools
 ```
 
@@ -204,7 +205,8 @@ Implemented:
 
 Implemented with tests for:
 
-- strategy registry selects `memory_augmented_answer` by default;
+- strategy registry selects `memory_augmented_answer` by default in the PM-03
+  baseline;
 - unknown strategy is rejected;
 - `memory_augmented_answer` keeps `max_tool_calls=0`;
 - existing MVP event chain remains compatible;
@@ -357,8 +359,10 @@ safe built-in tools -> LoopStrategy abstraction -> safe-tool loop
 
 Status: the safe-tool loop, project read-only shell, system diagnostics and
 project docs RAG path are implemented. The next tool decision should focus on
-MCP or a specific external integration only after artifact storage and workflow
-durability are clarified.
+automatic loop selection first, so the existing tools and RAG are reachable
+from normal CLI/API chat without asking the user to choose internal loop
+strategies. MCP or a specific external integration should wait until auto
+routing, artifact storage and workflow durability are clarified.
 
 ### Question 2 — How strict should approvals be in Alpha?
 
@@ -446,12 +450,35 @@ first as an integration adapter, later as a full client/channel
 This avoids mixing notification/tool semantics with the main conversation
 transport too early.
 
-### Question 8 — When can cloud models be enabled?
+### Question 8 — Should users explicitly choose agent loops?
 
 Recommendation:
 
 ```text
-only after ADR-041
+no for normal usage
+```
+
+Use server-side `auto` loop selection as documented in
+`docs/adr/ADR-035_automatic_loop_strategy_selection.md`.
+
+Default behavior:
+
+```text
+ordinary chat -> memory_augmented_answer
+project docs question -> memory_augmented_answer with ContextAssembler RAG
+live project/system inspection -> tool_react_loop
+```
+
+CLI/API may expose `auto`, `chat` and `tools` overrides for debugging and
+advanced usage, but the normal CLI frontend should not require users to type
+`tool_react_loop` or know tool names.
+
+### Question 9 — When can cloud models be enabled?
+
+Recommendation:
+
+```text
+only after ADR-043
 ```
 
 Cloud fallback should remain disabled. Explicit cloud calls need sensitivity
@@ -465,10 +492,18 @@ concerns are no longer blockers for the first Alpha wave.
 Recommended next direction:
 
 ```text
-stabilize the implemented Alpha surface
-then choose between durable workflow execution, artifact storage, MCP or voice
+PM-08a loop selection domain and selector contract
+PM-08b API/request lifecycle auto mode
+PM-08c CLI auto mode and mode controls
+PM-08d CLI tool/RAG/approval readiness surface
+PM-09 voice gateway foundation
+then stabilize the implemented Alpha surface
+then choose between durable workflow execution, artifact storage, MCP or integrations
 ```
 
-Do not start planner-executor, broad MCP, voice, Telegram/Spotify or cloud
-reasoning before the durable workflow, artifact, permission and audit questions
-for that specific feature are documented and tested.
+Do not start planner-executor, broad MCP, Telegram/Spotify or cloud reasoning
+before PM-08d makes the existing RAG/tools/approval surface usable from normal
+chat and before the durable workflow, artifact, permission and audit questions
+for that specific feature are documented and tested. Voice is the selected
+near-term product direction after PM-08d and must use the same runtime and
+loop-selection path rather than introducing a separate voice agent.

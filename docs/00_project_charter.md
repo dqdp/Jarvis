@@ -157,24 +157,28 @@ Phase 1 не предназначена для:
 8. Current baseline: post-MVP Alpha includes bounded `tool_react_loop` after
    `ToolGatewayPort`; planner-executor and autonomous ReAct remain deferred.
 9. Graph checkpoints are deferred runtime state, not MVP storage scope.
-10. Redis/NATS не вводятся как обязательная зависимость Phase 1.
-11. SSE — primary streaming transport.
-12. RuntimeStreamEvent schema transport-agnostic.
-13. Minimal PolicyPort вводится в Phase 1.
-14. Model-router — internal module/package; inference node — external process.
-15. Replaceable subsystems require contract tests.
-16. Minimal memory namespaces: `user.preferences`, `user.working_style`, `project.personal_assistant`, `system.runtime_rules`, `environment.inference_node`.
-17. Core memory types: `fact`, `preference`, `procedure`, `summary`.
-18. Memory lifecycle statuses: `active`, `archived`, `superseded`.
-19. Current context is ephemeral and managed by ContextAssembler, not by long-term memory lifecycle.
-20. ContextAssembler facade/internal split is mandatory: AgentRuntime depends on `ContextAssemblerPort`, not on prompt assembly implementation.
+10. Near-term priority is PM-08a through PM-08d: backend auto-selection, API
+    lifecycle wiring, CLI mode controls and CLI tool/RAG/approval readiness.
+    PM-09 voice gateway foundation starts only after that text surface is
+    usable. LangGraph remains a follow-up for later durable workflows.
+11. Redis/NATS не вводятся как обязательная зависимость Phase 1.
+12. SSE — primary streaming transport.
+13. RuntimeStreamEvent schema transport-agnostic.
+14. Minimal PolicyPort вводится в Phase 1.
+15. Model-router — internal module/package; inference node — external process.
+16. Replaceable subsystems require contract tests.
+17. Minimal memory namespaces: `user.preferences`, `user.working_style`, `project.personal_assistant`, `system.runtime_rules`, `environment.inference_node`.
+18. Core memory types: `fact`, `preference`, `procedure`, `summary`.
+19. Memory lifecycle statuses: `active`, `archived`, `superseded`.
+20. Current context is ephemeral and managed by ContextAssembler, not by long-term memory lifecycle.
+21. ContextAssembler facade/internal split is mandatory: AgentRuntime depends on `ContextAssemblerPort`, not on prompt assembly implementation.
 
 ## 9. Preferred Technology Baseline
 
 ```text
 Language: Python
 API: FastAPI
-Runtime: custom deterministic workflow; LangGraph adapter deferred
+Runtime: custom deterministic workflow; LangGraph adapter deferred follow-up
 Architecture: modular monolith + ports/adapters
 Storage: PostgreSQL; pgvector-compatible retrieval adapter path
 Inference serving: vLLM preferred, Ollama acceptable for early experiments

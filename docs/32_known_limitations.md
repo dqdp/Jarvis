@@ -18,6 +18,9 @@
   worker system yet.
 - Tools, RAG/content ingestion and a bounded tool loop are now implemented as
   post-MVP Alpha slices, not as original MVP scope.
+- Automatic loop selection and CLI readiness are documented for PM-08a through
+  PM-08d but not implemented yet; current CLI/API behavior does not
+  automatically route normal chat into tool-capable execution.
 - MCP, planner-executor, voice, remembered approvals, durable background
   workers and external integrations remain future work.
 - Approval pauses are durable as approval records and request status, but there
@@ -36,12 +39,20 @@ Implemented first Alpha wave:
 - Project docs content ingestion/retrieval and ContextAssembler integration.
 - Model behavior tuning and smoke/eval scenarios.
 
-Next priority candidates:
+Next priority sequence:
+
+- PM-08a loop selection domain and selector contract;
+- PM-08b API/request lifecycle auto mode;
+- PM-08c CLI auto mode and mode controls;
+- PM-08d CLI tool/RAG/approval readiness surface;
+- PM-09 voice gateway foundation;
+
+Later priority candidates:
 
 - durable task queue / resumable workflow checkpoints;
 - broader context management and summaries;
 - MCP gateway;
 - external integrations;
-- voice interaction.
+- richer voice interaction beyond the PM-09 foundation.
 
 Manual model smoke coverage is tracked in `docs/33_alpha_model_behavior_smoke.md`.

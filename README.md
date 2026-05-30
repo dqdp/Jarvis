@@ -111,6 +111,7 @@ docs/adr/
   ADR-031_agent_loop_strategy_architecture.md
   ADR-033_shell_sandbox_and_local_command_policy.md
   ADR-034_content_retrieval_subsystem_and_project_docs_rag.md
+  ADR-035_automatic_loop_strategy_selection.md
 ```
 
 ## Ключевые принятые решения
@@ -172,6 +173,10 @@ docs/adr/
 - Phase 1 loop = deterministic `memory_augmented_answer`; LangGraph is deferred.
 - Original MVP shipped with only `memory_augmented_answer`; current post-MVP
   Alpha adds bounded `tool_react_loop` behind the loop-strategy boundary.
+- Near-term priority is PM-08a through PM-08d: backend auto-selection, API
+  lifecycle wiring, CLI mode controls and CLI tool/RAG/approval readiness. PM-09
+  voice gateway foundation starts only after that text surface is usable.
+  LangGraph stays a follow-up for later durable workflows.
 - Planner-executor and unbounded autonomous ReAct behavior remain future scope.
 - Future loop strategies must declare budgets, capabilities, policy hooks, failure semantics and emitted events.
 
@@ -248,6 +253,11 @@ wave:
 - event/data hardening, append-only event protection and no-secret storage
   constraints.
 
+PM-08a through PM-08d are documented as the next implementation sequence. They
+make `auto` the user-facing default and harden the CLI/API surface so normal
+chat can route to ordinary answer, Project Docs RAG or safe/read-only tools
+without requiring the user to choose internal loop strategies.
+
 Implementation notes:
 
 - The API surface is implemented with FastAPI while preserving the documented
@@ -275,7 +285,8 @@ Post-MVP planning is tracked in:
 
 - `docs/34_post_mvp_roadmap.md`;
 - `docs/35_post_mvp_adr_backlog.md`;
-- `docs/36_post_mvp_plan_review.md`.
+- `docs/36_post_mvp_plan_review.md`;
+- `docs/37_post_mvp_tdd_slices_plan.md`.
 
 ## Final hardening additions in v16
 

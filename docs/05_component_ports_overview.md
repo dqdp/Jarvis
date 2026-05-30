@@ -99,7 +99,9 @@ For durable event bus integration.
 
 ### VoiceGatewayPort
 
-For wake word, VAD, STT, TTS, realtime sessions.
+For wake word, VAD, STT, TTS and realtime sessions. Voice code must depend on
+provider-neutral `SpeechToTextPort` / `TextToSpeechPort` contracts and provider
+profiles, not concrete local binaries, SDKs or external API clients.
 
 ## 4. Port Design Rules
 

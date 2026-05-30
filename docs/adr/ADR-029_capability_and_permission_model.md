@@ -556,6 +556,10 @@ Voice gateway:
 
 - must label transcripts with sensitivity;
 - must not persist audio by default;
+- must keep STT/TTS providers behind provider-neutral ports and profiles;
+- must disable external speech API providers unless explicit configuration and
+  policy allow them;
+- must reference external speech API secrets by secret id or environment key;
 - must not use cloud realtime path without a later ADR.
 
 ## Rationale

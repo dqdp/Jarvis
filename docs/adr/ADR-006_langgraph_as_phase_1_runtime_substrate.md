@@ -37,3 +37,31 @@ LangGraph checkpoint tables are not required for MVP readiness.
 
 The cost is that post-MVP graph migration needs a focused adapter slice and
 updated contract tests before enabling checkpoint-backed continuation.
+
+## Post-MVP revisit
+
+As of PM-08 planning, the original deferral condition is now approaching:
+
+```text
+tool-capable loops exist;
+approvals exist;
+Project Docs RAG exists;
+automatic loop selection is planned;
+planner-executor, code sandbox, sleep/reflection and durable workflows are next.
+```
+
+This does not change the MVP decision. It means LangGraph should be evaluated
+through a dedicated adapter/gate slice before implementing planner-executor,
+durable code sandbox workflows or long-running background workflows.
+
+Rules for the revisit:
+
+- LangGraph must be introduced behind existing Jarvis ports, not as a direct
+  dependency of API, CLI, storage adapters or tool adapters.
+- LangGraph checkpoint state must not silently replace Jarvis conversation,
+  request, event, approval or memory tables.
+- LangGraph interrupts/checkpoints must be mapped explicitly to Jarvis approval,
+  request status, SSE and event-log semantics.
+- Adoption requires contract and architecture tests proving that existing custom
+  loops still work and that graph-backed loops do not bypass policy or
+  ToolGateway.

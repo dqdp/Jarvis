@@ -200,6 +200,10 @@ Decision:
 - Phase 1 selected loop: deterministic memory-augmented workflow.
 - Current post-MVP Alpha adds bounded `tool_react_loop` after ToolGatewayPort
   and the loop-strategy boundary were introduced.
+- Near-term priority is PM-08a through PM-08d: automatic loop selection, API
+  lifecycle wiring, CLI mode controls and CLI tool/RAG/approval readiness.
+  PM-09 voice gateway foundation follows only after the text CLI/API surface is
+  usable. LangGraph remains a follow-up for later durable workflows.
 - All future loop strategies must define budgets, stopping conditions, policy hooks and emitted events.
 
 ## 9. Extension Points
@@ -225,6 +229,7 @@ Voice Gateway
   VAD
   STT
   TTS
+  modular local/external speech provider profiles
   realtime model sessions
 
 Advanced Memory

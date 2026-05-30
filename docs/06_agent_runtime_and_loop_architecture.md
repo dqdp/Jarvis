@@ -28,8 +28,10 @@ Using ReAct everywhere would add:
 - premature tool/action semantics.
 
 Original Phase 1 uses deterministic memory-augmented workflow. Current
-post-MVP Alpha keeps that loop as the default and adds `tool_react_loop` as a
-separate, bounded strategy.
+post-MVP Alpha adds `tool_react_loop` as a separate, bounded strategy. The next
+post-MVP slice changes the user-facing default from an implicit
+`memory_augmented_answer` selection to server-side `auto` loop selection as
+defined by `docs/adr/ADR-035_automatic_loop_strategy_selection.md`.
 
 ## 3. Loop Strategy Concept
 
@@ -79,19 +81,100 @@ allow_cloud: false by default
 
 ## 5. LoopStrategySelector
 
-Phase 1 selector can be deterministic:
+`LoopStrategySelector` is the backend component that resolves a user request
+from a user-facing mode into a concrete loop strategy.
+
+User-facing modes:
 
 ```text
-if request.type == "chat":
-  memory_augmented_answer_workflow
+auto
+chat
+tools
 ```
 
-Future selector may use classification, but policy constraints always apply.
+Concrete loop strategies:
+
+```text
+memory_augmented_answer
+tool_react_loop
+planner_executor_loop later
+```
+
+Mapping:
+
+```text
+auto  -> selector chooses concrete loop
+chat  -> memory_augmented_answer
+tools -> tool_react_loop
+```
+
+The selector lives on the server side. CLI, API, future voice clients and future
+integrations must not implement their own safety-critical routing logic.
+
+PM-08a through PM-08d must not make a deterministic-only selector the target
+architecture. PM-08a introduces:
+
+```text
+LoopStrategySelector
+  -> IntentClassifierPort
+  -> policy/config validation
+```
+
+CI uses fake classifier implementations. Runtime may initially use a
+deterministic classifier implementation in conservative mode, but the port must
+allow a later local structured model classifier without changing selector
+callers.
+
+Expected PM-08 classifications:
+
+```text
+ordinary chat or explanation
+  -> memory_augmented_answer
+
+project docs question
+  -> memory_augmented_answer
+  -> ContextAssembler retrieves project docs through ContentRetrievalPort
+
+live project inspection
+  -> tool_react_loop
+
+live system diagnostics
+  -> tool_react_loop
+
+tools disabled for tool intent
+  -> fail clearly or answer that live inspection is unavailable
+```
+
+A classifier may propose intent and candidate capabilities; it must not execute
+tools or grant permissions. Policy constraints always apply after
+classification.
 
 ```python
+class IntentClassifierPort(Protocol):
+    async def classify(self, request: IntentClassificationRequest) -> IntentClassification: ...
+
 class LoopStrategySelector(Protocol):
-    async def select(self, request: RuntimeRequest, context: RuntimeContext) -> LoopStrategy: ...
+    async def select(self, request: LoopSelectionRequest) -> LoopSelectionDecision: ...
 ```
+
+Selector decisions are auditable and redacted. They record the selected loop,
+reason code, candidate capabilities and policy outcome without logging the raw
+full prompt.
+
+The selection model must distinguish:
+
+```text
+requested_mode          user-facing mode: auto/chat/tools
+intent_family           classifier output, such as project_inspection
+candidate_capabilities  capability candidates, not execution instructions
+selected_loop_strategy  concrete runtime strategy
+decision_status         selected/fallback/rejected/unavailable
+```
+
+Confidence and fallback behavior are part of the domain model. Medium or low
+confidence must not silently trigger risky tools, and a live-state request with
+tools disabled must not produce an answer that pretends live inspection
+happened.
 
 ## 6. Runtime State
 
@@ -106,6 +189,7 @@ class AgentRuntimeState(TypedDict):
     recent_messages: list[Message]
     retrieved_memories: list[MemoryHit]
     selected_loop: str
+    loop_selection_reason: str
     model_profile: str
     response_draft: str | None
     final_response: str | None
@@ -177,12 +261,15 @@ All loops emit RuntimeStreamEvents:
 
 Tests must verify:
 
-- selected loop for chat requests;
+- `auto` selected loop for chat, project-docs and tool-intent requests;
 - max_model_calls = 1 in Phase 1;
 - original MVP loop does not make tool calls;
 - `tool_react_loop` uses ToolGatewayPort and explicit budgets;
+- RAG questions do not require a tool loop by default;
+- tool intent does not silently fallback to chat when tools are disabled;
 - no autonomous memory writes in Phase 1;
 - policy decision is recorded for model calls;
+- loop selection decisions are recorded without raw full prompts;
 - RuntimeStreamEvents emitted in expected order.
 
 
@@ -195,7 +282,7 @@ The runtime step responsible for model input construction calls `ContextAssemble
 ```text
 receive_message
   -> persist user.message
-  -> select_loop_strategy
+  -> select_loop_strategy via auto/chat/tools mode
   -> assemble_context
   -> call_model_router
   -> stream_response

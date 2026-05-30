@@ -202,7 +202,8 @@ Work:
 - extract the current deterministic workflow into a named
   `memory_augmented_answer` loop strategy without changing behavior;
 - add a loop strategy registry;
-- keep `memory_augmented_answer` as the default strategy;
+- keep `memory_augmented_answer` as the default concrete strategy until the
+  later `auto` selector is introduced;
 - define loop budgets, loop results and step-level event concepts;
 - make `ToolGatewayPort` an optional dependency for tool-capable strategies,
   not for the base loop.
@@ -335,7 +336,117 @@ Acceptance:
 - ContextManifest records content hit refs separately from memory refs;
 - source refresh and re-indexing are explicit workflows.
 
-### Phase I — External integrations
+### Phase I — PM-08 Automatic loop selection and CLI readiness
+
+Goal:
+
+```text
+Make tools, RAG and ordinary chat available through one natural user-facing
+chat surface without requiring users to choose internal loop strategies.
+```
+
+Work is split into sub-slices:
+
+```text
+PM-08a Loop selection domain and selector contract
+PM-08b API/request lifecycle auto mode
+PM-08c CLI auto mode and mode controls
+PM-08d CLI tool/RAG/approval readiness surface
+```
+
+PM-08a:
+
+- add `auto` as the default user-facing routing mode;
+- add backend `LoopStrategySelector`;
+- add `IntentClassifierPort` so routing is not architecturally tied to keyword
+  lists;
+- add explicit selection/classification domain objects and confidence/fallback
+  semantics;
+- add capability routing metadata so future tools such as code sandbox can join
+  auto-selection without bespoke selector branches;
+- use fake classifier implementations in CI;
+- start runtime with a conservative deterministic classifier implementation
+  while preserving the port for a later local structured model adapter;
+- route ordinary chat to `memory_augmented_answer`;
+- route project-docs questions to `memory_augmented_answer` with ContextAssembler
+  RAG, not to a tool loop;
+- route live project inspection and system diagnostics requests to
+  `tool_react_loop`;
+- keep tool execution behind `ToolGatewayPort`;
+- keep policy and approval checks authoritative;
+
+PM-08b:
+
+- wire `auto` into API/request lifecycle;
+- persist requested mode separately from selected concrete loop;
+- resolve model profile after selected loop is known;
+- emit redacted loop-selection events.
+
+PM-08c:
+
+- expose CLI/API overrides for `auto`, `chat` and `tools` for debugging;
+- add interactive CLI `/mode auto|chat|tools`;
+- make interactive CLI default to `auto`;
+- keep routing rules on the backend, not in CLI.
+
+PM-08d:
+
+- prove ordinary CLI chat can reach RAG and safe/read-only tools through `auto`;
+- render tool proposals, approvals and observations in user-facing language;
+- support approve/deny/cancel from the normal interactive CLI flow;
+- make request cancellation and Ctrl-C leave the CLI session usable;
+- avoid raw JSON-first output for normal tool flow.
+
+Acceptance:
+
+- a plain CLI chat request can automatically use RAG or safe tools when needed;
+- users do not need to type `tool_react_loop` or tool names for normal usage;
+- tools-disabled tool intent does not silently hallucinate live state;
+- RAG remains ContextAssembler behavior and does not become a tool-loop trigger;
+- approval-required tool flow is usable from the CLI;
+- cancel/interrupt does not break the interactive CLI session;
+- fake classifiers, providers and adapters cover the routing behavior in CI.
+
+### Phase J — Voice gateway foundation
+
+Goal:
+
+```text
+Add push-to-talk voice interaction on top of the existing runtime after PM-08d
+proves the text CLI/API surface can use auto-selected chat, RAG, tools,
+approvals and cancellation.
+```
+
+Work:
+
+- treat voice as a client/channel over existing conversations and request
+  lifecycle, not as a separate agent runtime;
+- add `SpeechToTextPort` and `TextToSpeechPort`;
+- add provider-neutral speech provider profiles and registry so the same
+  gateway can later use local engines, local libraries or external API adapters;
+- add fake STT/TTS adapters for CI;
+- submit transcripts through the same API/runtime path as typed input;
+- use PM-08 `auto` loop selection for spoken turns after PM-08d readiness;
+- stream assistant text through existing runtime events before TTS output;
+- disable raw audio storage by default;
+- keep external speech API and cloud realtime providers disabled until explicit
+  configuration and policy allow them;
+- start with push-to-talk/local-session semantics.
+
+Acceptance:
+
+- fake voice e2e works without microphone, speaker or real STT/TTS provider;
+- voice turns use the same conversation/runtime pipeline as CLI/API;
+- transcripts have sensitivity policy;
+- raw audio is not stored unless explicitly configured;
+- voice gateway is provider-neutral and does not depend on a concrete local
+  model, local binary or external API client;
+- external speech API providers are represented as a future adapter path but are
+  not called by default or in CI;
+- spoken requests can route through PM-08 auto mode to chat/RAG/tools using the
+  same readiness-tested surface as typed turns.
+
+### Phase K — External integrations
 
 Goal:
 
@@ -362,7 +473,7 @@ Acceptance:
 - each integration has policy rules and secret handling;
 - external side effects require approval unless explicitly configured safe.
 
-### Phase J — Planner-executor
+### Phase L — Planner-executor
 
 Goal:
 
@@ -384,7 +495,7 @@ Acceptance:
 - plan execution is auditable at step level;
 - planner budgets are enforced.
 
-### Phase K — Scheduler, proactive tasks and sleep/reflection
+### Phase M — Scheduler, proactive tasks and sleep/reflection
 
 Goal:
 
@@ -406,7 +517,7 @@ Acceptance:
 - sleep/reflection produces reviewable reports and candidates;
 - direct memory mutation remains policy controlled.
 
-### Phase L — Advanced memory
+### Phase N — Advanced memory
 
 Goal:
 
@@ -428,32 +539,34 @@ Acceptance:
 - lifecycle decisions are auditable;
 - `secret` remains excluded from long-term memory.
 
-### Phase M — Voice
+### Phase O — Graph runtime adapter follow-up
 
 Goal:
 
 ```text
-Add voice interaction using the same runtime, policy and audit model.
+Evaluate LangGraph or another graph runtime only when planner-executor, durable
+code sandbox workflows, sleep/reflection or long-running automation need it.
 ```
 
-Recommended order:
+Work:
 
-```text
-push-to-talk
-local VAD
-local STT
-local TTS
-interrupt/barge-in
-wake word
-optional realtime model path after a dedicated ADR
-```
+- define a Jarvis graph runtime adapter boundary;
+- add fake graph runtime contract tests first;
+- evaluate LangGraph persistence/checkpoints, interrupts and streaming behind
+  the adapter boundary if needed;
+- map graph interrupts to Jarvis approval records and `waiting_approval`;
+- map graph streams to Jarvis SSE/runtime events;
+- prove existing custom loop strategies still run without LangGraph;
+- document adopt/defer decision before any graph-backed production workflow.
 
 Acceptance:
 
-- voice turns use the same conversation/runtime pipeline as CLI/API;
-- transcripts have sensitivity policy;
-- audio is not stored unless explicitly configured;
-- cloud realtime models remain disabled unless a future ADR changes policy.
+- LangGraph, if used, is isolated behind a graph adapter package;
+- graph nodes call Jarvis ports, not concrete adapters;
+- checkpoint state does not silently replace Jarvis PostgreSQL conversation,
+  request, approval, event or memory tables;
+- fake graph adapter covers CI without real LLM/tool calls;
+- the output is an explicit adopt/defer decision.
 
 ## 4. Dependency map
 
@@ -463,12 +576,16 @@ Capability/permissions
       -> LoopStrategy architecture
       -> safe tool loop
       -> CLI shell tools
+      -> automatic loop selection
+      -> CLI tool/RAG/approval readiness surface
+      -> voice gateway foundation
       -> MCP/integrations
       -> bounded ReAct loop details
           -> planner-executor
 
 Context management V2
   -> ContentRetrieval/RAG
+  -> automatic loop selection for project-docs questions
   -> tool-aware context
   -> planner-aware context
   -> voice/multimodal context
@@ -481,7 +598,10 @@ Scheduler/EventPublisher
 
 ## 5. Near-term Alpha recommendation
 
-The next implementation goal should not start with RAG or voice. It should be:
+The next implementation goal should make the implemented RAG and tools
+reachable from normal chat before adding broader integrations or voice.
+
+Current near-term sequence:
 
 ```text
 Capability and permissions foundation
@@ -493,6 +613,11 @@ approval model and CLI/API control flow
 project read-only shell tools
 read-only system diagnostics tools
 Project Docs RAG
+PM-08a Loop selection domain and selector contract
+PM-08b API/request lifecycle auto mode
+PM-08c CLI auto mode and mode controls
+PM-08d CLI tool/RAG/approval readiness surface
+Voice gateway foundation
 ```
 
 This order gives useful capability quickly while preserving the local-first

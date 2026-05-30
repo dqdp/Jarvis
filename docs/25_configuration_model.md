@@ -317,7 +317,85 @@ observability:
 
 ---
 
-## 8. Hardcoded vs configurable
+## 8. Post-MVP voice configuration extension
+
+PM-09 adds a `voice` configuration section after `ADR-042 Voice gateway` is
+accepted. It is not part of MVP startup requirements.
+
+The section must keep Voice Gateway provider-neutral:
+
+```yaml
+voice:
+  enabled: false
+  default_input_provider: fake_stt
+  default_output_provider: fake_tts
+  audio_storage_enabled: false
+  transcript_sensitivity: personal
+  wake_word_enabled: false
+  always_listening_enabled: false
+
+  speech_providers:
+    fake_stt:
+      kind: fake
+      direction: input
+      enabled: true
+
+    fake_tts:
+      kind: fake
+      direction: output
+      enabled: true
+
+    local_whisper:
+      kind: local_process
+      direction: input
+      enabled: false
+      command: whisper.cpp
+      model_ref: local-whisper-small
+      cloud: false
+
+    local_say:
+      kind: local_process
+      direction: output
+      enabled: false
+      command: say
+      cloud: false
+
+    external_speech_api:
+      kind: external_api
+      direction: input_output
+      enabled: false
+      cloud: true
+      endpoint: null
+      api_key_env: SPEECH_API_KEY
+```
+
+Provider rules:
+
+```text
+fake providers are allowed in CI;
+local providers are the default dogfood path;
+external_api providers are disabled by default;
+external_api providers require explicit policy allow/approval;
+secrets are referenced by env key or secret id, never stored as raw values;
+VoiceGateway depends on SpeechToTextPort/TextToSpeechPort, not provider clients.
+```
+
+Required PM-09 config tests:
+
+```text
+voice config defaults to disabled;
+fake STT/TTS providers validate without hardware;
+local provider profiles validate without cloud permissions;
+external_api provider profiles are disabled by default;
+external_api provider requires secret reference, not raw secret;
+audio_storage_enabled=false by default;
+wake_word_enabled=false by default;
+always_listening_enabled=false by default;
+```
+
+---
+
+## 9. Hardcoded vs configurable
 
 Domain invariants may be represented as enums:
 
@@ -345,7 +423,7 @@ raw prompt logging
 
 ---
 
-## 9. Config vs Policy
+## 10. Config vs Policy
 
 Config stores values.
 
@@ -381,7 +459,7 @@ PolicyPort -> ConfigPolicyEngine
 
 ---
 
-## 10. Config ownership
+## 11. Config ownership
 
 Logical sections:
 
@@ -402,7 +480,7 @@ Implementation may expose a single typed `Settings` object.
 
 ---
 
-## 11. No hot reload in MVP
+## 12. No hot reload in MVP
 
 Phase 1 loads configuration at startup.
 
@@ -417,7 +495,7 @@ Rationale:
 
 ---
 
-## 12. Environment profiles
+## 13. Environment profiles
 
 MVP profiles:
 
@@ -430,7 +508,7 @@ No SaaS/prod complexity in MVP.
 
 ---
 
-## 13. Config validation tests
+## 14. Config validation tests
 
 Required tests:
 
@@ -452,7 +530,7 @@ These tests keep documentation decisions executable.
 
 ---
 
-## 14. MVP vs deferred
+## 15. MVP vs deferred
 
 MVP includes:
 

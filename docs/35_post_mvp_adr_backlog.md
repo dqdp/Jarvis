@@ -153,7 +153,8 @@ Resolved baseline:
 Testing:
 
 - current MVP loop still passes unchanged;
-- strategy registry selects `memory_augmented_answer` by default;
+- strategy registry selects `memory_augmented_answer` by default in the PM-03
+  baseline;
 - tool-capable strategy requires ToolGateway;
 - architecture tests prevent loop strategies from importing concrete adapters.
 
@@ -295,43 +296,192 @@ Testing:
 - golden context tests with `ContentHit`;
 - citation formatting tests.
 
-### ADR-035 — Bounded tool loop strategy
+### ADR-035 — Automatic loop strategy selection
+
+Status:
+
+```text
+Promoted to docs/adr/ADR-035_automatic_loop_strategy_selection.md.
+Current ADR status: Accepted.
+```
 
 Needed before:
 
 ```text
-ReAct-style tool use
-model-proposed actions
-multi-step tool calls
+default CLI/API access to tools
+default CLI/API access to Project Docs RAG
+automatic routing between normal chat and tool-capable loops
+future local model-backed intent classifier adapter
 ```
 
 Decision scope:
 
-- loop name and contract;
-- action parser;
-- budget model;
-- allowed capabilities;
-- failure and retry semantics;
-- tool observation handling;
-- event chain.
+- user-facing `auto`, `chat` and `tools` modes;
+- backend `LoopStrategySelector`;
+- `IntentClassifierPort`;
+- domain objects for `LoopSelectionRequest`, `IntentClassification`,
+  `CapabilityCandidate` and `LoopSelectionDecision`;
+- confidence bands and fallback semantics;
+- capability routing metadata for future tools such as code sandbox;
+- fake classifier for CI;
+- conservative deterministic runtime classifier as an initial adapter;
+- optional local structured classifier adapter later;
+- relation to policy and approvals;
+- relation to RAG and ContextAssembler;
+- CLI/API override semantics;
+- redacted routing audit events.
 
-Open questions:
+Resolved baseline:
 
-- Should model tool calls use structured output, text protocol or provider tool
-  calling?
-- Should the first implementation allow only one tool call per step?
-- How should repeated bad tool proposals be handled?
+- `auto` is a routing mode, not a concrete loop;
+- PM-08 must not make a deterministic-only selector the target architecture;
+- PM-08 starts with `LoopStrategySelector` plus `IntentClassifierPort`;
+- runtime may initially use a conservative deterministic classifier
+  implementation, but the port must allow a local model-backed classifier later;
+- ordinary chat and project-docs questions use `memory_augmented_answer`;
+- live project/system inspection uses `tool_react_loop`;
+- RAG is not a tool-loop trigger by itself;
+- tools-disabled tool intent must not silently fallback to hallucinated chat;
+- CLI does not own safety-critical routing.
 
 Testing:
 
-- fake model proposes tool action;
-- fake tool returns observation;
-- budget exhaustion stops loop;
-- malformed action fails safely.
+- unit tests for selector decisions and reason codes;
+- contract tests for API default `auto` behavior;
+- architecture tests preventing CLI/tool/storage adapter coupling;
+- e2e fake-provider tests for ordinary chat, project-docs RAG and tool intent.
+- implementation is split into PM-08a selector contract, PM-08b API lifecycle,
+  PM-08c CLI mode controls and PM-08d CLI tool/RAG/approval readiness.
 
-## 3. Medium-priority ADRs
+### Resolved by ADR-031/PM-04 — Bounded tool loop strategy
 
-### ADR-036 — Planner-executor task model
+The original ADR-035 backlog item for a bounded tool loop is now covered by
+`docs/adr/ADR-031_agent_loop_strategy_architecture.md` and implemented through
+PM-04.
+
+Open questions:
+
+- Should the later ambiguous-intent classifier call the same structured local
+  profile used by `tool_react_loop`, or a smaller dedicated classifier profile?
+- Should explicit CLI `/mode tools` persist only in-session or in a local config
+  file?
+- Which future external integrations should be eligible for automatic routing?
+
+Testing:
+
+- keep bounded tool-loop tests under ADR-031/PM-04;
+- add PM-08 auto-selection tests under ADR-035.
+
+## 3. Next-priority ADRs
+
+### ADR-042 — Voice gateway
+
+Needed before voice implementation.
+
+Current priority:
+
+```text
+write/promote this ADR after PM-08d CLI tool/RAG/approval readiness, before
+PM-09 voice gateway foundation implementation.
+```
+
+Decision scope:
+
+- push-to-talk before wake word;
+- voice as a client/channel over the existing runtime, not a separate agent;
+- `SpeechToTextPort`;
+- `TextToSpeechPort`;
+- fake STT/TTS adapters for CI;
+- modular STT/TTS provider profiles for local engines and future external API
+  adapters;
+- local-first STT/TTS provider policy;
+- audio capture/playback boundaries;
+- audio storage disabled by default;
+- transcript sensitivity and retention;
+- cancellation/interruption semantics;
+- cloud realtime model policy.
+
+Baseline:
+
+- spoken turns submit transcripts through existing conversation/request
+  lifecycle;
+- PM-08 `auto` routing is used for spoken turns;
+- the gateway depends only on `SpeechToTextPort` and `TextToSpeechPort`, never
+  on a concrete local model, command-line binary or external API client;
+- speech providers are selected by configuration and policy, not hard-coded in
+  the voice gateway;
+- local speech providers are the default path;
+- external speech API providers remain disabled by default and require explicit
+  configuration, policy allow/approval and secret references, never raw secrets
+  in prompts, logs or memory;
+- cloud speech/realtime providers remain disabled by default;
+- wake word, always-listening and barge-in are deferred.
+
+Testing:
+
+- fake STT/TTS unit and contract tests;
+- provider profile tests covering local and external-api provider kinds without
+  making network calls;
+- voice turn e2e through fake STT/TTS/model providers;
+- architecture tests preventing voice from bypassing runtime or loop selection;
+- architecture tests preventing provider adapters from leaking into the voice
+  gateway contract;
+- privacy tests proving raw audio is not stored by default.
+
+## 4. Medium-priority ADRs
+
+### ADR-036 — Graph runtime adapter and LangGraph adoption gate
+
+Needed before:
+
+```text
+planner-executor
+durable code sandbox workflows
+sleep/reflection execution
+long-running maintenance workflows
+multi-agent/subgraph orchestration
+```
+
+Decision scope:
+
+- whether LangGraph becomes the graph runtime adapter for complex workflows;
+- graph state schema and mapping to Jarvis domain objects;
+- checkpoint storage ownership;
+- relation between LangGraph checkpoints and Jarvis PostgreSQL tables;
+- mapping LangGraph interrupts to Jarvis approval flow;
+- mapping LangGraph streaming to Jarvis SSE/runtime events;
+- adapter boundaries around `ContextAssemblerPort`, `ModelRouterPort`,
+  `ToolGatewayPort`, `PolicyPort`, `EventLogPort` and stores;
+- dependency and deployment implications;
+- rollback plan if LangGraph adds too much coupling.
+
+Baseline:
+
+- PM-08 remains framework-agnostic and does not require LangGraph;
+- PM-09 voice foundation does not require LangGraph;
+- this is a follow-up item, not the immediate post-PM-08 implementation path;
+- LangGraph may be adopted only behind a graph runtime adapter;
+- existing custom loop strategies must keep working during the adoption test;
+- no graph-backed workflow may bypass policy, approvals or ToolGateway.
+
+Open questions:
+
+- Should LangGraph checkpoints use Jarvis PostgreSQL directly, a separate schema
+  or a replaceable checkpointer adapter?
+- Which Jarvis request status maps to a paused LangGraph interrupt?
+- Do graph node events become first-class EventLog entries or derived telemetry?
+- Should the first graph-backed prototype be planner-executor, code sandbox or
+  approval interrupt/resume?
+
+Testing:
+
+- fake graph workflow contract tests;
+- architecture tests that graph nodes import only ports/domain schemas;
+- approval interrupt/resume mapping tests;
+- SSE/event translation tests;
+- rollback tests proving custom loops still execute without LangGraph.
+
+### ADR-037 — Planner-executor task model
 
 Needed before long-running multi-step tasks.
 
@@ -344,7 +494,7 @@ Decision scope:
 - correlation model;
 - user clarification flow.
 
-### ADR-037 — Scheduler and durable background workflows
+### ADR-038 — Scheduler and durable background workflows
 
 Needed before reminders, proactive checks and sleep/reflection execution.
 
@@ -356,7 +506,7 @@ Decision scope:
 - idempotency;
 - restart semantics.
 
-### ADR-038 — Sleep/reflection workflow and memory candidates
+### ADR-039 — Sleep/reflection workflow and memory candidates
 
 Needed before autonomous consolidation.
 
@@ -369,7 +519,7 @@ Decision scope:
 - archive/supersede proposals;
 - direct memory mutation restrictions.
 
-### ADR-039 — External integration adapter model
+### ADR-040 — External integration adapter model
 
 Needed before Telegram, Spotify, GitHub, calendar, mail and similar adapters.
 
@@ -382,7 +532,7 @@ Decision scope:
 - side-effect policy;
 - audit model.
 
-### ADR-040 — MCP gateway
+### ADR-041 — MCP gateway
 
 Needed before MCP server/tool support.
 
@@ -395,22 +545,9 @@ Decision scope:
 - process isolation;
 - audit and approval integration.
 
-## 4. Lower-priority ADRs
+## 5. Lower-priority ADRs
 
-### ADR-041 — Voice gateway
-
-Needed before voice implementation.
-
-Decision scope:
-
-- push-to-talk vs wake word sequence;
-- VAD/STT/TTS providers;
-- audio storage policy;
-- transcript sensitivity;
-- interruption/barge-in;
-- realtime model policy.
-
-### ADR-042 — Cloud model enablement and fallback policy
+### ADR-043 — Cloud model enablement and fallback policy
 
 Needed before enabling any cloud model or fallback.
 
@@ -431,7 +568,7 @@ no automatic fallback
 secret never sent to cloud
 ```
 
-### ADR-043 — WebSocket/control channel
+### ADR-044 — WebSocket/control channel
 
 Needed if SSE plus HTTP is insufficient for approvals, live task control or
 voice/realtime sessions.
@@ -444,7 +581,7 @@ Decision scope:
 - reconnect semantics;
 - relation to existing SSE events.
 
-### ADR-044 — Artifact storage
+### ADR-045 — Artifact storage
 
 Needed when tool/RAG outputs become too large for event payloads.
 
@@ -456,7 +593,7 @@ Decision scope:
 - filesystem vs database;
 - relation to ContextManifest and tool observations.
 
-## 5. ADR dependency order
+## 6. ADR dependency order
 
 Recommended order:
 
@@ -466,17 +603,18 @@ ADR-030 ToolGateway boundary (accepted)
 ADR-031 Agent loop strategy architecture (accepted)
 ADR-032 Approval extensions/control channel (deferred after PM-05 baseline)
 ADR-033 Shell sandbox (accepted)
-ADR-034 Content Retrieval / Project Docs RAG
-ADR-035 Bounded tool loop
-ADR-037 Scheduler
-ADR-038 Sleep/reflection
-ADR-036 Planner-executor
-ADR-039 External integrations
-ADR-040 MCP gateway
-ADR-041 Voice gateway
-ADR-042 Cloud enablement
-ADR-043 WebSocket/control channel
-ADR-044 Artifact storage
+ADR-034 Content Retrieval / Project Docs RAG (accepted)
+ADR-035 Automatic loop strategy selection (accepted)
+ADR-042 Voice gateway
+ADR-036 Graph runtime adapter and LangGraph adoption gate
+ADR-037 Planner-executor
+ADR-038 Scheduler
+ADR-039 Sleep/reflection
+ADR-040 External integrations
+ADR-041 MCP gateway
+ADR-043 Cloud enablement
+ADR-044 WebSocket/control channel
+ADR-045 Artifact storage
 ```
 
 Rationale:
@@ -486,10 +624,12 @@ Rationale:
 - loop-strategy architecture must precede ReAct/planner loops;
 - shell needs approval before write capability;
 - RAG can proceed after context V2, but must remain separate from memory;
-- voice should wait until streaming, interrupt, policy and context semantics are
-  stronger.
+- voice should wait until PM-08d auto-routing and CLI readiness so spoken turns
+  can use the same chat/RAG/tool/approval/cancel path as typed turns;
+- graph runtime evaluation is deferred until planner-executor, durable code
+  sandbox, sleep/reflection or long-running workflow pressure justifies it.
 
-## 6. ADRs not needed yet
+## 7. ADRs not needed yet
 
 Do not write detailed ADRs yet for:
 

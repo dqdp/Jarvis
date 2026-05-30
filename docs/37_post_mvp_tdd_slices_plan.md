@@ -25,9 +25,16 @@ PM-06a Project read-only shell tool
 PM-06b Read-only system diagnostics tools
 PM-07a Project Docs ingestion and citation index
 PM-07b Project Docs retrieval and ContextAssembler integration
+PM-08a Loop selection domain and selector contract
+PM-08b API/request lifecycle auto mode
+PM-08c CLI auto mode and mode controls
+PM-08d CLI tool/RAG/approval readiness surface
+PM-09 Voice gateway foundation
 ```
 
-PM-01 through PM-07b are accepted in detail here. Later slices should be
+PM-01 through PM-09 are accepted in detail here. PM-08 is intentionally split
+into smaller implementation sub-slices because voice must build on a working
+CLI/API agent surface, not on a partially wired selector. Later slices should be
 expanded before implementation.
 
 ## 2. Slice PM-01 — Capability and policy foundation
@@ -533,7 +540,8 @@ After this slice:
 
 ```text
 AgentRuntime selects a loop strategy.
-memory_augmented_answer remains the default.
+memory_augmented_answer remains the default concrete strategy until PM-08 adds
+user-facing auto selection.
 memory_augmented_answer still has max_tool_calls=0.
 The current MVP event chain remains compatible.
 ToolGateway is still not used by the base loop.
@@ -671,7 +679,7 @@ PM-03 is complete only when:
 tests were added before production code;
 red phase failed for missing loop strategy behavior;
 existing MVP unit/contract/e2e behavior remains green;
-memory_augmented_answer is selected by default;
+memory_augmented_answer is selected by default in the PM-03 baseline;
 memory_augmented_answer keeps max_tool_calls=0;
 ToolGateway is not required by memory_augmented_answer;
 no tool-capable loop is implemented;
@@ -2232,4 +2240,1250 @@ event log vector indexing
 cloud embeddings
 mandatory pgvector dependency
 provider-native file search
+```
+
+## 11. Slice PM-08 — Automatic loop selection and CLI readiness
+
+### Goal
+
+Make ordinary chat, Project Docs RAG and safe/read-only tools available through
+one natural CLI/API chat surface.
+
+After PM-08, the user should not need to know or type:
+
+```text
+memory_augmented_answer
+tool_react_loop
+specific internal tool names
+```
+
+The default user-facing behavior is:
+
+```text
+auto
+```
+
+`auto` resolves on the backend to one concrete loop strategy before runtime
+execution.
+
+PM-08 must not implement a deterministic-only selector as the target
+architecture. The slice must introduce `LoopStrategySelector` plus
+`IntentClassifierPort`; CI uses fake classifier implementations, while runtime
+may initially use a conservative deterministic classifier adapter.
+
+### Inputs
+
+Required docs:
+
+```text
+docs/adr/ADR-035_automatic_loop_strategy_selection.md
+docs/adr/ADR-031_agent_loop_strategy_architecture.md
+docs/adr/ADR-030_toolgateway_boundary_and_tool_invocation_audit.md
+docs/adr/ADR-034_content_retrieval_subsystem_and_project_docs_rag.md
+docs/06_agent_runtime_and_loop_architecture.md
+docs/10_api_and_streaming.md
+docs/22_api_shape_and_request_lifecycle.md
+docs/26_testing_strategy.md
+```
+
+Prerequisites:
+
+```text
+PM-01 complete
+PM-02 complete
+PM-03 complete
+PM-04 complete
+PM-05 complete
+PM-06a complete
+PM-06b complete
+PM-07a complete
+PM-07b complete
+```
+
+### User-facing behavior
+
+Default CLI/API behavior:
+
+```text
+no loop_strategy provided -> auto
+```
+
+Explicit modes:
+
+```text
+auto
+chat
+tools
+```
+
+Mapping:
+
+```text
+auto  -> LoopStrategySelector chooses concrete loop
+chat  -> memory_augmented_answer
+tools -> tool_react_loop
+```
+
+Examples:
+
+```text
+"explain the permission model"
+  -> memory_augmented_answer
+
+"what does ADR-034 say about project docs RAG?"
+  -> memory_augmented_answer with ContentRetrievalPort context hits
+
+"check CPU temperature"
+  -> tool_react_loop using system diagnostics tools
+
+"inspect where LoopStrategyName is defined"
+  -> tool_react_loop using project read-only shell tools
+```
+
+### Delivery breakdown
+
+PM-08 is delivered as four ordered sub-slices:
+
+```text
+PM-08a Loop selection domain and selector contract
+PM-08b API/request lifecycle auto mode
+PM-08c CLI auto mode and mode controls
+PM-08d CLI tool/RAG/approval readiness surface
+```
+
+Do not start PM-09 voice implementation until PM-08d is complete. Voice depends
+on the same user-turn surface being usable from text first.
+
+### PM-08a — Loop selection domain and selector contract
+
+Goal:
+
+```text
+Create the backend selection model without changing CLI/API defaults yet.
+```
+
+Tests first:
+
+```text
+test_loop_selection_mode_accepts_auto_chat_tools
+test_loop_selection_request_rejects_missing_required_fields
+test_intent_classification_requires_confidence_between_zero_and_one
+test_capability_candidate_does_not_store_raw_prompt_evidence
+test_loop_selection_decision_distinguishes_requested_mode_from_selected_loop
+test_medium_confidence_tool_intent_falls_back_conservatively
+test_misleading_without_tools_does_not_fallback_to_fake_chat
+test_selector_uses_intent_classifier_for_auto_mode
+test_fake_intent_classifier_drives_selector_decision
+test_auto_selects_memory_loop_for_ordinary_chat
+test_auto_selects_memory_loop_for_project_docs_question
+test_auto_selects_tool_loop_for_project_shell_read_intent
+test_auto_selects_tool_loop_for_system_diagnostics_intent
+test_auto_reports_tools_disabled_for_tool_intent
+test_classifier_low_confidence_falls_back_to_chat
+test_classifier_tool_intent_is_clamped_by_policy
+test_explicit_chat_override_selects_memory_loop
+test_explicit_tools_override_selects_tool_loop
+test_selector_does_not_treat_rag_as_tool_loop
+test_selector_outputs_reason_code_and_candidate_capabilities
+test_selector_does_not_log_raw_prompt_in_decision_payload
+```
+
+Architecture tests:
+
+```text
+test_selector_depends_on_intent_classifier_port_not_model_provider
+test_selector_does_not_import_tool_adapters
+test_selector_does_not_import_storage_adapters
+test_selector_does_not_import_context_assembler_implementation
+test_intent_classifier_port_does_not_import_tool_adapters
+test_memory_augmented_answer_still_does_not_import_toolgateway
+```
+
+Expected red phase:
+
+```text
+LoopStrategySelector does not exist
+IntentClassifierPort does not exist
+LoopSelectionMode does not exist
+LoopSelectionRequest does not exist
+LoopSelectionDecision does not exist
+CapabilityCandidate does not exist
+IntentClassification does not exist
+```
+
+Implementation:
+
+```text
+domain:
+  LoopSelectionMode
+  LoopSelectionRequest
+  LoopSelectionDecision
+  LoopSelectionReason
+  IntentFamily
+  IntentClassification
+  CapabilityCandidate
+  SelectionDecisionStatus
+  SelectionFallbackPreference
+
+runtime:
+  IntentClassifierPort
+  FakeIntentClassifier
+  DeterministicIntentClassifier conservative baseline
+  LoopStrategySelector
+  classifier-output validation
+  policy/config/budget gates
+```
+
+Acceptance:
+
+```text
+selector is fully testable without API, CLI or real LLM calls;
+selector returns constrained decisions, not executable tool instructions;
+selector distinguishes requested mode from selected concrete loop;
+RAG is classified as memory loop with content retrieval, not tool loop;
+tool intent can be rejected or marked unavailable without fake chat.
+```
+
+### PM-08b — API/request lifecycle auto mode
+
+Goal:
+
+```text
+Wire backend auto-selection into the request lifecycle.
+```
+
+Tests first:
+
+```text
+test_message_without_loop_strategy_uses_auto_mode
+test_auto_mode_persists_requested_mode_and_selected_loop_metadata
+test_auto_mode_emits_loop_selection_event
+test_model_profile_matches_selected_loop
+test_tools_disabled_does_not_silently_fallback_to_chat
+test_explicit_tools_mode_is_rejected_when_tools_disabled
+test_request_metadata_keeps_selected_model_profile_resolution_after_loop_selection
+```
+
+Architecture tests:
+
+```text
+test_api_transport_does_not_own_loop_selection_rules
+test_request_metadata_does_not_call_tool_adapters
+test_loop_selection_events_do_not_include_raw_prompt
+```
+
+Expected red phase:
+
+```text
+auto is not a known user-facing mode
+missing loop_strategy still resolves directly to memory_augmented_answer
+selected loop metadata is not persisted separately from requested mode
+loop selection events do not exist
+model profile resolution still happens before concrete loop selection
+```
+
+Implementation:
+
+```text
+api/request lifecycle:
+  accept auto/chat/tools user-facing modes
+  route missing loop_strategy to requested_mode=auto
+  call LoopStrategySelector before AgentRuntime execution
+  persist requested_mode separately from selected_loop_strategy
+  resolve model_profile after selected_loop_strategy is known
+  emit redacted loop-selection started/completed/failed events
+```
+
+Acceptance:
+
+```text
+API clients can omit loop_strategy and get auto routing;
+explicit chat/tools overrides still work;
+selected concrete loop and selected model profile are visible in request metadata;
+tools-disabled tool intent fails clearly rather than hallucinating live state;
+no real LLM, shell or diagnostics calls are required for API contract tests.
+```
+
+### PM-08c — CLI auto mode and mode controls
+
+Goal:
+
+```text
+Make auto the normal CLI behavior and keep explicit modes as debug controls.
+```
+
+Tests first:
+
+```text
+test_cli_submit_message_omits_loop_strategy_for_default_auto
+test_cli_chat_accepts_loop_strategy_override
+test_interactive_mode_defaults_to_auto
+test_interactive_mode_command_switches_between_auto_chat_tools
+test_interactive_help_lists_mode_command
+test_interactive_status_displays_current_mode_without_internal_loop_names_by_default
+```
+
+Architecture tests:
+
+```text
+test_cli_does_not_import_loop_selector
+test_cli_does_not_duplicate_selector_rules
+```
+
+Expected red phase:
+
+```text
+CLI still defaults to an internal concrete loop strategy
+CLI cannot set or display auto/chat/tools mode
+interactive help does not list mode controls
+CLI status leaks internal loop names as the primary user-facing mode
+```
+
+Implementation:
+
+```text
+cli:
+  default to auto
+  add --loop-strategy auto|chat|tools as debug override
+  add /mode auto|chat|tools in interactive mode
+  show current user-facing mode in help/status
+  keep routing rules on the backend
+```
+
+Acceptance:
+
+```text
+normal CLI chat does not require loop_strategy or tool names;
+debug override exists but is not required for ordinary use;
+CLI sends user-facing mode, not selector decisions;
+CLI help/status is understandable without exposing architecture internals first.
+```
+
+### PM-08d — CLI tool/RAG/approval readiness surface
+
+Goal:
+
+```text
+Prove that the text CLI can use the implemented RAG, tools, approvals and
+cancellation paths through one normal chat surface before voice is added.
+```
+
+Tests first:
+
+```text
+test_cli_plain_question_uses_memory_loop
+test_cli_project_docs_question_uses_rag_without_tool_loop
+test_cli_system_diagnostics_question_uses_tool_loop
+test_cli_project_shell_question_uses_tool_loop
+test_cli_tool_intent_approval_flow_still_works
+test_cli_approval_prompt_can_approve_deny_and_cancel
+test_cli_cancel_active_request_keeps_interactive_session_usable
+test_cli_tool_flow_renders_action_approval_observation_without_raw_json_noise
+test_cli_tool_unavailable_message_is_clear_when_policy_denies
+```
+
+Architecture tests:
+
+```text
+test_cli_rendering_does_not_execute_tools
+test_cli_approval_controls_call_api_not_toolgateway_directly
+test_voice_readiness_surface_does_not_add_voice_dependencies
+```
+
+Expected red phase:
+
+```text
+CLI e2e cannot trigger RAG/tools through auto mode
+approval flow is only partly usable from interactive CLI
+cancel/interrupt leaves the interactive session in a broken state
+tool proposal/result rendering is too raw or ambiguous for normal usage
+```
+
+Implementation:
+
+```text
+cli:
+  render selected mode/loop/result in user-facing language
+  render tool proposals, approval prompts and observations consistently
+  support approve/deny/cancel from the normal interactive flow
+  make Ctrl-C and /cancel return to a usable prompt
+  keep RAG answers citation-oriented and not tool-loop-looking
+
+tests:
+  fake classifier, fake providers, fake tools and fake approvals only
+```
+
+Acceptance:
+
+```text
+plain text CLI can automatically answer ordinary questions;
+plain text CLI can automatically retrieve Project Docs RAG citations;
+plain text CLI can automatically route live project/system inspection to tools;
+approval-required tool flow is understandable and controllable from CLI;
+cancel/interrupt does not break the session;
+tool flow output is not raw JSON-first;
+all PM-08a through PM-08d architecture tests pass.
+```
+
+Bad red failures for all PM-08 sub-slices:
+
+```text
+test requires a real LLM call
+test calls real shell or diagnostics commands
+test bypasses API/runtime boundaries
+test expects RAG to be implemented as a tool
+test logs raw full prompt text
+test duplicates selector rules in CLI
+```
+
+Do not require a model-backed classifier in PM-08. PM-08 must introduce the
+`IntentClassifierPort` boundary and use fake/deterministic implementations so CI
+does not require a real LLM call. A local structured model-backed classifier is
+a later adapter behind the same port.
+
+### Intent resolution pipeline
+
+Initial pipeline:
+
+```text
+explicit chat mode
+  -> memory_augmented_answer
+
+explicit tools mode
+  -> tool_react_loop if tools are enabled, otherwise reject
+
+auto mode
+  -> IntentClassifierPort returns constrained IntentClassification
+
+ordinary explanation/chat/drafting classification
+  -> memory_augmented_answer
+
+project-docs question classification
+  -> memory_augmented_answer
+
+project read-only inspection classification
+  -> tool_react_loop
+
+system diagnostics classification
+  -> tool_react_loop
+
+safe built-in tool classification
+  -> tool_react_loop
+
+clear tool intent while tools are disabled
+  -> reject or return explicit unavailable-tools result
+
+unknown/low-confidence intent
+  -> memory_augmented_answer with reason unknown_intent_default_chat
+```
+
+The selector must treat classifier output as advice. It validates candidate
+capabilities against policy, enabled tools, budgets and model profiles before
+choosing a concrete loop.
+
+The first deterministic classifier adapter may use conservative lexical hints
+and capability metadata, but this is not the architecture boundary. New tools
+should extend capability/classifier metadata and tests, not add ad hoc routing
+logic to the selector.
+
+### Domain model
+
+PM-08 model objects:
+
+```text
+LoopSelectionMode:
+  auto
+  chat
+  tools
+
+IntentFamily:
+  ordinary_chat
+  project_docs_question
+  project_inspection
+  system_diagnostics
+  safe_builtin_tool
+  code_execution
+  external_integration
+  planner_task
+  background_workflow
+  unknown
+
+SelectionDecisionStatus:
+  selected
+  fallback_chat
+  rejected_by_policy
+  tools_unavailable
+  invalid_override
+  classifier_unavailable
+
+SelectionFallbackPreference:
+  chat
+  fail_unavailable
+  ask_clarification
+```
+
+PM-08 routes only implemented intent families:
+
+```text
+ordinary_chat
+project_docs_question
+project_inspection
+system_diagnostics
+safe_builtin_tool
+unknown
+```
+
+Future families may exist in the enum, but must stay disabled until their tools
+and policy slices exist.
+
+`LoopSelectionRequest` includes:
+
+```text
+request_id
+conversation_id
+user_id
+requested_mode
+user_input
+current_message_sensitivity
+active_project_namespace
+permission_mode
+available_capabilities
+available_tools_summary
+runtime_budget_summary
+model_profile_override optional
+metadata
+```
+
+`CapabilityCandidate` includes:
+
+```text
+capability
+intent_family
+confidence
+requires_live_state
+requires_execution
+requires_write
+tool_names
+risk_classes
+scope_hint
+evidence_codes
+```
+
+`IntentClassification` includes:
+
+```text
+intent_family
+confidence
+candidate_capabilities
+requires_live_state
+requires_execution
+answer_without_tools_would_be_misleading
+reason_code
+fallback_preference
+```
+
+`LoopSelectionDecision` includes:
+
+```text
+requested_mode
+selected_loop_strategy
+selected_model_profile optional, filled after selected_loop_strategy is known
+intent_family
+reason_code
+confidence
+candidate_capabilities
+requires_tools
+requires_live_state
+policy_outcome
+approval_possible
+fallback_behavior
+decision_status
+```
+
+Rules:
+
+```text
+requested_mode is persisted separately from selected_loop_strategy;
+raw user_input is transient and must not be copied into selection events;
+evidence_codes must be stable non-sensitive labels, not prompt snippets;
+candidate tool_names are references only, not execution instructions;
+selector may execute a loop only for selected or fallback_chat decisions.
+```
+
+### Confidence model
+
+Confidence is normalized:
+
+```text
+0.0 <= confidence <= 1.0
+```
+
+Initial bands:
+
+```text
+high confidence:   >= 0.75
+medium confidence: >= 0.45 and < 0.75
+low confidence:    < 0.45
+```
+
+PM-08 default behavior:
+
+```text
+high confidence tool intent
+  -> tool_react_loop if policy/config allow
+
+high confidence chat or project_docs_question
+  -> memory_augmented_answer
+
+medium confidence
+  -> conservative fallback to memory_augmented_answer
+
+low confidence
+  -> memory_augmented_answer with classifier_low_confidence reason
+
+answer_without_tools_would_be_misleading=true and tools unavailable
+  -> tools_unavailable or rejected_by_policy, not fake chat
+```
+
+### Capability routing metadata
+
+Every auto-routable capability/tool should expose:
+
+```text
+capability
+intent_families
+description
+requires_live_state
+requires_execution
+requires_write
+risk_classes
+positive_examples
+negative_examples
+default_selection_policy
+```
+
+This metadata guides classifier implementations. It is not authorization.
+
+Future code sandbox metadata shape:
+
+```text
+capability: tool.code_sandbox.execute
+intent_families: [code_execution]
+requires_live_state: false
+requires_execution: true
+requires_write: false unless mounted write outputs are enabled
+risk_classes: [compute_execution]
+positive_examples:
+  run this Python snippet
+  execute this test and show output
+negative_examples:
+  explain this code
+  write an example but do not run it
+default_selection_policy:
+  developer_local: approval_required or allow only for read-only sandbox
+  locked_down: approval_required or deny
+  automation: deny by default
+```
+
+Adding code sandbox later should add capability metadata, policy and classifier
+tests. It should not require ad hoc code branches in `LoopStrategySelector`.
+
+### IntentClassifierPort behavior
+
+Classifier input:
+
+```text
+user request text
+requested mode
+active project namespace
+available intent families
+available capabilities and tool descriptions
+permission mode summary
+```
+
+Classifier output:
+
+```text
+intent_family
+requires_live_state
+candidate_capabilities
+confidence
+answer_without_tools_would_be_misleading
+reason_code
+```
+
+Initial intent families:
+
+```text
+ordinary_chat
+project_docs_question
+project_inspection
+system_diagnostics
+safe_builtin_tool
+unknown
+```
+
+Future intent families may include:
+
+```text
+code_execution
+external_integration
+planner_task
+background_workflow
+```
+
+### RAG rule
+
+Project Docs RAG is not a tool-loop trigger.
+
+The expected path remains:
+
+```text
+memory_augmented_answer
+  -> ContextAssembler
+      -> ContentRetrievalPort
+```
+
+This keeps documentation questions cheap, deterministic and covered by golden
+context tests.
+
+### Policy behavior
+
+Policy remains authoritative:
+
+```text
+selector proposes candidate capabilities
+PolicyPort decides allow / deny / approval_required
+ToolGateway enforces policy again for actual tool calls
+```
+
+The selector must not grant access. A selected `tool_react_loop` only means the
+runtime may attempt tool-capable execution under existing policy and budgets.
+
+### Event and audit behavior
+
+PM-08 adds redacted events:
+
+```text
+request.loop_selection.started
+request.loop_selection.completed
+request.loop_selection.failed
+```
+
+Completed event payload:
+
+```text
+request_id
+conversation_id
+requested_mode
+selected_loop_strategy
+selected_model_profile
+reason_code
+confidence
+candidate_capabilities
+policy_outcome
+```
+
+Do not include raw full prompt text.
+
+### Acceptance criteria
+
+PM-08 is complete only when:
+
+```text
+tests were added before production code in each sub-slice;
+PM-08a red phase failed for missing selector/domain behavior;
+PM-08b red phase failed for missing API auto/request metadata behavior;
+PM-08c red phase failed for missing CLI mode behavior;
+PM-08d red phase failed for missing CLI tool/RAG/approval readiness behavior;
+missing loop_strategy means auto, not direct memory loop;
+ordinary chat still uses memory_augmented_answer;
+project-docs questions use RAG without tool_react_loop;
+live project/system inspection uses tool_react_loop;
+tools-disabled tool intent does not silently hallucinate;
+CLI defaults to auto and exposes debug override;
+interactive CLI has /mode auto|chat|tools;
+interactive CLI can drive approval-required tool flows;
+interactive CLI can cancel active requests and remain usable;
+CLI renders tool proposals/results in user-facing language, not raw JSON-first;
+loop-selection events are redacted;
+architecture guardrails pass;
+no real LLM, real shell or host diagnostics calls are required for CI.
+```
+
+### Out of scope
+
+Do not implement:
+
+```text
+model-backed intent classifier adapter
+planner-executor routing
+multi-agent handoff
+automatic external integration routing
+background scheduler routing
+remembered per-user mode preferences
+cloud model fallback
+provider-native tool execution bypassing ToolGateway
+RAG as a tool-loop requirement
+```
+
+## 12. Slice PM-09 — Voice gateway foundation
+
+### Goal
+
+Add the first voice assistant path after PM-08d proves the text CLI/API surface
+can use auto-selected chat, RAG, tools, approvals and cancellation.
+
+Voice is a client/channel over the existing runtime, not a separate agent
+runtime. A spoken turn must become the same kind of user turn that CLI/API uses:
+
+```text
+audio input
+  -> SpeechToTextPort
+  -> existing conversation/message/request lifecycle
+  -> PM-08 auto loop selection
+  -> existing runtime/SSE stream
+  -> TextToSpeechPort
+  -> audio output
+```
+
+PM-09 starts with push-to-talk/local-session semantics. Wake word, always-on
+listening, realtime cloud models and barge-in are deferred.
+
+### Inputs
+
+Required docs:
+
+```text
+docs/adr/ADR-035_automatic_loop_strategy_selection.md
+docs/adr/ADR-029_capability_and_permission_model.md
+docs/10_api_and_streaming.md
+docs/17_data_sensitivity_and_privacy_policy.md
+docs/22_api_shape_and_request_lifecycle.md
+docs/26_testing_strategy.md
+docs/37_post_mvp_tdd_slices_plan.md
+```
+
+Before implementation, write or promote a dedicated Voice Gateway ADR covering:
+
+```text
+push-to-talk vs wake word sequence
+audio capture/playback boundaries
+SpeechToTextPort
+TextToSpeechPort
+modular speech provider profiles
+transcript sensitivity
+audio retention policy
+interrupt/cancel behavior
+local-first provider policy
+external speech API policy
+```
+
+### Dependencies
+
+PM-09 depends on all PM-08 sub-slices:
+
+```text
+PM-08a complete
+PM-08b complete
+PM-08c complete
+PM-08d complete
+```
+
+In practice this means the text CLI already has a working normal chat surface
+for automatic chat/RAG/tools routing, approval control and cancellation before
+voice is layered on top.
+
+Voice must use PM-08 default routing:
+
+```text
+spoken request -> transcript -> auto mode -> selected loop
+```
+
+The voice channel must not implement separate intent routing.
+
+### Tests first
+
+Unit tests:
+
+```text
+test_voice_turn_requires_transcript_text
+test_voice_turn_uses_auto_mode_by_default
+test_voice_turn_records_transcript_sensitivity
+test_voice_config_disables_audio_storage_by_default
+test_voice_session_can_cancel_active_request
+test_fake_stt_returns_transcript_without_real_audio_device
+test_fake_tts_returns_audio_ref_without_real_speaker
+test_speech_provider_profile_supports_local_and_external_api_kinds
+test_external_speech_provider_requires_explicit_policy_allow
+test_external_speech_provider_uses_secret_reference_not_raw_secret
+```
+
+Contract tests:
+
+```text
+test_speech_to_text_port_transcribes_audio_input
+test_text_to_speech_port_synthesizes_assistant_text
+test_voice_gateway_submits_transcript_through_existing_request_lifecycle
+test_voice_gateway_streams_runtime_events_without_private_audio_payloads
+test_voice_gateway_does_not_store_raw_audio_when_retention_disabled
+test_voice_gateway_uses_provider_registry_not_concrete_provider
+```
+
+Architecture tests:
+
+```text
+test_voice_gateway_does_not_import_concrete_model_providers
+test_voice_gateway_does_not_import_external_speech_api_clients
+test_voice_gateway_does_not_bypass_api_runtime_or_agent_runtime
+test_stt_tts_adapters_do_not_import_conversation_storage
+test_voice_channel_uses_loop_selection_contract_not_custom_router
+```
+
+E2E smoke with fake STT/TTS/model providers:
+
+```text
+test_fake_voice_turn_transcribes_routes_answers_and_synthesizes
+test_fake_voice_turn_can_trigger_pm08_tool_routing_from_transcript
+test_fake_voice_cancel_stops_active_request
+```
+
+### Expected red phase
+
+The first test run should fail because:
+
+```text
+SpeechToTextPort does not exist
+TextToSpeechPort does not exist
+VoiceGateway does not exist
+voice turn submission path does not exist
+fake STT/TTS adapters do not exist
+```
+
+Bad red failures:
+
+```text
+test requires microphone or speaker hardware
+test requires real STT/TTS provider
+test requires cloud model or cloud speech service
+test stores raw audio by default
+test bypasses PM-08 auto loop selection
+```
+
+### Implementation
+
+Minimal production changes:
+
+```text
+domain/voice:
+  VoiceTurnRequest
+  VoiceTurnResult
+  AudioInputRef
+  AudioOutputRef
+  VoiceSessionState
+
+ports/voice:
+  SpeechToTextPort
+  TextToSpeechPort
+
+voice:
+  VoiceGateway
+  SpeechProviderProfile
+  SpeechProviderRegistry
+  FakeSpeechToTextAdapter
+  FakeTextToSpeechAdapter
+
+cli/api:
+  thin voice entrypoint or local voice command after ADR approval
+```
+
+The first implementation may expose voice through a local CLI command or a
+small local API endpoint, but the core contract is the voice gateway and fake
+ports. Provider-specific local STT/TTS adapters can be added after the contract
+is green.
+
+Speech providers must be modular from the start:
+
+```text
+local_process
+local_library
+external_api
+fake
+```
+
+The voice gateway must depend on provider-neutral profiles and the
+`SpeechToTextPort` / `TextToSpeechPort` contracts only. It must not branch on a
+specific local engine, command-line binary, SDK or external API client.
+
+External API speech providers are a future adapter path, not the PM-09 default.
+They must be disabled unless explicitly configured and allowed by policy. Secret
+values must be referenced by secret id or environment key and must not be copied
+into prompts, events, logs, transcripts or memory.
+
+### Policy and privacy
+
+Defaults:
+
+```text
+cloud speech providers: disabled
+external speech API providers: disabled unless explicitly configured and allowed
+audio storage: disabled
+transcript storage: same conversation/message rules as typed input
+transcript sensitivity: personal by default unless configured otherwise
+wake word / always listening: disabled
+```
+
+Voice must not store raw audio unless an explicit future ADR/config option
+enables it.
+
+### Acceptance criteria
+
+PM-09 is complete only when:
+
+```text
+tests were added before production code;
+red phase failed for missing voice ports/gateway;
+fake STT/TTS e2e voice turn works without hardware;
+voice submits transcript through existing runtime lifecycle;
+PM-08 auto loop selection is used for spoken turns;
+voice gateway is provider-neutral and can select local/fake/external-api
+provider profiles without importing concrete clients;
+raw audio is not stored by default;
+cloud speech/model providers remain disabled;
+architecture guardrails pass.
+```
+
+### Out of scope
+
+Do not implement:
+
+```text
+wake word
+always-on listening
+cloud realtime model path
+external speech API adapter implementation
+barge-in/interruption beyond request cancel
+speaker diarization
+multi-user voice identity
+audio archive/search
+LangGraph voice workflow
+```
+
+## 13. Follow-up — Graph runtime adapter and LangGraph adoption gate
+
+### Goal
+
+Evaluate whether LangGraph should become the graph runtime adapter for complex
+future workflows.
+
+This is a follow-up, not part of the immediate PM-08 -> PM-09 voice path. It
+should be reopened before planner-executor, durable code sandbox workflows,
+sleep/reflection execution or long-running background workflows.
+
+The follow-up must answer:
+
+```text
+Can LangGraph run behind Jarvis ports without taking over API, CLI, storage,
+policy or ToolGateway boundaries?
+Can LangGraph checkpoints/interrupts map cleanly to Jarvis request status,
+approval records, SSE and EventLog semantics?
+Should planner-executor, code sandbox workflows or sleep/reflection use
+LangGraph, custom loops, or another durable workflow runtime?
+```
+
+### Inputs
+
+Required docs:
+
+```text
+docs/adr/ADR-006_langgraph_as_phase_1_runtime_substrate.md
+docs/adr/ADR-031_agent_loop_strategy_architecture.md
+docs/adr/ADR-035_automatic_loop_strategy_selection.md
+docs/35_post_mvp_adr_backlog.md
+docs/06_agent_runtime_and_loop_architecture.md
+docs/26_testing_strategy.md
+```
+
+External references to inspect before implementation:
+
+```text
+LangGraph overview
+LangGraph persistence/checkpointing
+LangGraph interrupts / human-in-the-loop
+LangGraph workflows and agents / routing / conditional edges
+```
+
+### Scope
+
+This follow-up may add an optional LangGraph dependency only if the adapter
+spike cannot be evaluated with a local abstraction/fake first.
+
+Preferred implementation order:
+
+```text
+1. define Jarvis GraphRuntimePort / GraphWorkflowAdapter contract;
+2. add fake graph runtime adapter for CI;
+3. add an optional LangGraph adapter spike behind that contract;
+4. compare adapter behavior against existing custom loops;
+5. document adopt/defer decision.
+```
+
+Do not switch production request execution to LangGraph in this follow-up.
+
+### Tests first
+
+Unit tests:
+
+```text
+test_graph_runtime_request_contains_request_and_correlation_ids
+test_graph_runtime_state_contains_only_domain_safe_fields
+test_graph_runtime_decision_can_report_adopt_or_defer
+test_graph_interrupt_maps_to_waiting_approval_status
+test_graph_resume_requires_same_request_or_thread_identity
+test_graph_adapter_does_not_store_raw_prompt_in_checkpoint_metadata
+```
+
+Contract tests:
+
+```text
+test_fake_graph_runtime_executes_single_node_workflow
+test_fake_graph_runtime_emits_jarvis_events
+test_graph_runtime_uses_context_model_policy_tool_ports
+test_graph_runtime_maps_interrupt_to_approval_record
+test_graph_runtime_resume_maps_approval_decision_back_to_workflow
+test_graph_runtime_failure_maps_to_request_failure_status
+```
+
+Architecture tests:
+
+```text
+test_graph_adapter_does_not_import_api_or_cli
+test_graph_adapter_does_not_import_storage_adapters_directly
+test_graph_nodes_use_ports_not_concrete_tools
+test_custom_loop_strategies_do_not_require_langgraph
+test_langgraph_dependency_is_isolated_to_graph_adapter_package
+```
+
+E2E smoke with fake graph adapter:
+
+```text
+test_fake_graph_workflow_can_pause_for_approval_and_resume
+test_fake_graph_workflow_streams_jarvis_runtime_events
+test_existing_memory_augmented_answer_still_runs_without_graph_runtime
+test_existing_tool_react_loop_still_runs_without_graph_runtime
+```
+
+### Expected red phase
+
+The first test run should fail because:
+
+```text
+GraphRuntimePort does not exist
+GraphWorkflowAdapter does not exist
+GraphWorkflowDecision does not exist
+graph interrupt/resume mapping does not exist
+graph adapter package does not exist
+```
+
+Bad red failures:
+
+```text
+test requires LangGraph installation before the fake adapter contract exists
+test bypasses Jarvis EventLogPort or ApprovalStorePort
+test makes real model/tool calls
+test rewires production request execution to LangGraph
+test stores raw prompt text in graph checkpoint metadata
+```
+
+### Adapter boundary
+
+Graph-backed workflows may use:
+
+```text
+ContextAssemblerPort
+ModelRouterPort
+ToolGatewayPort
+PolicyPort
+EventLogPort
+ConversationStorePort
+ApprovalStorePort
+domain schemas
+```
+
+Graph-backed workflows must not import:
+
+```text
+FastAPI route modules
+CLI modules
+SQLAlchemy models
+concrete storage adapters directly
+provider clients directly
+shell or diagnostics adapters directly
+```
+
+### LangGraph evaluation criteria
+
+Adopt LangGraph for future complex workflows only if the follow-up demonstrates:
+
+```text
+checkpoint identity maps cleanly to Jarvis request/correlation identity;
+interrupt/resume maps cleanly to approval records and waiting_approval status;
+streaming can be translated into Jarvis SSE/runtime events;
+graph state can be redacted and kept free of raw prompt/secret leakage;
+graph nodes can call only Jarvis ports;
+custom loop strategies continue to run without LangGraph;
+CI can use fake graph runtime without a real LLM or host-specific tools;
+dependency footprint is acceptable for local-first runtime.
+```
+
+Defer LangGraph if:
+
+```text
+checkpoint persistence duplicates Jarvis storage too heavily;
+interrupt/resume semantics fight the existing approval model;
+graph state redaction is too hard to guarantee;
+adapter code becomes more complex than the workflows it replaces;
+dependency footprint or operational behavior is not acceptable.
+```
+
+### Output
+
+The follow-up must end with a written decision update:
+
+```text
+adopt LangGraph for planner/code-sandbox/sleep workflows;
+or defer LangGraph and continue custom loop/workflow runtime;
+or keep LangGraph only as an optional adapter for selected workflows.
+```
+
+If adopted, write or promote the corresponding ADR before implementing
+planner-executor or durable code sandbox workflows.
+
+### Acceptance criteria
+
+The follow-up is complete only when:
+
+```text
+tests were added before production code;
+red phase failed for missing graph adapter boundary;
+fake graph runtime contract is green;
+architecture guardrails isolate LangGraph behind adapter package;
+approval interrupt/resume mapping is tested with fake graph runtime;
+existing custom loops still pass without LangGraph;
+adopt/defer decision is documented;
+no production behavior switch occurred without a follow-up ADR/slice.
+```
+
+### Out of scope
+
+Do not implement:
+
+```text
+planner-executor product workflow
+code sandbox execution
+sleep/reflection execution
+LangGraph production migration
+LangGraph checkpoint tables as system of record
+multi-agent orchestration
+LangSmith/cloud deployment
 ```

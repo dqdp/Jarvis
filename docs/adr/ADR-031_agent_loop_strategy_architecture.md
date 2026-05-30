@@ -89,8 +89,12 @@ failure_semantics
 emitted_events
 ```
 
-The existing `memory_augmented_answer` strategy remains the default and keeps
-`max_tool_calls=0`.
+The existing `memory_augmented_answer` strategy remains the reliable baseline
+and keeps `max_tool_calls=0`.
+
+ADR-035 later defines user-facing `auto` selection. `auto` is not a loop
+strategy; it is a routing mode that resolves to one of the concrete strategies
+defined here.
 
 ## Architecture shape
 
@@ -98,6 +102,7 @@ Target shape:
 
 ```text
 AgentRuntime
+  -> LoopStrategySelector after ADR-035
   -> LoopStrategyRegistry
       -> MemoryAugmentedAnswerLoop
       -> ToolReactLoop
@@ -115,6 +120,7 @@ LoopStrategy
 Rules:
 
 - strategies use ports, not concrete adapters;
+- `auto` routing must resolve before strategy execution;
 - only tool-capable strategies depend on `ToolGatewayPort`;
 - `memory_augmented_answer` must not gain hidden tool behavior;
 - planner-executor and sleep/reflection remain separate future strategies;
@@ -303,7 +309,7 @@ Required tests before implementation:
 
 ```text
 unit:
-  strategy registry selects memory_augmented_answer by default
+  strategy registry selects memory_augmented_answer by default in the PM-03 baseline
   unknown strategy is rejected
   memory_augmented_answer keeps max_tool_calls=0
   tool-capable strategy requires ToolGatewayPort
