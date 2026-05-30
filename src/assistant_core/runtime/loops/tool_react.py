@@ -26,7 +26,7 @@ from assistant_core.domain.loops import (
 from assistant_core.domain.models import StructuredModelRequest
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolCallRequest, ToolObservationStatus
+from assistant_core.domain.tools import ToolObservationStatus
 from assistant_core.ports.approvals import ApprovalStorePort
 from assistant_core.ports.context_assembler import ContextAssemblerPort
 from assistant_core.ports.conversation_store import ConversationStorePort
@@ -34,6 +34,8 @@ from assistant_core.ports.event_log import EventLogPort
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.ports.model_router import ModelRouterPort
 from assistant_core.ports.tools import ToolGatewayPort
+from assistant_core.runtime.loops.tool_approval import ApprovalWaiter
+from assistant_core.runtime.loops.tool_proposal_executor import ToolProposalExecutor
 
 
 TOOL_PROPOSAL_SCHEMA = {
@@ -70,6 +72,11 @@ class ToolReactLoop:
         self._event_log = event_log
         self._tool_gateway = tool_gateway
         self._approval_store = approval_store
+        self._proposal_executor = ToolProposalExecutor(
+            tool_gateway=tool_gateway,
+            conversation_store=conversation_store,
+            approval_waiter=ApprovalWaiter(approval_store) if approval_store is not None else None,
+        )
 
     def validate_budget(self, budget: LoopBudget) -> None:
         if budget.max_steps <= 0:
@@ -192,7 +199,7 @@ class ToolReactLoop:
                         sensitivity=context.manifest.max_sensitivity,
                     )
 
-                observation_ref = await self._execute_tool_proposal(
+                observation_ref = await self._proposal_executor.execute(
                     request,
                     proposal,
                     step_id=step_id,
@@ -336,114 +343,6 @@ class ToolReactLoop:
                     **event.payload,
                 },
             )
-
-    async def _execute_tool_proposal(
-        self,
-        request: LoopExecutionRequest,
-        proposal: ToolProposal,
-        *,
-        step_id: str,
-        causation_event_id: str,
-        used_tool_calls: int,
-        loop_deadline: float,
-    ) -> ToolObservationRef:
-        if proposal.tool_name is None:
-            raise ToolProposalParseError("tool_call requires tool_name")
-        self.ensure_tool_budget(used_tool_calls=used_tool_calls, budget=request.budget)
-        observation = await self._tool_gateway.invoke(
-            ToolCallRequest(
-                tool_name=proposal.tool_name,
-                arguments=proposal.arguments,
-                request_id=request.request_id,
-                conversation_id=request.conversation_id,
-                correlation_id=request.correlation_id or request.request_id,
-                causation_event_id=causation_event_id,
-                step_id=step_id,
-                user_id=request.user_id,
-                project_namespace=request.active_project_namespace,
-                sensitivity=request.current_message_sensitivity,
-                permission_mode=request.permission_mode,
-                timeout_seconds=_remaining_timeout(
-                    loop_deadline,
-                    request.budget.max_model_call_seconds,
-                ),
-                metadata={"loop_strategy": request.strategy_name.value},
-            ),
-        )
-        if observation.status == ToolObservationStatus.APPROVAL_REQUIRED:
-            approval_id = observation.metadata.get("approval_id")
-            if approval_id is not None and self._approval_store is not None:
-                await self._conversation_store.update_assistant_request_status(
-                    UpdateAssistantRequestStatusCommand(
-                        request_id=request.request_id,
-                        status=RequestStatus.WAITING_APPROVAL,
-                    ),
-                )
-                await self._wait_for_approval(
-                    approval_id,
-                    loop_deadline=loop_deadline,
-                    actor_id=request.user_id,
-                )
-                await self._conversation_store.update_assistant_request_status(
-                    UpdateAssistantRequestStatusCommand(
-                        request_id=request.request_id,
-                        status=RequestStatus.RUNNING,
-                    ),
-                )
-                observation = await self._tool_gateway.invoke(
-                    ToolCallRequest(
-                        tool_name=proposal.tool_name,
-                        arguments=proposal.arguments,
-                        request_id=request.request_id,
-                        conversation_id=request.conversation_id,
-                        correlation_id=request.correlation_id or request.request_id,
-                        causation_event_id=causation_event_id,
-                        step_id=step_id,
-                        user_id=request.user_id,
-                        project_namespace=request.active_project_namespace,
-                        sensitivity=request.current_message_sensitivity,
-                        permission_mode=request.permission_mode,
-                        approval_id=approval_id,
-                        timeout_seconds=_remaining_timeout(
-                            loop_deadline,
-                            request.budget.max_model_call_seconds,
-                        ),
-                        metadata={"loop_strategy": request.strategy_name.value},
-                    ),
-                )
-        return ToolObservationRef.from_observation(observation)
-
-    async def _wait_for_approval(
-        self,
-        approval_id: str,
-        *,
-        loop_deadline: float,
-        actor_id: str | None,
-    ) -> None:
-        assert self._approval_store is not None
-        try:
-            while True:
-                _raise_if_wall_time_exceeded(loop_deadline)
-                await self._approval_store.expire_stale(now=datetime.now(UTC))
-                approval = await self._approval_store.get_approval(approval_id)
-                if approval is None:
-                    raise RuntimeError("approval_not_found")
-                if approval.status.value == "granted":
-                    return
-                if approval.status.value != "pending":
-                    raise RuntimeError(f"approval_{approval.status.value}")
-                await asyncio.sleep(
-                    min(0.05, max(0.001, loop_deadline - asyncio.get_running_loop().time())),
-                )
-        except asyncio.CancelledError:
-            approval = await self._approval_store.get_approval(approval_id)
-            if approval is not None and approval.status.value == "pending":
-                await self._approval_store.cancel_approval(
-                    approval_id,
-                    actor_id=actor_id,
-                    reason="request cancelled",
-                )
-            raise
 
     async def _complete(
         self,
