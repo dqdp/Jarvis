@@ -2378,8 +2378,11 @@ test_auto_selects_memory_loop_for_ordinary_chat
 test_auto_selects_memory_loop_for_project_docs_question
 test_auto_selects_tool_loop_for_project_shell_read_intent
 test_auto_selects_tool_loop_for_system_diagnostics_intent
+test_selector_passes_working_directory_to_real_policy_for_system_diagnostics
 test_auto_reports_tools_disabled_for_tool_intent
+test_tools_disabled_reason_takes_precedence_over_unavailable_capabilities
 test_classifier_low_confidence_falls_back_to_chat
+test_non_tool_intent_drops_tool_candidate_metadata_before_chat_fallback
 test_classifier_tool_intent_is_clamped_by_policy
 test_explicit_chat_override_selects_memory_loop
 test_explicit_tools_override_selects_tool_loop
@@ -2418,7 +2421,7 @@ domain:
   LoopSelectionMode
   LoopSelectionRequest
   LoopSelectionDecision
-  LoopSelectionReason
+  stable reason_code strings
   IntentFamily
   IntentClassification
   CapabilityCandidate
@@ -2431,7 +2434,7 @@ runtime:
   DeterministicIntentClassifier conservative baseline
   LoopStrategySelector
   classifier-output validation
-  policy/config/budget gates
+  policy/config/budget gates, including working_directory policy scope
 ```
 
 Acceptance:
@@ -2441,7 +2444,9 @@ selector is fully testable without API, CLI or real LLM calls;
 selector returns constrained decisions, not executable tool instructions;
 selector distinguishes requested mode from selected concrete loop;
 RAG is classified as memory loop with content retrieval, not tool loop;
-tool intent can be rejected or marked unavailable without fake chat.
+tool intent can be rejected or marked unavailable without fake chat;
+working_directory can be passed to PolicyPort without being stored in
+loop-selection event payloads.
 ```
 
 ### PM-08b — API/request lifecycle auto mode

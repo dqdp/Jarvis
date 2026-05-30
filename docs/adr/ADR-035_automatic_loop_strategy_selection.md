@@ -176,6 +176,7 @@ requested_mode
 user_input
 current_message_sensitivity
 active_project_namespace
+working_directory optional, for policy scope only
 permission_mode
 available_capabilities
 available_tools_summary
@@ -187,6 +188,10 @@ metadata
 `user_input` is available to the selector/classifier as transient execution
 input, but it must not be copied into selection events, long-lived audit payloads
 or request metadata as a raw full prompt.
+
+`working_directory` may be passed to `PolicyPort` for shell and system
+diagnostics scope checks. It is not classifier evidence and must not be emitted
+in loop-selection event payloads.
 
 ### IntentFamily
 

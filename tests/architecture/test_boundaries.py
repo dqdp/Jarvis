@@ -476,6 +476,80 @@ def test_memory_augmented_answer_loop_does_not_import_toolgateway() -> None:
     )
 
 
+def test_loop_selector_depends_on_intent_classifier_port_not_model_provider() -> None:
+    selector_path = SRC_ROOT / "runtime" / "loop_selection.py"
+    assert selector_path.is_file()
+    imported = _imported_modules(selector_path)
+
+    assert "assistant_core.ports.intent_classifier" in imported
+    _assert_no_import_prefixes(
+        [selector_path],
+        {
+            "assistant_core.models",
+            "assistant_core.ports.model_provider",
+            "assistant_core.ports.model_router",
+            "openai",
+            "ollama",
+            "vllm",
+            "httpx",
+        },
+    )
+
+
+def test_loop_selector_does_not_import_tool_adapters() -> None:
+    selector_path = SRC_ROOT / "runtime" / "loop_selection.py"
+    assert selector_path.is_file()
+    _assert_no_import_prefixes(
+        [selector_path],
+        {
+            "assistant_core.tools",
+            "assistant_core.ports.tools",
+            "subprocess",
+        },
+    )
+
+
+def test_loop_selector_does_not_import_storage_adapters() -> None:
+    selector_path = SRC_ROOT / "runtime" / "loop_selection.py"
+    assert selector_path.is_file()
+    _assert_no_import_prefixes(
+        [selector_path],
+        {
+            "assistant_core.storage",
+            "sqlalchemy",
+            "pgvector",
+        },
+    )
+
+
+def test_loop_selector_does_not_import_context_assembler_implementation() -> None:
+    selector_path = SRC_ROOT / "runtime" / "loop_selection.py"
+    assert selector_path.is_file()
+    _assert_no_import_prefixes(
+        [selector_path],
+        {
+            "assistant_core.context_assembly",
+            "assistant_core.ports.context_assembler",
+        },
+    )
+
+
+def test_intent_classifier_port_does_not_import_tool_adapters() -> None:
+    port_path = SRC_ROOT / "ports" / "intent_classifier.py"
+    assert port_path.is_file()
+    _assert_no_import_prefixes(
+        [port_path],
+        {
+            "assistant_core.tools",
+            "assistant_core.ports.tools",
+            "assistant_core.models",
+            "openai",
+            "ollama",
+            "vllm",
+        },
+    )
+
+
 def test_tool_react_loop_uses_toolgateway_port_not_adapters() -> None:
     loop_path = SRC_ROOT / "runtime" / "loops" / "tool_react.py"
     assert loop_path.is_file()
