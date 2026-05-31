@@ -318,7 +318,7 @@ def test_runtime_substrate_adr_matches_custom_deterministic_mvp() -> None:
     assert "LangGraph is deferred" in adr
 
 
-def test_pm09_docs_gate_on_full_pm08_sequence_through_pm08i() -> None:
+def test_pm09_docs_gate_on_full_pm08_sequence_through_pm08j() -> None:
     docs_text = "\n".join(
         (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
         for relative_path in [
@@ -336,11 +336,18 @@ def test_pm09_docs_gate_on_full_pm08_sequence_through_pm08i() -> None:
         "PM-08g",
         "PM-08h",
         "PM-08i",
+        "PM-08j",
     ]:
         assert slice_name in docs_text
 
     assert "PM-08d, PM-08f, PM-08g, PM-08h\nand PM-08i" not in docs_text
+    assert "PM-08h and PM-08i are complete" not in docs_text
+    assert "after PM-08i and must use" not in docs_text
     assert "after PM-08d CLI tool/RAG/approval readiness, PM-08f" not in docs_text
+    assert "canonical jarvis runtime startup" in docs_text.lower()
+    assert "jarvis-up" in docs_text
+    assert "dogfood-up" not in docs_text
+    assert "PM-08j complete" in docs_text
 
     assert "ADR-036 Graph runtime adapter" not in docs_text
     assert "ADR-046 Graph runtime adapter" in docs_text

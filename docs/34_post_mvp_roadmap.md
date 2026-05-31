@@ -357,6 +357,7 @@ PM-08f Typed tool observations and direct-answer hardening
 PM-08g Direct planner and capability routing registry cleanup
 PM-08h Tool-intent corpus hardening and pre-voice routing gate
 PM-08i Interactive CLI shell UX hardening
+PM-08j Canonical Jarvis runtime startup
 ```
 
 PM-08a:
@@ -481,6 +482,20 @@ PM-08i:
   raw JSON-first;
 - keep routing and policy decisions on the backend, not in CLI code.
 
+PM-08j:
+
+- add one canonical local Jarvis runtime entrypoint before voice starts;
+- stop relying on the test database target as the user-facing runtime path;
+- define a persistent dogfood Postgres service separate from test DB teardown;
+- add startup orchestration for dependency checks, DB readiness, migrations,
+  daemon launch, PID/log management and health polling;
+- expose Make wrappers such as `jarvis-up`, `jarvis-cli`, `jarvis-status`,
+  `jarvis-logs`, `jarvis-down` and explicit reset;
+- fail loudly when required dependencies or local models are missing, instead
+  of silently falling back to an older CLI/daemon shape;
+- keep dependency installation and model pulling in an explicit bootstrap step,
+  not in normal startup.
+
 Acceptance:
 
 - a plain CLI chat request can automatically use RAG or safe tools when needed;
@@ -498,6 +513,9 @@ Acceptance:
 - the interactive CLI has a status line, live activity phases, dynamic slash
   command palette, in-session history, stable cancel/interrupt behavior and
   deterministic `--plain`/non-TTY fallback before PM-09 starts.
+- one canonical Jarvis command path can bring up DB, migrations, daemon and
+  health checks, and can report status/logs or shut the daemon down without
+  manual Terminal orchestration.
 
 ### Phase J — Voice gateway foundation
 
@@ -508,8 +526,9 @@ Add push-to-talk voice interaction on top of the existing runtime after PM-08d
 proves the text CLI/API surface can use auto-selected chat, RAG, tools,
 approvals and cancellation, PM-08e proves model-backed classifier behavior,
 PM-08f hardens direct tool answers around typed observations, PM-08g/PM-08h
-stabilize direct planning and corpus-gated routing quality, and PM-08i hardens
-the interactive CLI shell as the pre-voice dogfood surface.
+stabilize direct planning and corpus-gated routing quality, PM-08i hardens the
+interactive CLI shell as the pre-voice dogfood surface, and PM-08j makes that
+surface operationally repeatable through canonical startup commands.
 ```
 
 Work:
@@ -521,7 +540,7 @@ Work:
   gateway can later use local engines, local libraries or external API adapters;
 - add fake STT/TTS adapters for CI;
 - submit transcripts through the same API/runtime path as typed input;
-- use PM-08 `auto` loop selection for spoken turns after PM-08i readiness;
+- use PM-08 `auto` loop selection for spoken turns after PM-08j readiness;
 - stream assistant text through existing runtime events before TTS output;
 - disable raw audio storage by default;
 - keep external speech API and cloud realtime providers disabled until explicit
@@ -720,6 +739,7 @@ PM-08f Typed tool observations and direct-answer hardening
 PM-08g Direct planner and capability routing registry cleanup
 PM-08h Tool-intent corpus hardening and pre-voice routing gate
 PM-08i Interactive CLI shell UX hardening
+PM-08j Canonical Jarvis runtime startup
 Voice gateway foundation
 ```
 

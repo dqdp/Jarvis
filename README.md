@@ -174,11 +174,12 @@ docs/adr/
 - Phase 1 loop = deterministic `memory_augmented_answer`; LangGraph is deferred.
 - Original MVP shipped with only `memory_augmented_answer`; current post-MVP
   Alpha adds bounded `tool_react_loop` behind the loop-strategy boundary.
-- Near-term priority is PM-08a through PM-08i: backend auto-selection, API
+- Near-term priority is PM-08a through PM-08j: backend auto-selection, API
   lifecycle wiring, CLI mode controls, CLI tool/RAG/approval readiness,
   direct-answer hardening, routing quality gates and Codex-like interactive CLI
-  shell UX. PM-09 voice gateway foundation starts only after that text surface
-  is usable. LangGraph stays a follow-up for later durable workflows.
+  shell UX, followed by canonical Jarvis runtime startup. PM-09 voice gateway
+  foundation starts only after that text surface is usable and operationally
+  repeatable. LangGraph stays a follow-up for later durable workflows.
 - Planner-executor and unbounded autonomous ReAct behavior remain future scope.
 - Future loop strategies must declare budgets, capabilities, policy hooks, failure semantics and emitted events.
 
@@ -258,11 +259,13 @@ wave:
 - event/data hardening, append-only event protection and no-secret storage
   constraints.
 
-PM-08a through PM-08i are documented as the next implementation sequence. They
+PM-08a through PM-08j are documented as the next implementation sequence. They
 make `auto` the user-facing default, harden routing/direct-answer behavior and
 turn the interactive CLI into the pre-voice dogfood shell so normal chat can
 route to ordinary answer, Project Docs RAG or safe/read-only tools without
-requiring the user to choose internal loop strategies.
+requiring the user to choose internal loop strategies. PM-08j then makes that
+Jarvis surface startable through one canonical local runtime path instead of
+manual DB/migration/daemon orchestration.
 
 Implementation notes:
 
@@ -273,7 +276,9 @@ Implementation notes:
   remains an adapter-level optimization path, not a runtime/domain dependency.
 - Fake model and embedding providers are used for CI; real LLM calls are not
   required for acceptance.
-- Runtime dogfood wiring is available through
+- Canonical local Jarvis runtime startup is available through `make jarvis-up`,
+  `make jarvis-status`, `make jarvis-cli`, `make jarvis-logs` and
+  `make jarvis-down`. Lower-level daemon wiring remains available through
   `assistant_core.app_factory:create_asgi_app --factory`, `make migrate` and
   `make run`.
 - Local Ollama dogfood is available through `config/ollama.yaml`. The current
@@ -282,7 +287,8 @@ Implementation notes:
 - A thin local CLI is available through `make cli ARGS='...'` or the `jarvis`
   console entrypoint. Running `make cli` without `ARGS` opens an interactive
   chat shell with slash commands.
-- Local operational targets include `make run-ollama`, `make local-smoke` and
+- Local operational targets include `make jarvis-up`, `make jarvis-cli`,
+  `make jarvis-status`, `make run-ollama`, `make local-smoke` and
   `make content-ingest`.
 
 Future architecture-changing changes still require the relevant ADR update.

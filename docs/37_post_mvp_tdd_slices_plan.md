@@ -34,6 +34,7 @@ PM-08f Typed tool observations and direct-answer hardening
 PM-08g Direct planner and capability routing registry cleanup
 PM-08h Tool-intent corpus hardening and pre-voice routing gate
 PM-08i Interactive CLI shell UX hardening
+PM-08j Canonical Jarvis runtime startup
 PM-09 Voice gateway foundation
 ```
 
@@ -2348,7 +2349,7 @@ Examples:
 
 ### Delivery breakdown
 
-PM-08 is delivered as nine ordered sub-slices:
+PM-08 is delivered as ten ordered sub-slices:
 
 ```text
 PM-08a Loop selection domain and selector contract
@@ -2360,15 +2361,17 @@ PM-08f Typed tool observations and direct-answer hardening
 PM-08g Direct planner and capability routing registry cleanup
 PM-08h Tool-intent corpus hardening and pre-voice routing gate
 PM-08i Interactive CLI shell UX hardening
+PM-08j Canonical Jarvis runtime startup
 ```
 
 Do not start PM-09 voice implementation until PM-08d, PM-08e, PM-08f, PM-08g,
-PM-08h and PM-08i are complete. Voice depends on the same user-turn surface
-being usable from text first, on local model-backed classification, on direct
-answers not inheriting fragile stdout parsing, on registry-backed direct
+PM-08h, PM-08i and PM-08j are complete. Voice depends on the same user-turn
+surface being usable from text first, on local model-backed classification, on
+direct answers not inheriting fragile stdout parsing, on registry-backed direct
 planning, on a corpus-gated routing baseline that covers typed and
-spoken-transcript-like requests, and on a Codex-like interactive CLI shell that
-is usable enough to dogfood before voice.
+spoken-transcript-like requests, on a Codex-like interactive CLI shell that is
+usable enough to dogfood before voice, and on a canonical local startup path
+that does not rely on manual DB/migration/daemon orchestration.
 
 ### PM-08a — Loop selection domain and selector contract
 
@@ -3606,6 +3609,146 @@ new tools or voice behavior
 Rich dependency
 ```
 
+### PM-08j — Canonical Jarvis runtime startup
+
+Goal:
+
+```text
+Make the pre-voice Jarvis runtime startable through one canonical local command
+path instead of manual DB, migration, daemon, health and CLI orchestration.
+```
+
+Inputs:
+
+```text
+docs/12_deployment_and_runtime.md
+docs/26_testing_strategy.md
+docs/34_post_mvp_roadmap.md
+docs/37_post_mvp_tdd_slices_plan.md
+Makefile
+infra/compose/
+```
+
+Tests first:
+
+```text
+test_jarvis_compose_uses_persistent_database_not_test_database
+test_jarvis_up_runs_database_migrations_before_daemon_start
+test_jarvis_up_waits_for_daemon_health
+test_jarvis_status_reports_pid_port_health_profile_and_log_path
+test_jarvis_down_stops_daemon_from_pid_file
+test_jarvis_cli_uses_canonical_base_url_without_plain_mode
+test_jarvis_up_fails_loudly_when_prompt_toolkit_is_missing
+test_jarvis_up_does_not_install_dependencies_or_pull_models_implicitly
+test_jarvis_reset_is_explicitly_destructive_and_never_runs_from_up
+```
+
+Architecture tests:
+
+```text
+test_jarvis_runtime_does_not_reuse_test_postgres_volume_or_port
+test_makefile_jarvis_targets_delegate_to_single_startup_script
+test_jarvis_startup_script_does_not_import_runtime_or_storage_implementation
+test_jarvis_startup_script_has_no_secret_defaults
+```
+
+Expected red phase:
+
+```text
+Jarvis runtime compose file does not exist
+Jarvis runtime startup script does not exist
+Makefile has no jarvis-up/status/logs/down/cli targets
+daemon PID/log/health contract is undocumented and unimplemented
+current manual flow reuses test-db-up and can be torn down by test cleanup
+```
+
+Implementation:
+
+```text
+infra:
+  add infra/compose/jarvis-postgres.yml with persistent Jarvis runtime volume
+  use a port distinct from TEST_DATABASE_URL, for example 55433
+  use database name jarvis_local
+
+scripts:
+  add a small Python startup driver, for example scripts/dev/jarvis_runtime.py
+  commands: bootstrap, up, down, status, logs, cli, reset
+  store runtime files under .run/jarvis/
+  write daemon.pid and daemon.log
+  perform stale PID cleanup
+  check port 8080 ownership before daemon start
+  poll /v1/health until ready or timeout
+
+Makefile:
+  add jarvis-bootstrap
+  add jarvis-up
+  add jarvis-cli
+  add jarvis-status
+  add jarvis-logs
+  add jarvis-down
+  add jarvis-reset
+  keep Makefile as a thin wrapper around the Python driver
+```
+
+Operational contract:
+
+```text
+jarvis-bootstrap:
+  may verify editable install/dependencies and print missing-model guidance
+  may explicitly install dependencies only if invoked for that purpose
+  may pull local models only with explicit user command or documented opt-in
+
+jarvis-up:
+  must not install dependencies or pull models implicitly
+  starts persistent Jarvis runtime Postgres
+  waits for database readiness
+  runs migrations
+  starts daemon against Jarvis runtime DATABASE_URL and selected profile
+  waits for health
+  prints the exact jarvis-cli command and log path
+
+jarvis-cli:
+  opens the normal prompt_toolkit CLI against the canonical daemon
+  must not pass --plain
+
+jarvis-status:
+  reports daemon pid, port, base URL, profile, health summary and log path
+
+jarvis-down:
+  stops only the daemon it owns through the PID file
+  leaves Jarvis runtime database volume intact
+
+jarvis-reset:
+  is explicitly destructive
+  stops daemon and removes Jarvis runtime database volume only when requested directly
+```
+
+Acceptance:
+
+```text
+one command can bring up the Jarvis runtime DB, migrations, daemon and health check;
+one command opens the new interactive CLI against that daemon;
+status and logs are discoverable without ps/lsof/manual Terminal inspection;
+the Jarvis runtime database is separate from test database lifecycle;
+startup fails clearly if prompt_toolkit or configured local models are missing;
+startup never silently falls back to the old plain reader because dependencies
+are absent;
+normal startup does not install packages, pull models or destroy data;
+architecture tests pin the startup script as operational glue, not runtime
+business logic.
+```
+
+Out of scope:
+
+```text
+launchd user services
+production deployment
+Dockerizing the full daemon
+cloud model fallback
+automatic model downloads in jarvis-up
+voice implementation
+```
+
 ### Intent resolution pipeline
 
 Initial pipeline:
@@ -3970,6 +4113,7 @@ PM-08g red phase failed for missing registry-backed direct planning behavior;
 PM-08h red phase failed for missing pre-voice corpus gate behavior;
 PM-08i red phase failed for missing prompt_toolkit shell/status/completion
   behavior;
+PM-08j red phase failed for missing canonical Jarvis runtime startup behavior;
 missing loop_strategy means auto, not direct memory loop;
 ordinary chat still uses memory_augmented_answer;
 project-docs questions use RAG without tool_react_loop;
@@ -3984,6 +4128,8 @@ interactive CLI can cancel active requests and remain usable;
 CLI renders tool proposals/results in user-facing language, not raw JSON-first;
 interactive CLI has a Codex-like status line, phase-based activity indicator,
 dynamic slash command palette and deterministic --plain/non-TTY fallback;
+canonical Jarvis runtime startup can bring up DB, migrations, daemon, health
+check and CLI entrypoint without relying on manual Terminal orchestration;
 loop-selection events are redacted;
 architecture guardrails pass;
 no real LLM, real shell or host diagnostics calls are required for CI.
@@ -4014,7 +4160,8 @@ proves model-backed classifier behavior, after PM-08f hardens direct tool
 answers around typed observations rather than loop-level stdout parsing, after
 PM-08g/PM-08h make routing metadata and corpus quality stable enough for spoken
 turns, and after PM-08i makes the interactive CLI shell usable enough to dogfood
-the same surface before voice.
+the same surface before voice. PM-08j must then make that Jarvis surface
+operationally repeatable through canonical startup/status/log/shutdown commands.
 
 Voice is a client/channel over the existing runtime, not a separate agent
 runtime. A spoken turn must become the same kind of user turn that CLI/API uses:
@@ -4075,12 +4222,14 @@ PM-08f complete
 PM-08g complete
 PM-08h complete
 PM-08i complete
+PM-08j complete
 ```
 
 In practice this means the text CLI already has a working normal chat surface
 for automatic chat/RAG/tools routing, approval control, cancellation, typed
 direct answers, registry-backed direct planning, corpus-gated routing and
-Codex-like interactive shell UX before voice is layered on top.
+Codex-like interactive shell UX, plus a canonical local Jarvis startup path,
+before voice is layered on top.
 
 Voice must use PM-08 default routing:
 

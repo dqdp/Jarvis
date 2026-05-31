@@ -8,8 +8,9 @@ OLLAMA_CHAT_MODEL ?= qwen3.5:9b
 OLLAMA_EMBED_MODEL ?= embeddinggemma:latest
 TEST_DATABASE_URL ?= postgresql+asyncpg://jarvis:jarvis@127.0.0.1:55432/jarvis_test
 TEST_COMPOSE ?= docker compose -f infra/compose/test-postgres.yml
+JARVIS_RUNTIME ?= $(PYTHON) scripts/dev/jarvis_runtime.py
 
-.PHONY: migrate run run-ollama cli models-list models-pull local-smoke content-ingest test test-unit test-contract test-integration test-golden test-architecture test-e2e test-db-up test-db-down
+.PHONY: migrate run run-ollama cli models-list models-pull local-smoke content-ingest jarvis-bootstrap jarvis-up jarvis-cli jarvis-status jarvis-logs jarvis-down jarvis-reset test test-unit test-contract test-integration test-golden test-architecture test-e2e test-db-up test-db-down
 
 migrate:
 	PYTHONPATH=$(APP_PYTHONPATH) DATABASE_URL=$(DATABASE_URL) $(PYTHON) -m assistant_core.storage.migrations
@@ -35,6 +36,27 @@ local-smoke:
 
 content-ingest:
 	$(MAKE) cli ARGS='content ingest'
+
+jarvis-bootstrap:
+	$(JARVIS_RUNTIME) bootstrap
+
+jarvis-up:
+	$(JARVIS_RUNTIME) up
+
+jarvis-cli:
+	$(JARVIS_RUNTIME) cli $(ARGS)
+
+jarvis-status:
+	$(JARVIS_RUNTIME) status
+
+jarvis-logs:
+	$(JARVIS_RUNTIME) logs
+
+jarvis-down:
+	$(JARVIS_RUNTIME) down
+
+jarvis-reset:
+	$(JARVIS_RUNTIME) reset --yes
 
 test: test-unit test-contract test-integration test-golden test-architecture test-e2e
 

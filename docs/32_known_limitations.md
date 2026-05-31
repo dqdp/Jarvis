@@ -19,7 +19,8 @@
 - Tools, RAG/content ingestion and a bounded tool loop are now implemented as
   post-MVP Alpha slices, not as original MVP scope.
 - Automatic loop selection and CLI readiness now cover PM-08a through PM-08i,
-  including the Codex-like interactive shell surface. PM-09 voice, durable graph
+  including the Codex-like interactive shell surface. Canonical Jarvis runtime
+  startup is tracked as PM-08j before PM-09. PM-09 voice, durable graph
   checkpoints and full-screen TUI behavior remain future work.
 - MCP, planner-executor, voice, remembered approvals, durable background
   workers and external integrations remain future work.
@@ -39,7 +40,7 @@ Implemented first Alpha wave:
 - Project docs content ingestion/retrieval and ContextAssembler integration.
 - Model behavior tuning and smoke/eval scenarios.
 
-Completed pre-voice Alpha sequence:
+Completed PM-08 Alpha sequence so far:
 
 - PM-08a loop selection domain and selector contract;
 - PM-08b API/request lifecycle auto mode;
@@ -53,6 +54,7 @@ Completed pre-voice Alpha sequence:
 
 Next priority:
 
+- PM-08j canonical Jarvis runtime startup;
 - PM-09 voice gateway foundation;
 
 Later priority candidates:

@@ -355,8 +355,8 @@ Testing:
   PM-08c CLI mode controls, PM-08d CLI tool/RAG/approval readiness and PM-08e
   model-backed intent classifier adapter, followed by PM-08f typed
   tool-observation/direct-answer hardening, PM-08g direct planner/registry
-  cleanup, PM-08h corpus hardening and PM-08i interactive CLI shell hardening
-  before voice.
+  cleanup, PM-08h corpus hardening, PM-08i interactive CLI shell hardening and
+  PM-08j canonical Jarvis runtime startup before voice.
 
 ### Resolved by ADR-031/PM-04 — Bounded tool loop strategy
 
@@ -388,8 +388,9 @@ Current priority:
 ```text
 write/promote this ADR after PM-08d CLI tool/RAG/approval readiness, PM-08e
 model-backed classifier adapter, PM-08f typed tool-observation hardening,
-PM-08g direct planner/registry cleanup, PM-08h corpus hardening and PM-08i
-interactive CLI shell hardening, before PM-09 voice gateway foundation
+PM-08g direct planner/registry cleanup, PM-08h corpus hardening, PM-08i
+interactive CLI shell hardening and PM-08j canonical Jarvis runtime startup,
+before PM-09 voice gateway foundation
 implementation.
 ```
 
@@ -636,9 +637,10 @@ Rationale:
 - voice should wait until PM-08d auto-routing/CLI readiness, PM-08e
   model-backed classifier behavior, PM-08f typed tool observations, PM-08g
   direct planner/registry cleanup, PM-08h corpus hardening and PM-08i
-  interactive CLI shell hardening so spoken turns can use the same
-  chat/RAG/tool/approval/cancel path as typed turns without inheriting fragile
-  stdout parsing, unstable routing or an under-tested text shell;
+  interactive CLI shell hardening plus PM-08j canonical Jarvis runtime startup
+  so spoken turns can use the same chat/RAG/tool/approval/cancel path as typed
+  turns without inheriting fragile stdout parsing, unstable routing, an
+  under-tested text shell or ad hoc local startup steps;
 - before PM-09 starts, PM-08h should include spoken-transcript-like corpus cases
   and one recorded non-CI local classifier evaluation against the selected local
   model, while CI remains fake/deterministic and network-free;

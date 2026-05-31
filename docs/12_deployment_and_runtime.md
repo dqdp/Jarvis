@@ -62,6 +62,13 @@ streaming_transport: sse
 Local daemon commands:
 
 ```text
+make jarvis-bootstrap
+make jarvis-up
+make jarvis-status
+make jarvis-cli
+make jarvis-logs
+make jarvis-down
+make jarvis-reset
 make migrate
 make run
 make run-ollama
@@ -71,6 +78,20 @@ make models-list
 make models-pull
 make local-smoke
 ```
+
+The canonical local Jarvis runtime path is:
+
+```text
+make jarvis-up
+make jarvis-cli
+```
+
+`make jarvis-up` starts a persistent local PostgreSQL service from
+`infra/compose/jarvis-postgres.yml`, runs migrations, starts the daemon, writes
+PID/log/runtime metadata under `.run/jarvis/`, and waits for `/v1/health`.
+`make jarvis-status`, `make jarvis-logs` and `make jarvis-down` inspect or stop
+that owned daemon. `make jarvis-reset` is the explicit destructive reset path
+for the local Jarvis database volume.
 
 `make migrate` applies Alembic migrations to `DATABASE_URL`. Migration
 entrypoints require a local database host by default; remote migration runs
