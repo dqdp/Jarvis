@@ -352,6 +352,8 @@ PM-08a Loop selection domain and selector contract
 PM-08b API/request lifecycle auto mode
 PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
+PM-08e Model-backed intent classifier adapter
+PM-08f Typed tool observations and direct-answer hardening
 ```
 
 PM-08a:
@@ -365,8 +367,8 @@ PM-08a:
 - add capability routing metadata so future tools such as code sandbox can join
   auto-selection without bespoke selector branches;
 - use fake classifier implementations in CI;
-- start runtime with a conservative deterministic classifier implementation
-  while preserving the port for a later local structured model adapter;
+- start runtime with a local structured classifier when configured, and keep a
+  conservative deterministic classifier as bootstrap/failure fallback;
 - route ordinary chat to `memory_augmented_answer`;
 - route project-docs questions to `memory_augmented_answer` with ContextAssembler
   RAG, not to a tool loop;
@@ -397,6 +399,36 @@ PM-08d:
 - make request cancellation and Ctrl-C leave the CLI session usable;
 - avoid raw JSON-first output for normal tool flow.
 
+PM-08e:
+
+- add a local structured model-backed `IntentClassifierPort` adapter for runtime
+  auto-routing;
+- keep fake classifiers for CI and deterministic classifier as failure fallback;
+- keep `LoopStrategySelector` provider-agnostic and policy-authoritative;
+- reject invalid classifier output rather than turning model text into raw tool
+  commands.
+
+PM-08f:
+
+- keep the fast direct-tool path for common read-only questions, but stop using
+  loop-level command-output parsers as the user-facing answer contract;
+- propagate provider-neutral typed payload fields through
+  `ToolInvocationResult -> ToolObservation -> ToolObservationRef -> direct
+  formatter/context/events` while keeping bounded raw content for audit/debug
+  and ReAct fallback;
+- use one typed contract:
+  `structured_content`, `structured_schema`, `structured_schema_version`,
+  `parse_status` and `parse_warnings`;
+- move OS, battery, disk, VPN and process-output interpretation into
+  capability-specific adapters/normalizers with platform fixture tests;
+- make direct answers consume typed fields only;
+- answer directly from `parsed` payloads, answer cautiously from `partial`
+  payloads, and route `unparsed` payloads to bounded ReAct/model analysis or a
+  clear unavailable result;
+- when a tool returns raw or unrecognized output, either route the bounded
+  observation through normal ReAct/model analysis or return a clear
+  unavailable/unparsed result.
+
 Acceptance:
 
 - a plain CLI chat request can automatically use RAG or safe tools when needed;
@@ -405,7 +437,12 @@ Acceptance:
 - RAG remains ContextAssembler behavior and does not become a tool-loop trigger;
 - approval-required tool flow is usable from the CLI;
 - cancel/interrupt does not break the interactive CLI session;
-- fake classifiers, providers and adapters cover the routing behavior in CI.
+- fake classifiers, fake model-router responses, providers and adapters cover
+  the routing behavior in CI.
+- direct answers are not built from fragile regex parsing of raw command stdout
+  inside `tool_react_loop`;
+- new diagnostics commands add adapter/normalizer tests instead of bespoke loop
+  branches.
 
 ### Phase J — Voice gateway foundation
 
@@ -414,7 +451,8 @@ Goal:
 ```text
 Add push-to-talk voice interaction on top of the existing runtime after PM-08d
 proves the text CLI/API surface can use auto-selected chat, RAG, tools,
-approvals and cancellation.
+approvals and cancellation, and PM-08f hardens direct tool answers around typed
+observations.
 ```
 
 Work:
@@ -617,6 +655,8 @@ PM-08a Loop selection domain and selector contract
 PM-08b API/request lifecycle auto mode
 PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
+PM-08e Model-backed intent classifier adapter
+PM-08f Typed tool observations and direct-answer hardening
 Voice gateway foundation
 ```
 

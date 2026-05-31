@@ -84,9 +84,10 @@ LoopStrategySelector
 ```
 
 PM-08a introduces the port and selector together. The first implementation used
-in CI must be fake/deterministic so tests do not require a real LLM. A local
-structured model-backed classifier may be added later as another adapter behind
-the same port.
+in CI must be fake/deterministic so tests do not require a real LLM. Runtime
+must also support a local structured model-backed classifier adapter behind the
+same port. The deterministic classifier is a bootstrap/fallback adapter, not the
+target routing mechanism.
 
 This keeps the architecture from depending on keyword lists as the core routing
 mechanism. Keyword or lexical hints may exist inside an initial deterministic
@@ -96,6 +97,9 @@ fallback, not the long-term decision boundary.
 In other words, PM-08 must not implement a deterministic-only selector as the
 target architecture. It implements `LoopStrategySelector + IntentClassifierPort`
 first, then chooses the safest available classifier adapter for each runtime.
+In local interactive runtime, the preferred adapter is the local structured
+classifier when a structured local model profile is configured; otherwise the
+runtime falls back to the conservative deterministic adapter.
 
 The classifier may propose intent and candidate capabilities, but it must not
 execute tools and must not grant permissions.
@@ -397,9 +401,10 @@ If `answer_without_tools_would_be_misleading=true` and tools are disabled or
 denied, the selector must not silently fallback to chat as if live state was
 checked. It returns `tools_unavailable` or `rejected_by_policy`.
 
-Future aggressive routing may lower thresholds or use clarification/model-backed
-classification, but it must be a configuration change with tests, not hidden
-behavior.
+Future aggressive routing may lower thresholds or use clarification, but it must
+be a configuration change with tests, not hidden behavior. The presence of a
+model-backed classifier does not by itself make routing aggressive; confidence,
+policy and live-state fallback rules still govern the decision.
 
 ## IntentClassifierPort
 
@@ -425,7 +430,24 @@ candidate_capabilities
 confidence
 answer_without_tools_would_be_misleading
 reason_code
+classification_source
 ```
+
+`reason_code` is diagnostic evidence only. It must not encode trust or
+provenance by string prefix. Selector decisions that depend on provenance must
+use explicit source metadata such as:
+
+```text
+fake
+deterministic
+model
+guardrail
+fallback
+```
+
+Direct-execution eligibility is a separate policy/runtime decision. It must not
+be inferred from `reason_code` and must not be granted solely because a model
+classifier returned a candidate tool or scope hint.
 
 Initial intent families:
 
@@ -447,14 +469,165 @@ FakeIntentClassifier
   deterministic test fixture for unit/contract/e2e tests
 
 DeterministicIntentClassifier
-  conservative local baseline using capability metadata and obvious hints
+  conservative local bootstrap/fallback using capability metadata and obvious
+  hints
 
-LocalStructuredIntentClassifier later
-  local model adapter returning strict JSON, only for ambiguous requests
+ModelBackedIntentClassifier / LocalStructuredIntentClassifier
+  local model adapter returning strict JSON through ModelRouterPort; preferred
+  runtime classifier when a local structured model profile is available
 ```
 
 The selector must treat classifier output as advice. It remains responsible for
 policy validation, disabled-tool handling and safe fallback.
+
+The model-backed classifier contract is intentionally narrow:
+
+```text
+input:
+  user request text
+  allowed intent families
+  available capability metadata
+  permission-mode summary
+
+output:
+  constrained IntentClassification JSON only
+```
+
+It must not output raw shell commands, raw tool arguments, executable code or
+provider-specific request dictionaries. Candidate `tool_names` are stable
+registry references only. Diagnostic details such as `os_version`,
+`cpu_overview` or `free_memory` are represented as stable `scope_hint` labels
+and interpreted by deterministic planner/runtime code, not by ad hoc shell text
+from the model.
+
+If the local model call fails, times out or returns invalid JSON, the adapter
+must fall back to a deterministic classifier when one is configured. If no
+fallback is configured, it returns `classifier_unavailable`/`unknown` with
+`fail_unavailable` preference rather than pretending live state was checked.
+
+Because a small local classifier can still produce a false negative for live
+local system-state requests, the adapter may apply a narrow post-classification
+guardrail: when the model says ordinary chat but the request clearly asks for
+current local machine/system state, the adapter may correct the result to
+`system_diagnostics`. This guardrail is not the main selector architecture and
+must remain category-level, policy-gated and covered by tests.
+
+Routing quality is tracked with a multilingual tool-intent corpus. CI validates
+the corpus schema and a deterministic/guardrail baseline. Real local model
+coverage is an opt-in evaluation test and must not be required for CI.
+
+## Direct tool execution and typed observations
+
+Automatic routing may choose a fast direct-tool path for known, low-risk,
+read-only questions such as:
+
+```text
+current time
+OS version
+battery charge
+disk free space
+VPN status
+process name search
+CPU overview
+```
+
+This direct path is a latency optimization, not a replacement for the normal
+bounded ReAct loop. It must stay constrained:
+
+- only allowlisted capabilities/tools/scopes may use direct execution;
+- model-origin classifier output may propose candidate tools, but must not by
+  itself grant direct execution;
+- an explicit direct-scope allowlist may short-circuit obvious direct intents
+  before the structured classifier call;
+- ToolGateway and policy remain authoritative for execution.
+
+Direct answers must not depend on an expanding set of command-output regexes in
+`tool_react_loop`. Command output formats vary by OS version, locale and tool
+implementation. Therefore the target design is:
+
+```text
+Tool adapter / normalizer
+  -> typed ToolInvocationResult payload
+  -> typed ToolObservation payload
+  -> typed ToolObservationRef
+  -> direct answer formatter
+```
+
+Typed observation v1 uses one shared contract across CLI, API, context events
+and future UI surfaces:
+
+```text
+structured_content
+structured_schema
+structured_schema_version
+parse_status
+parse_warnings
+```
+
+`parse_status` values:
+
+```text
+parsed
+partial
+unparsed
+not_applicable
+```
+
+Direct-answer behavior:
+
+```text
+parsed
+  -> answer deterministically from structured_content
+
+partial
+  -> answer only from available typed fields and include a cautious warning
+
+unparsed
+  -> route bounded/redacted raw observation through normal ReAct/model analysis
+     when policy and model budget allow; otherwise return a clear
+     unparsed/unavailable result
+
+not_applicable
+  -> use the ordinary tool/ReAct path for tools that do not expose typed
+     direct-answer contracts
+```
+
+Raw bounded stdout/stderr may still be kept for audit, debugging and ordinary
+ReAct fallback, but it is not the primary direct-answer contract. If a tool
+cannot provide typed data for the requested direct scope, Jarvis must either:
+
+```text
+route the bounded observation through the normal model/ReAct path when allowed;
+or return a clear unparsed/unavailable result.
+```
+
+It must not hallucinate live state from unknown or unrecognized command output.
+Adding a new diagnostics command should add adapter/normalizer fixture tests,
+not a new command-specific parser branch inside the loop.
+
+Diagnostics normalizers live near the adapters, not inside the loop runtime:
+
+```text
+tools/system_diagnostics/normalizers/os_version.py
+tools/system_diagnostics/normalizers/battery.py
+tools/system_diagnostics/normalizers/disk.py
+tools/system_diagnostics/normalizers/vpn.py
+tools/system_diagnostics/normalizers/process.py
+tools/system_diagnostics/normalizers/cpu.py
+tools/system_diagnostics/normalizers/sensors.py
+```
+
+The same provider-neutral schema is used across platforms:
+
+```text
+sw_vers / uname / os-release -> system.os_version v1
+pmset / upower              -> system.battery_charge v1
+df on macOS/Linux          -> system.disk_free v1
+```
+
+Process command lines, network evidence and similar host details are
+sensitivity-aware fields. They should be omitted or redacted by default unless
+the capability contract explicitly needs them and policy permits disclosure.
 
 ## Capability routing metadata
 
@@ -735,10 +908,11 @@ Explicit override remains available for debugging.
 
 Rejected.
 
-A model-backed `IntentClassifierPort` adapter may help classify ambiguous
-requests later, but it must not be the authority that grants tool access,
+A model-backed `IntentClassifierPort` adapter helps classify varied natural
+language requests, but it must not be the authority that grants tool access,
 bypasses policy or chooses unsafe fallback. It returns constrained intent data;
-the backend selector and policy engine make the final decision.
+the backend selector and policy engine make the final decision. CI uses fake
+model-router tests for this adapter and must not require a real LLM call.
 
 ### Put routing into CLI
 
@@ -841,12 +1015,12 @@ PM-08d CLI tool/RAG/approval readiness surface
     flow.
 12. Ensure `/cancel` and Ctrl-C leave the interactive session usable.
 13. Keep `auto` as default for CLI and API.
-14. Add optional local structured classifier as a later adapter after the port,
-    selector, observability and fallback behavior are green.
+14. Add local structured classifier adapter after the port, selector,
+    observability and fallback behavior are green; keep fake/deterministic
+    classifiers for CI and failure fallback.
 
 ## Deferred
 
-- model-backed ambiguous intent classifier adapter;
 - planner-executor routing;
 - multi-agent handoff routing;
 - remembered per-user routing preferences;

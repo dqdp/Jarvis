@@ -311,7 +311,7 @@ Needed before:
 default CLI/API access to tools
 default CLI/API access to Project Docs RAG
 automatic routing between normal chat and tool-capable loops
-future local model-backed intent classifier adapter
+local model-backed intent classifier adapter
 ```
 
 Decision scope:
@@ -324,8 +324,9 @@ Decision scope:
 - confidence bands and fallback semantics;
 - capability routing metadata for future tools such as code sandbox;
 - fake classifier for CI;
-- conservative deterministic runtime classifier as an initial adapter;
-- optional local structured classifier adapter later;
+- conservative deterministic runtime classifier as bootstrap/fallback;
+- local structured classifier adapter as the preferred interactive runtime
+  classifier when configured;
 - relation to policy and approvals;
 - relation to RAG and ContextAssembler;
 - CLI/API override semantics;
@@ -336,8 +337,8 @@ Resolved baseline:
 - `auto` is a routing mode, not a concrete loop;
 - PM-08 must not make a deterministic-only selector the target architecture;
 - PM-08 starts with `LoopStrategySelector` plus `IntentClassifierPort`;
-- runtime may initially use a conservative deterministic classifier
-  implementation, but the port must allow a local model-backed classifier later;
+- runtime uses a local model-backed classifier when configured, with
+  deterministic fallback for failure/startup/testing;
 - ordinary chat and project-docs questions use `memory_augmented_answer`;
 - live project/system inspection uses `tool_react_loop`;
 - RAG is not a tool-loop trigger by itself;
@@ -351,7 +352,9 @@ Testing:
 - architecture tests preventing CLI/tool/storage adapter coupling;
 - e2e fake-provider tests for ordinary chat, project-docs RAG and tool intent.
 - implementation is split into PM-08a selector contract, PM-08b API lifecycle,
-  PM-08c CLI mode controls and PM-08d CLI tool/RAG/approval readiness.
+  PM-08c CLI mode controls, PM-08d CLI tool/RAG/approval readiness and PM-08e
+  model-backed intent classifier adapter, followed by PM-08f typed
+  tool-observation/direct-answer hardening before voice.
 
 ### Resolved by ADR-031/PM-04 — Bounded tool loop strategy
 
@@ -381,8 +384,9 @@ Needed before voice implementation.
 Current priority:
 
 ```text
-write/promote this ADR after PM-08d CLI tool/RAG/approval readiness, before
-PM-09 voice gateway foundation implementation.
+write/promote this ADR after PM-08d CLI tool/RAG/approval readiness and PM-08f
+typed tool-observation hardening, before PM-09 voice gateway foundation
+implementation.
 ```
 
 Decision scope:
@@ -624,8 +628,9 @@ Rationale:
 - loop-strategy architecture must precede ReAct/planner loops;
 - shell needs approval before write capability;
 - RAG can proceed after context V2, but must remain separate from memory;
-- voice should wait until PM-08d auto-routing and CLI readiness so spoken turns
-  can use the same chat/RAG/tool/approval/cancel path as typed turns;
+- voice should wait until PM-08d auto-routing/CLI readiness and PM-08f typed
+  tool observations so spoken turns can use the same chat/RAG/tool/approval/
+  cancel path as typed turns without inheriting fragile stdout parsing;
 - graph runtime evaluation is deferred until planner-executor, durable code
   sandbox, sleep/reflection or long-running workflow pressure justifies it.
 

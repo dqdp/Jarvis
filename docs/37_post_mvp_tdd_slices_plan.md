@@ -29,6 +29,8 @@ PM-08a Loop selection domain and selector contract
 PM-08b API/request lifecycle auto mode
 PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
+PM-08e Model-backed intent classifier adapter
+PM-08f Typed tool observations and direct-answer hardening
 PM-09 Voice gateway foundation
 ```
 
@@ -2269,7 +2271,8 @@ execution.
 PM-08 must not implement a deterministic-only selector as the target
 architecture. The slice must introduce `LoopStrategySelector` plus
 `IntentClassifierPort`; CI uses fake classifier implementations, while runtime
-may initially use a conservative deterministic classifier adapter.
+uses a local structured model-backed adapter when available and a conservative
+deterministic classifier adapter as bootstrap/fallback.
 
 ### Inputs
 
@@ -2342,17 +2345,20 @@ Examples:
 
 ### Delivery breakdown
 
-PM-08 is delivered as four ordered sub-slices:
+PM-08 is delivered as six ordered sub-slices:
 
 ```text
 PM-08a Loop selection domain and selector contract
 PM-08b API/request lifecycle auto mode
 PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
+PM-08e Model-backed intent classifier adapter
+PM-08f Typed tool observations and direct-answer hardening
 ```
 
-Do not start PM-09 voice implementation until PM-08d is complete. Voice depends
-on the same user-turn surface being usable from text first.
+Do not start PM-09 voice implementation until PM-08d and PM-08f are complete.
+Voice depends on the same user-turn surface being usable from text first, and
+voice output should not inherit fragile direct-answer parsing.
 
 ### PM-08a — Loop selection domain and selector contract
 
@@ -2662,10 +2668,254 @@ test logs raw full prompt text
 test duplicates selector rules in CLI
 ```
 
-Do not require a model-backed classifier in PM-08. PM-08 must introduce the
-`IntentClassifierPort` boundary and use fake/deterministic implementations so CI
-does not require a real LLM call. A local structured model-backed classifier is
-a later adapter behind the same port.
+PM-08 must introduce the `IntentClassifierPort` boundary and use fake
+implementations so CI does not require a real LLM call. Runtime should prefer a
+local structured model-backed classifier when a structured local model profile
+is configured, with deterministic fallback for startup, failure and tests.
+PM-08f must then harden the direct-tool answer path before PM-09 voice work:
+fast direct execution may stay, but user-facing answers must consume typed tool
+observations rather than command-specific stdout parsing inside the loop.
+
+### PM-08e — Model-backed intent classifier adapter
+
+Goal:
+
+```text
+Replace per-question keyword routing as the runtime direction without making
+the selector itself model/provider aware.
+```
+
+Tests first:
+
+```text
+test_model_backed_classifier_maps_structured_payload_to_intent_classification
+test_model_backed_classifier_sends_constrained_schema_to_model_router
+test_model_backed_classifier_rejects_raw_command_tool_names
+test_model_backed_classifier_falls_back_to_deterministic_classifier_on_router_error
+test_model_backed_classifier_guardrail_corrects_local_system_state_false_negative
+test_tool_intent_corpus_has_broad_multilingual_coverage
+test_ci_baseline_classifier_routes_tool_intent_corpus_cases
+test_request_metadata_accepts_injected_intent_classifier
+```
+
+Architecture tests:
+
+```text
+test_model_backed_intent_classifier_depends_on_model_router_port_not_provider_adapters
+test_loop_selector_depends_on_intent_classifier_port_not_model_provider
+```
+
+Expected red phase:
+
+```text
+ModelBackedIntentClassifier does not exist
+runtime_request_metadata cannot accept an injected IntentClassifierPort
+app factory always hard-codes deterministic classification
+```
+
+Implementation:
+
+```text
+runtime:
+  ModelBackedIntentClassifier behind IntentClassifierPort
+  StructuredModelRequest against local_structured profile by default
+  strict schema for IntentClassification JSON
+  parser from JSON payload to domain objects
+  fallback classifier on router failure or invalid payload
+  narrow local-system-state false-negative guardrail after model output
+  no provider-specific imports in runtime
+
+request lifecycle:
+  allow runtime_request_metadata/create_app to receive an IntentClassifierPort
+  app_factory wires model-backed classifier with deterministic fallback
+```
+
+Acceptance:
+
+```text
+runtime can use local model classification for varied natural language wording;
+CI uses fake model-router responses and does not call a real LLM;
+selector remains provider-agnostic and policy-authoritative;
+invalid model output cannot become a raw command/tool execution;
+tool-intent routing has a corpus of multilingual formulations with CI-safe
+baseline checks and opt-in local model evaluation;
+live-state requests still fail unavailable rather than hallucinating when tools
+are disabled or denied.
+```
+
+### PM-08f — Typed tool observations and direct-answer hardening
+
+Goal:
+
+```text
+Keep the fast direct-tool path, but remove the architectural dependency on
+loop-level stdout parsing for user-facing answers.
+```
+
+Rationale:
+
+```text
+The direct path is useful for low-latency common questions, but it must not grow
+into a large set of regex parsers inside tool_react_loop. Command output formats
+vary by OS version, locale and tool implementation. Parsing belongs in
+capability-specific adapters/normalizers with contract fixtures. The loop should
+orchestrate execution and answer assembly, not understand every command format.
+```
+
+Tests first:
+
+```text
+test_system_diagnostics_tool_returns_typed_os_version_payload
+test_system_diagnostics_tool_returns_typed_battery_payload
+test_system_diagnostics_tool_returns_typed_disk_payload
+test_system_diagnostics_tool_returns_typed_vpn_payload
+test_system_diagnostics_tool_returns_typed_process_search_payload
+test_direct_answer_uses_typed_payload_not_raw_stdout
+test_direct_answer_falls_back_when_typed_payload_missing
+test_direct_answer_does_not_parse_unrecognized_stdout_format
+test_direct_answer_partial_payload_includes_cautious_warning
+test_unparsed_direct_payload_routes_to_react_when_budget_allows
+test_tool_react_loop_has_no_scope_specific_stdout_parsers
+test_diagnostics_normalizers_cover_macos_and_linux_fixture_outputs
+test_unparsed_tool_output_can_enter_bounded_react_context_as_data
+```
+
+Architecture tests:
+
+```text
+test_tool_react_loop_does_not_import_diagnostics_parsers
+test_diagnostics_parsers_do_not_import_loop_runtime
+test_tool_adapters_return_provider_neutral_typed_observations
+```
+
+Expected red phase:
+
+```text
+ToolObservation has only raw content/content_type for diagnostics answers
+ToolInvocationResult and ToolObservationRef cannot carry typed payloads through
+  the gateway/context/direct-answer pipeline
+tool_react_loop owns os/battery/disk/vpn/process stdout parsing
+diagnostics adapters do not expose typed normalized payloads
+direct answers cannot distinguish typed data from raw fallback text
+```
+
+Implementation:
+
+```text
+domain/tools:
+  add provider-neutral typed observation payload support through the full
+  execution pipeline:
+    ToolInvocationResult
+      -> ToolObservation
+      -> ToolObservationRef
+      -> context/direct formatter/event payload
+  use one field contract everywhere:
+    structured_content
+    structured_schema
+    structured_schema_version
+    parse_status:
+      parsed
+      partial
+      unparsed
+      not_applicable
+    parse_warnings
+  keep content/content_type for bounded human/debug text and backwards
+    compatibility
+
+tools/system_diagnostics:
+  place normalization outside tool_react_loop, near the adapters:
+    tools/system_diagnostics/normalizers/os_version.py
+    tools/system_diagnostics/normalizers/battery.py
+    tools/system_diagnostics/normalizers/disk.py
+    tools/system_diagnostics/normalizers/vpn.py
+    tools/system_diagnostics/normalizers/process.py
+    tools/system_diagnostics/normalizers/cpu.py
+    tools/system_diagnostics/normalizers/sensors.py
+  normalize platform-specific command outputs into provider-neutral schemas:
+    system.os_version v1:
+      product_name
+      version
+      build
+      platform
+    system.battery_charge v1:
+      percent
+      state
+      source
+    system.disk_free v1:
+      filesystems[]
+        mount
+        size
+        used
+        available
+        used_percent
+    system.vpn_status v1:
+      connected
+      interface_or_service optional
+      evidence
+    system.process_name_search v1:
+      query
+      matches[]
+        pid
+        name
+        command optional, redacted/bounded
+    system.cpu_overview v1:
+      logical_cores
+      physical_cores optional
+      load_percent optional
+      load_average optional
+    system.sensor_snapshot v1:
+      sensors[]
+        name
+        kind
+        temperature_c optional
+        source
+  share schemas across platforms:
+    sw_vers / uname / os-release -> system.os_version v1
+    pmset / upower              -> system.battery_charge v1
+    df on macOS/Linux          -> system.disk_free v1
+  keep raw stdout/stderr bounded and redacted in metadata/content only
+
+runtime/loops:
+  direct answer builders read typed payloads only
+  parsed:
+    answer deterministically from structured_content
+  partial:
+    answer only from available fields and include a cautious warning
+  unparsed:
+    do not invent a parsed answer
+  when model calls are allowed, ordinary ReAct may analyze bounded raw
+    observations as data after direct typed answering is unavailable
+  when model calls are not allowed, return a clear unparsed/unavailable result
+  keep scope-specific stdout parsing out of tool_react_loop
+```
+
+Acceptance:
+
+```text
+direct OS, battery, disk, VPN and process answers come from typed payloads;
+typed payloads propagate from ToolInvocationResult through ToolObservation and
+ToolObservationRef into direct formatters and context/event payloads;
+loop-level parsers for command-specific stdout are removed or reduced to generic
+typed-payload formatting;
+parse_status drives the direct-answer fallback matrix;
+raw output format changes are caught by adapter/normalizer fixture tests;
+unknown output format produces a clear unparsed/unavailable result or bounded
+ReAct fallback, not hallucinated state;
+ToolGateway remains the only execution boundary;
+AgentRuntime and LoopStrategySelector remain independent of diagnostics
+adapters;
+CI does not require host diagnostics commands or a real LLM.
+```
+
+Out of scope:
+
+```text
+provider-native tool calling
+MCP tool schema export
+artifact storage for large raw outputs
+write-capable tools
+voice input/output
+```
 
 ### Intent resolution pipeline
 
@@ -3024,11 +3274,16 @@ PM-08a red phase failed for missing selector/domain behavior;
 PM-08b red phase failed for missing API auto/request metadata behavior;
 PM-08c red phase failed for missing CLI mode behavior;
 PM-08d red phase failed for missing CLI tool/RAG/approval readiness behavior;
+PM-08e red phase failed for missing model-backed classifier behavior;
+PM-08f red phase failed for missing typed tool-observation/direct-answer
+  behavior;
 missing loop_strategy means auto, not direct memory loop;
 ordinary chat still uses memory_augmented_answer;
 project-docs questions use RAG without tool_react_loop;
 live project/system inspection uses tool_react_loop;
 tools-disabled tool intent does not silently hallucinate;
+direct diagnostics answers use typed payloads and parse_status, not raw stdout
+  parsing in the loop;
 CLI defaults to auto and exposes debug override;
 interactive CLI has /mode auto|chat|tools;
 interactive CLI can drive approval-required tool flows;
@@ -3044,7 +3299,6 @@ no real LLM, real shell or host diagnostics calls are required for CI.
 Do not implement:
 
 ```text
-model-backed intent classifier adapter
 planner-executor routing
 multi-agent handoff
 automatic external integration routing
@@ -3060,7 +3314,9 @@ RAG as a tool-loop requirement
 ### Goal
 
 Add the first voice assistant path after PM-08d proves the text CLI/API surface
-can use auto-selected chat, RAG, tools, approvals and cancellation.
+can use auto-selected chat, RAG, tools, approvals and cancellation, and after
+PM-08f hardens direct tool answers around typed observations rather than
+loop-level stdout parsing.
 
 Voice is a client/channel over the existing runtime, not a separate agent
 runtime. A spoken turn must become the same kind of user turn that CLI/API uses:
@@ -3116,6 +3372,8 @@ PM-08a complete
 PM-08b complete
 PM-08c complete
 PM-08d complete
+PM-08e complete
+PM-08f complete
 ```
 
 In practice this means the text CLI already has a working normal chat surface

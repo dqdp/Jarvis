@@ -186,6 +186,11 @@ tool_name
 status
 content
 content_type
+structured_content optional
+structured_schema optional
+structured_schema_version optional
+parse_status optional
+parse_warnings optional
 sensitivity
 truncated
 output_bytes
@@ -215,6 +220,64 @@ Rules:
 - large outputs should be truncated and later moved to artifact refs;
 - raw secrets must not appear in observations;
 - failed and denied calls are observable and auditable.
+
+Typed observations:
+
+- `content` / `content_type` remain the bounded human/debug representation;
+- `structured_content` is the provider-neutral machine-readable payload used by
+  direct answer formatters and future UIs;
+- `structured_schema` and `structured_schema_version` identify the payload
+  contract;
+- `parse_status` describes whether native output was normalized into that
+  contract;
+- `parse_warnings` carries stable non-secret labels for lossy or partial
+  normalization;
+- tool adapters own normalization from native command/API output into typed
+  payloads;
+- loop strategies must not grow command-specific stdout parsers for each tool;
+- if typed payload generation fails, the observation may still carry bounded raw
+  content for audit/debug and normal model/ReAct fallback, but direct answers
+  must not invent parsed state from unrecognized raw output.
+
+Typed-capable tools use these parse statuses:
+
+```text
+parsed
+partial
+unparsed
+not_applicable
+```
+
+The typed contract must be propagated through the full tool pipeline:
+
+```text
+ToolInvocationResult
+  -> ToolObservation
+  -> ToolObservationRef
+  -> context/direct formatter/event payload
+```
+
+Direct answer builders may produce deterministic answers only from
+`structured_content` with `parse_status=parsed` or from the available subset of
+`structured_content` with `parse_status=partial` and an explicit cautious
+warning. `parse_status=unparsed` must route to bounded ReAct/model analysis when
+allowed by policy and model budget, or return a clear unavailable/unparsed
+result. Raw stdout/stderr is never the primary direct-answer contract.
+
+Initial typed diagnostics payloads should cover:
+
+```text
+system.os_version v1
+system.battery_charge v1
+system.disk_free v1
+system.vpn_status v1
+system.process_name_search v1
+system.cpu_overview v1
+system.sensor_snapshot v1
+```
+
+Schema names are provider-neutral, for example
+`structured_schema=system.os_version` and `structured_schema_version=1`.
 
 ## Tool lifecycle events
 
