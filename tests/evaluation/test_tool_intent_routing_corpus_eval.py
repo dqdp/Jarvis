@@ -14,31 +14,332 @@ from assistant_core.domain.loop_selection import LoopSelectionMode, LoopSelectio
 from assistant_core.domain.models import StructuredModelRequest, StructuredModelResponse
 from assistant_core.domain.policy import Capability, PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
+from assistant_core.policy.engine import ConfigPolicyEngine
+from assistant_core.runtime.loop_selection import LoopStrategySelector
 from assistant_core.runtime.model_intent_classifier import ModelBackedIntentClassifier
-from assistant_core.runtime.request_metadata import available_tools_summary
+from assistant_core.runtime.request_metadata import available_tools_summary, metadata_from_decision
+from assistant_core.runtime.routing import CapabilityRoutingRegistry
 
 
 pytestmark = pytest.mark.evaluation
 
 CORPUS_PATH = Path("tests/fixtures/intent_routing/tool_intent_corpus.json")
+REPORT_PATH = Path("tests/fixtures/intent_routing/pre_voice_local_model_eval_report.json")
 
 
-def test_local_model_tool_intent_routing_corpus_eval() -> None:
+def test_pre_voice_local_model_eval_report_blocks_voice_until_real_local_run() -> None:
+    report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+
+    _assert_voice_readiness_report_contract(report)
+
+
+def test_pre_voice_local_model_eval_report_rejects_false_pass_evidence() -> None:
+    bad_report = {
+        "version": 1,
+        "corpus_version": _payload()["version"],
+        "slice": "PM-08h",
+        "model": "local-classifier",
+        "status": "passed",
+        "voice_ready_for_pm09": True,
+        "summary": {
+            "evaluated_cases": 12,
+            "failure_count": 1,
+        },
+        "failures": [
+            {
+                "case_id": "case-1",
+                "category": "system.memory",
+                "language": "en",
+                "field": "direct_plan",
+                "actual": None,
+                "expected": {"expected": True},
+            }
+        ],
+        "notes": ["bad report fixture"],
+    }
+
+    with pytest.raises(AssertionError):
+        _assert_voice_readiness_report_contract(bad_report)
+
+
+def test_pre_voice_local_model_eval_report_rejects_partial_pass_evidence() -> None:
+    bad_report = {
+        "version": 1,
+        "corpus_version": _payload()["version"],
+        "slice": "PM-08h",
+        "model": "local-classifier",
+        "status": "passed",
+        "voice_ready_for_pm09": True,
+        "summary": {
+            "evaluated_cases": 1,
+            "failure_count": 0,
+            "model_called_cases": 1,
+            "fallback_routed_cases": 0,
+            "guardrail_corrected_cases": 0,
+        },
+        "failures": [],
+        "notes": ["bad report fixture"],
+    }
+
+    with pytest.raises(AssertionError):
+        _assert_voice_readiness_report_contract(bad_report)
+
+
+def _assert_voice_readiness_report_contract(report: dict[str, Any]) -> None:
+    assert report["version"] == 1
+    assert report["corpus_version"] == _payload()["version"]
+    assert report["slice"] == "PM-08h"
+    assert report["model"]
+    assert report["status"] in {"passed", "accepted_known_failures", "not_run_in_sandbox"}
+    assert isinstance(report["summary"]["evaluated_cases"], int)
+    assert isinstance(report["summary"]["failure_count"], int)
+    assert report["notes"]
+    if report["status"] == "not_run_in_sandbox":
+        assert report["voice_ready_for_pm09"] is False
+        assert report["blocking_reason"] == "local_model_eval_not_run"
+        assert report["summary"]["evaluated_cases"] == 0
+    else:
+        assert report["voice_ready_for_pm09"] is True
+        assert report["summary"]["evaluated_cases"] == len(_cases())
+        assert report["summary"]["model_called_cases"] == report["summary"]["evaluated_cases"]
+        assert report["summary"]["fallback_routed_cases"] == 0
+        assert report["summary"]["guardrail_corrected_cases"] == 0
+        if report["status"] == "passed":
+            assert report["summary"]["failure_count"] == 0
+            assert report["failures"] == []
+        if report["status"] == "accepted_known_failures":
+            assert report["summary"]["failure_count"] > 0
+            assert report.get("accepted_failures")
+
+
+def test_local_model_classifier_reports_failures_without_ci_network_or_real_llm() -> None:
+    cases = [
+        case
+        for case in _cases()
+        if case["expected"]["intent_family"] == "ordinary_chat"
+    ][:3]
+    report = asyncio.run(
+        evaluate_local_model_classifier(
+            cases,
+            router=StaticStructuredRouter(
+                {
+                    "intent_family": "safe_builtin_tool",
+                    "confidence": 0.8,
+                    "candidate_capabilities": [
+                        {
+                            "capability": "tool.safe",
+                            "intent_family": "safe_builtin_tool",
+                            "confidence": 0.8,
+                            "requires_live_state": True,
+                            "requires_execution": True,
+                            "requires_write": False,
+                            "tool_names": ["datetime.now"],
+                            "risk_classes": ["safe"],
+                            "scope_hint": None,
+                            "evidence_codes": ["fake_wrong_safe_tool"],
+                        }
+                    ],
+                    "requires_live_state": True,
+                    "requires_execution": True,
+                    "answer_without_tools_would_be_misleading": True,
+                    "reason_code": "fake_wrong_safe_tool",
+                    "fallback_preference": "fail_unavailable",
+                }
+            ),
+        )
+    )
+
+    assert report["summary"]["evaluated_cases"] == 3
+    assert report["summary"]["failure_count"] == 3
+    assert report["failures"] == [
+        {
+            "case_id": cases[0]["id"],
+            "category": cases[0]["category"],
+            "language": cases[0]["language"],
+            "field": "intent_family",
+            "actual": "safe_builtin_tool",
+            "expected": cases[0]["expected"]["intent_family"],
+        },
+        {
+            "case_id": cases[1]["id"],
+            "category": cases[1]["category"],
+            "language": cases[1]["language"],
+            "field": "intent_family",
+            "actual": "safe_builtin_tool",
+            "expected": cases[1]["expected"]["intent_family"],
+        },
+        {
+            "case_id": cases[2]["id"],
+            "category": cases[2]["category"],
+            "language": cases[2]["language"],
+            "field": "intent_family",
+            "actual": "safe_builtin_tool",
+            "expected": cases[2]["expected"]["intent_family"],
+        },
+    ]
+
+
+def test_local_model_classifier_routes_pre_voice_corpus_opt_in() -> None:
     if os.environ.get("JARVIS_RUN_INTENT_ROUTING_CORPUS_EVAL") != "1":
         pytest.skip("set JARVIS_RUN_INTENT_ROUTING_CORPUS_EVAL=1 to run local model eval")
 
-    cases = _limited_cases(_cases())
+    cases = _cases()
     router = OllamaStructuredRouter(
         endpoint=os.environ.get("JARVIS_INTENT_ROUTING_EVAL_OLLAMA_URL", "http://127.0.0.1:11434"),
         model=os.environ.get("JARVIS_INTENT_ROUTING_EVAL_MODEL", "qwen3.5:9b"),
         timeout_seconds=int(os.environ.get("JARVIS_INTENT_ROUTING_EVAL_TIMEOUT_SECONDS", "60")),
     )
-    failures: list[str] = []
+    report = asyncio.run(evaluate_local_model_classifier(cases, router=router))
+
+    assert report["failures"] == []
+
+
+def test_local_model_classifier_eval_applies_tools_disabled_case_semantics() -> None:
+    case = next(case for case in _cases() if case["id"] == "disabled.en.001")
+    report = asyncio.run(
+        evaluate_local_model_classifier(
+            [case],
+            router=StaticStructuredRouter(
+                {
+                    "intent_family": "system_diagnostics",
+                    "confidence": 0.9,
+                    "candidate_capabilities": [
+                        {
+                            "capability": "tool.system.read.resources",
+                            "intent_family": "system_diagnostics",
+                            "confidence": 0.9,
+                            "requires_live_state": True,
+                            "requires_execution": True,
+                            "requires_write": False,
+                            "tool_names": ["tool.system.read.resources"],
+                            "risk_classes": ["read_only"],
+                            "scope_hint": "disk_free",
+                            "evidence_codes": ["fake_disk_free"],
+                        }
+                    ],
+                    "requires_live_state": True,
+                    "requires_execution": True,
+                    "answer_without_tools_would_be_misleading": True,
+                    "reason_code": "fake_disk_free",
+                    "fallback_preference": "fail_unavailable",
+                }
+            ),
+        )
+    )
+
+    assert report["failures"] == []
+
+
+def test_local_model_classifier_eval_calls_model_for_safe_builtin_cases() -> None:
+    cases = [
+        case
+        for case in _cases()
+        if case["category"] in {"safe.calculator", "safe.daemon_status"}
+    ][:2]
+    router = CountingStructuredRouter(
+        {
+            "intent_family": "safe_builtin_tool",
+            "confidence": 0.9,
+            "candidate_capabilities": [
+                {
+                    "capability": "tool.safe",
+                    "intent_family": "safe_builtin_tool",
+                    "confidence": 0.9,
+                    "requires_live_state": False,
+                    "requires_execution": True,
+                    "requires_write": False,
+                    "tool_names": ["calculator.evaluate"],
+                    "risk_classes": ["safe"],
+                    "scope_hint": None,
+                    "evidence_codes": ["fake_safe_builtin"],
+                }
+            ],
+            "requires_live_state": False,
+            "requires_execution": True,
+            "answer_without_tools_would_be_misleading": True,
+            "reason_code": "fake_safe_builtin",
+            "fallback_preference": "fail_unavailable",
+        }
+    )
+
+    report = asyncio.run(evaluate_local_model_classifier(cases, router=router))
+
+    assert router.call_count == len(cases)
+    assert report["summary"]["model_called_cases"] == len(cases)
+    assert report["summary"]["fallback_routed_cases"] == 0
+    assert report["summary"]["guardrail_corrected_cases"] == 0
+
+
+def test_local_model_classifier_eval_reports_guardrail_correction_as_failure() -> None:
+    case = next(case for case in _cases() if case["id"] == "os.ru.002")
+    report = asyncio.run(
+        evaluate_local_model_classifier(
+            [case],
+            router=StaticStructuredRouter(
+                {
+                    "intent_family": "ordinary_chat",
+                    "confidence": 0.9,
+                    "candidate_capabilities": [],
+                    "requires_live_state": False,
+                    "requires_execution": False,
+                    "answer_without_tools_would_be_misleading": False,
+                    "reason_code": "fake_ordinary_chat",
+                    "fallback_preference": "chat",
+                }
+            ),
+        )
+    )
+
+    assert report["summary"]["model_called_cases"] == 1
+    assert report["summary"]["guardrail_corrected_cases"] == 1
+    assert {
+        "case_id": case["id"],
+        "category": case["category"],
+        "language": case["language"],
+        "field": "classification_source",
+        "actual": "guardrail",
+        "expected": "model",
+    } in report["failures"]
+
+
+async def evaluate_local_model_classifier(
+    cases: list[dict[str, Any]],
+    *,
+    router,
+) -> dict[str, Any]:
+    failures: list[dict[str, Any]] = []
+    settings = ConfigLoader(Path("config")).load("test")
+    registry = CapabilityRoutingRegistry.from_settings(settings)
+    counting_router = CountingRouter(router)
+    guardrail_corrected_cases = 0
     for case in cases:
-        classification = asyncio.run(
-            ModelBackedIntentClassifier(router=router).classify(_request(case["text"]))
+        request = _request(case["text"])
+        classification = await ModelBackedIntentClassifier(
+            router=counting_router,
+        ).classify(request)
+        decision = await LoopStrategySelector(
+            intent_classifier=StaticIntentClassifier(classification),
+            policy=ConfigPolicyEngine(settings),
+            tools_enabled=not case.get("tools_disabled_baseline")
+            and settings.policy.tools_enabled,
+        ).select(request)
+        metadata = metadata_from_decision(
+            decision,
+            body=_Body(case["text"]),
+            model_profile="local_structured",
+            routing_registry=registry,
         )
         expected = case["expected"]
+        if classification.classification_source != "model":
+            guardrail_corrected_cases += 1
+            failures.append(
+                _failure(
+                    case,
+                    "classification_source",
+                    classification.classification_source,
+                    expected="model",
+                )
+            )
         actual_capabilities = {
             candidate.capability.value for candidate in classification.candidate_capabilities
         }
@@ -48,19 +349,65 @@ def test_local_model_tool_intent_routing_corpus_eval() -> None:
             for tool_name in candidate.tool_names
         }
         if classification.intent_family.value != expected["intent_family"]:
-            failures.append(
-                f"{case['id']}: intent {classification.intent_family.value} "
-                f"!= {expected['intent_family']}"
-            )
+            failures.append(_failure(case, "intent_family", classification.intent_family.value))
             continue
-        missing = set(expected["capabilities"]) - actual_capabilities
-        if missing:
-            failures.append(f"{case['id']}: missing capabilities {sorted(missing)}")
-        missing_tools = set(expected["tool_names"]) - actual_tool_names
-        if missing_tools:
-            failures.append(f"{case['id']}: missing tool_names {sorted(missing_tools)}")
+        if actual_capabilities != set(expected["capabilities"]):
+            failures.append(_failure(case, "capabilities", sorted(actual_capabilities)))
+        if actual_tool_names != set(expected["tool_names"]):
+            failures.append(_failure(case, "tool_names", sorted(actual_tool_names)))
+        if decision.fallback_behavior.value != expected["fallback_behavior"]:
+            failures.append(
+                _failure(case, "fallback_behavior", decision.fallback_behavior.value)
+            )
+        if "policy_outcome" in expected:
+            actual_policy = decision.policy_outcome.value if decision.policy_outcome else None
+            if actual_policy != expected["policy_outcome"]:
+                failures.append(_failure(case, "policy_outcome", actual_policy))
+        if "approval_possible" in expected and decision.approval_possible != expected["approval_possible"]:
+            failures.append(_failure(case, "approval_possible", decision.approval_possible))
+        if "direct_plan" in expected and not case.get("tools_disabled_baseline"):
+            actual_plan = metadata.get("loop_selection_direct_tool_plan")
+            expected_plan = expected["direct_plan"]
+            if expected_plan["expected"]:
+                if actual_plan is None:
+                    failures.append(_failure(case, "direct_plan", None))
+                elif (
+                    actual_plan.get("scenario") != expected_plan["scenario"]
+                    or actual_plan.get("tool_names") != expected_plan["tool_names"]
+                ):
+                    failures.append(_failure(case, "direct_plan", actual_plan))
+            elif actual_plan is not None:
+                failures.append(_failure(case, "direct_plan", actual_plan))
 
-    assert failures == []
+    return {
+        "version": 1,
+        "corpus_version": _payload()["version"],
+        "summary": {
+            "evaluated_cases": len(cases),
+            "failure_count": len(failures),
+            "model_called_cases": counting_router.call_count,
+            "fallback_routed_cases": len(cases) - counting_router.call_count,
+            "guardrail_corrected_cases": guardrail_corrected_cases,
+        },
+        "failures": failures,
+    }
+
+
+def _failure(
+    case: dict[str, Any],
+    field: str,
+    actual: Any,
+    *,
+    expected: Any | None = None,
+) -> dict[str, Any]:
+    return {
+        "case_id": case["id"],
+        "category": case["category"],
+        "language": case["language"],
+        "field": field,
+        "actual": actual,
+        "expected": case["expected"].get(field) if expected is None else expected,
+    }
 
 
 class OllamaStructuredRouter:
@@ -93,6 +440,49 @@ class OllamaStructuredRouter:
         return StructuredModelResponse(value=_json_object(content))
 
 
+class StaticStructuredRouter:
+    def __init__(self, value: dict[str, Any]) -> None:
+        self._value = value
+
+    async def structured(self, request: StructuredModelRequest) -> StructuredModelResponse:
+        return StructuredModelResponse(value=self._value)
+
+
+class CountingRouter:
+    def __init__(self, wrapped) -> None:
+        self._wrapped = wrapped
+        self.call_count = 0
+
+    async def structured(self, request: StructuredModelRequest) -> StructuredModelResponse:
+        self.call_count += 1
+        return await self._wrapped.structured(request)
+
+
+class CountingStructuredRouter(StaticStructuredRouter):
+    def __init__(self, value: dict[str, Any]) -> None:
+        super().__init__(value)
+        self.call_count = 0
+
+    async def structured(self, request: StructuredModelRequest) -> StructuredModelResponse:
+        self.call_count += 1
+        return await super().structured(request)
+
+
+class StaticIntentClassifier:
+    def __init__(self, classification) -> None:
+        self._classification = classification
+
+    async def classify(self, request: LoopSelectionRequest):
+        return self._classification
+
+
+class _Body:
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.model_profile = None
+        self.working_directory = str(Path.cwd())
+
+
 def _json_object(content: str) -> dict[str, Any]:
     stripped = content.strip()
     if stripped.startswith("```"):
@@ -118,7 +508,7 @@ def _request(text: str) -> LoopSelectionRequest:
         user_input=text,
         current_message_sensitivity=Sensitivity.PROJECT,
         active_project_namespace="project.personal_assistant",
-        working_directory="/tmp/project",
+        working_directory=str(Path.cwd()),
         permission_mode=PermissionMode.DEVELOPER_LOCAL,
         available_capabilities=frozenset(Capability),
         available_tools_summary=available_tools_summary(ConfigLoader(Path("config")).load("test")),
@@ -127,11 +517,9 @@ def _request(text: str) -> LoopSelectionRequest:
     )
 
 
-def _limited_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    limit = int(os.environ.get("JARVIS_INTENT_ROUTING_EVAL_LIMIT", "0"))
-    return cases[:limit] if limit > 0 else cases
+def _payload() -> dict[str, Any]:
+    return json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
 
 
 def _cases() -> list[dict[str, Any]]:
-    payload = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
-    return payload["cases"]
+    return _payload()["cases"]

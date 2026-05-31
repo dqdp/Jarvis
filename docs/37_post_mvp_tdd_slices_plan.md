@@ -3407,6 +3407,14 @@ model evaluation:
     before PM-09 starts, run the opt-in local classifier evaluation once against
     the selected local classifier model and record either fixes or accepted known
     failures in the slice notes
+    the recorded voice-readiness run must cover the full corpus and call the
+    local model for every evaluated case; deterministic runtime fallback is a
+    separate runtime safety net and must not be counted as local model coverage
+    guardrail-corrected classifications must be reported as non-model-only
+    outcomes and cannot satisfy a passed PM-09 readiness report
+    if the selected local classifier model is unavailable in the PM-08h sandbox,
+    record an explicit not-ready report with the PM-09 blocking reason; this
+    report is a gate artifact, not evidence that local model evaluation passed
   rejected:
     requiring a real local model in CI
   reason:
@@ -3448,6 +3456,12 @@ tests/evaluation:
   keep real local model evaluation opt-in and non-CI
   report confusion by category/language/scope
   require one recorded local classifier evaluation before PM-09 starts
+  reject voice-ready reports from limited runs or reports where any evaluated
+  case was satisfied only by deterministic fallback instead of a local model call
+  reject passed voice-ready reports with guardrail-corrected cases; those cases
+  may be useful diagnostics, but they are not model-only evidence
+  allow a sandbox not-run report only when it explicitly marks PM-09 voice
+  readiness blocked until the local evaluation is replaced with a real result
 ```
 
 Acceptance:

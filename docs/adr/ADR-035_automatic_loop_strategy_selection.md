@@ -751,7 +751,12 @@ mandatory pre-voice corpus:
 local model evaluation:
   opt-in and outside CI until enough data exists to set a stable threshold, but
   PM-09 requires one recorded local classifier evaluation against the selected
-  local model with either fixes or accepted known failures.
+  local model with either fixes or accepted known failures. If PM-08h completes
+  where that local model is unavailable, the report must explicitly mark voice
+  readiness blocked; a not-run sandbox report is not accepted as PM-09 evidence.
+  The PM-09 readiness report must be a full-corpus model-only evaluation:
+  deterministic runtime fallback may be tested separately, but fallback-routed
+  and guardrail-corrected cases do not count as local model coverage.
 
 PM-08f/PM-08g sequencing:
   PM-08f stays focused on typed observations and loop parser removal. PM-08g is

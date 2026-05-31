@@ -295,6 +295,43 @@ def test_model_backed_classifier_fallback_corrects_live_state_false_negative(
     assert candidate.scope_hint == scope_hint
 
 
+@pytest.mark.parametrize(
+    ("user_input", "tool_name"),
+    [
+        ("Посчитай 128 * 64", "calculator.evaluate"),
+        ("Check the assistant daemon status", "daemon.status"),
+    ],
+)
+def test_model_backed_classifier_fallback_corrects_safe_builtin_false_negative(
+    user_input: str,
+    tool_name: str,
+) -> None:
+    router = FakeStructuredRouter(
+        {
+            "intent_family": "ordinary_chat",
+            "confidence": 0.92,
+            "candidate_capabilities": [],
+            "requires_live_state": False,
+            "requires_execution": False,
+            "answer_without_tools_would_be_misleading": False,
+            "reason_code": "ordinary_chat",
+            "fallback_preference": "chat",
+        }
+    )
+
+    classification = asyncio.run(
+        ModelBackedIntentClassifier(
+            router=router,
+            fallback=DeterministicIntentClassifier(),
+        ).classify(_request(user_input=user_input))
+    )
+
+    assert classification.intent_family is IntentFamily.SAFE_BUILTIN_TOOL
+    candidate = classification.candidate_capabilities[0]
+    assert candidate.capability is Capability.TOOL_SAFE
+    assert candidate.tool_names == (tool_name,)
+
+
 def test_model_backed_classifier_prefers_fallback_for_allowlisted_direct_tool_intent() -> None:
     router = FakeStructuredRouter(
         {

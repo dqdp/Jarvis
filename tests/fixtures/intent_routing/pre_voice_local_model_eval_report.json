@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "slice": "PM-08h",
+  "corpus_version": 1,
+  "model": "qwen3.5:9b",
+  "status": "not_run_in_sandbox",
+  "voice_ready_for_pm09": false,
+  "blocking_reason": "local_model_eval_not_run",
+  "summary": {
+    "evaluated_cases": 0,
+    "failure_count": 0,
+    "model_called_cases": 0,
+    "fallback_routed_cases": 0,
+    "guardrail_corrected_cases": 0
+  },
+  "failures": [],
+  "notes": [
+    "CI uses deterministic and fake-router corpus gates only.",
+    "Run JARVIS_RUN_INTENT_ROUTING_CORPUS_EVAL=1 before PM-09 voice work starts to replace this sandbox report with a local-model result."
+  ]
+}

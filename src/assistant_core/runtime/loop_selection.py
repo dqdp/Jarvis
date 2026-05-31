@@ -93,30 +93,6 @@ class DeterministicIntentClassifier:
                 tool_name="tool.system.read.hardware",
                 scope_hint="battery_charge",
             )
-        if not _is_conceptual_diagnostics_question(text) and _contains_any(
-            text,
-            ("cpu", "memory usage", "ram", "resources", "htop"),
-        ):
-            return _system_diagnostics_classification(
-                capability=Capability.TOOL_SYSTEM_READ_RESOURCES,
-                reason_code="system_diagnostics_hint",
-            )
-        if _contains_any(
-            text,
-            ("netstat", "listening port", "listening on port", "listening on this port"),
-        ):
-            return _system_diagnostics_classification(
-                capability=Capability.TOOL_SYSTEM_READ_NETWORK,
-                reason_code="system_diagnostics_hint",
-                tool_name="tool.system.read.network",
-            )
-        if _is_vpn_status_request(text):
-            return _system_diagnostics_classification(
-                capability=Capability.TOOL_SYSTEM_READ_NETWORK,
-                reason_code="system_diagnostics_hint",
-                tool_name="tool.system.read.network",
-                scope_hint="vpn_status",
-            )
         if _is_process_name_search_request(text):
             return _system_diagnostics_classification(
                 capability=Capability.TOOL_SYSTEM_READ_PROCESS,
@@ -141,6 +117,42 @@ class DeterministicIntentClassifier:
                 capability=Capability.TOOL_SYSTEM_READ_PROCESS,
                 reason_code="system_diagnostics_hint",
                 tool_name="tool.system.read.process",
+            )
+        if not _is_conceptual_diagnostics_question(text) and _contains_any(
+            text,
+            ("cpu", "memory usage", "ram", "resources", "htop"),
+        ):
+            return _system_diagnostics_classification(
+                capability=Capability.TOOL_SYSTEM_READ_RESOURCES,
+                reason_code="system_diagnostics_hint",
+                tool_name="tool.system.read.resources",
+            )
+        if _contains_any(
+            text,
+            ("netstat", "listening port", "listening on port", "listening on this port"),
+        ):
+            return _system_diagnostics_classification(
+                capability=Capability.TOOL_SYSTEM_READ_NETWORK,
+                reason_code="system_diagnostics_hint",
+                tool_name="tool.system.read.network",
+            )
+        if _is_vpn_status_request(text):
+            return _system_diagnostics_classification(
+                capability=Capability.TOOL_SYSTEM_READ_NETWORK,
+                reason_code="system_diagnostics_hint",
+                tool_name="tool.system.read.network",
+                scope_hint="vpn_status",
+            )
+        if _is_calculator_request(text):
+            return _safe_builtin_classification(
+                tool_name="calculator.evaluate",
+                reason_code="calculator_hint",
+                requires_live_state=False,
+            )
+        if _is_daemon_status_request(text):
+            return _safe_builtin_classification(
+                tool_name="daemon.status",
+                reason_code="daemon_status_hint",
             )
         if _contains_any(text, ("find in project", "inspect", "grep", "rg ")) or (
             "where" in text and _contains_any(text, ("defined", "implemented", "in project"))
@@ -639,6 +651,7 @@ def _safe_builtin_classification(
     tool_name: str,
     reason_code: str,
     scope_hint: str | None = None,
+    requires_live_state: bool = True,
 ) -> IntentClassification:
     return IntentClassification(
         intent_family=IntentFamily.SAFE_BUILTIN_TOOL,
@@ -648,7 +661,7 @@ def _safe_builtin_classification(
                 capability=Capability.TOOL_SAFE,
                 intent_family=IntentFamily.SAFE_BUILTIN_TOOL,
                 confidence=0.76,
-                requires_live_state=True,
+                requires_live_state=requires_live_state,
                 requires_execution=True,
                 requires_write=False,
                 tool_names=(tool_name,),
@@ -657,7 +670,7 @@ def _safe_builtin_classification(
                 evidence_codes=("safe_builtin_request",),
             ),
         ),
-        requires_live_state=True,
+        requires_live_state=requires_live_state,
         requires_execution=True,
         answer_without_tools_would_be_misleading=True,
         reason_code=reason_code,
@@ -762,6 +775,67 @@ def _is_christmas_countdown_request(text: str) -> bool:
     )
 
 
+def _is_calculator_request(text: str) -> bool:
+    if _is_explicit_explanation_question(text):
+        return False
+    if not _has_arithmetic_signal(text):
+        return False
+    return _contains_any(
+        text,
+        (
+            "calculate",
+            "calcula",
+            "calcule",
+            "berechne",
+            "посчитай",
+            "вычисли",
+            "сколько будет",
+        ),
+    )
+
+
+def _has_arithmetic_signal(text: str) -> bool:
+    if any(character.isdigit() for character in text):
+        return True
+    return _contains_any(
+        text,
+        (
+            "+",
+            "-",
+            "*",
+            "/",
+            "%",
+            " plus ",
+            " minus ",
+            " divided ",
+            "multiplied",
+            "процент",
+            "плюс",
+            "минус",
+            "умнож",
+            "раздел",
+            "делен",
+        ),
+    )
+
+
+def _is_daemon_status_request(text: str) -> bool:
+    if _is_explicit_explanation_question(text):
+        return False
+    if not _contains_any(text, ("daemon", "демон", "демона")):
+        return False
+    return _contains_any(
+        text,
+        (
+            "status",
+            "статус",
+            "estado",
+            "état",
+            "etat",
+        ),
+    )
+
+
 def _is_sensor_temperature_request(text: str) -> bool:
     if _is_conceptual_diagnostics_question(text):
         return False
@@ -810,11 +884,16 @@ def _is_conceptual_diagnostics_question(text: str) -> bool:
             "объясни",
             "как работает",
             "что такое",
+            "explica",
+            "explique",
+            "erkläre",
         ),
     )
 
 
 def _is_cpu_overview_request(text: str) -> bool:
+    if _is_conceptual_diagnostics_question(text):
+        return False
     if not _contains_any(
         text,
         (
@@ -897,11 +976,16 @@ def _is_explicit_explanation_question(text: str) -> bool:
             "объясни",
             "как работает",
             "что такое",
+            "explica",
+            "explique",
+            "erkläre",
         ),
     )
 
 
 def _is_memory_resource_request(text: str) -> bool:
+    if _is_conceptual_diagnostics_question(text):
+        return False
     if not _contains_any(
         text,
         (
@@ -935,6 +1019,8 @@ def _is_memory_resource_request(text: str) -> bool:
 
 
 def _is_disk_free_request(text: str) -> bool:
+    if _is_conceptual_diagnostics_question(text):
+        return False
     has_disk_signal = _contains_any(
         text,
         (
@@ -965,6 +1051,8 @@ def _is_disk_free_request(text: str) -> bool:
 
 
 def _is_battery_charge_request(text: str) -> bool:
+    if _is_conceptual_diagnostics_question(text):
+        return False
     has_battery_signal = _contains_any(
         text,
         (
@@ -1029,6 +1117,7 @@ def _is_process_name_search_request(text: str) -> bool:
         text,
         (
             "running",
+            "current",
             "is there",
             "exists",
             "запущ",
@@ -1064,6 +1153,8 @@ def _has_process_name_token(text: str) -> bool:
 
 
 def _is_vpn_status_request(text: str) -> bool:
+    if _is_conceptual_diagnostics_question(text):
+        return False
     if not _contains_any(text, ("vpn", "впн")):
         return False
     return _contains_any(

@@ -2,112 +2,2791 @@
   "version": 1,
   "description": "Multilingual corpus for tool-intent routing. CI validates schema and a deterministic/guardrail baseline; opt-in evaluation can run the full corpus against a local model.",
   "cases": [
-    {"id": "time.ru.001", "language": "ru", "category": "safe.current_time", "text": "Сколько времени?", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["datetime.now"]}, "ci_baseline": true},
-    {"id": "time.ru.002", "language": "ru", "category": "safe.current_time", "text": "Который час сейчас?", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["datetime.now"]}, "ci_baseline": true},
-    {"id": "time.ru.003", "language": "ru", "category": "safe.current_time", "text": "Подскажи текущее время", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["datetime.now"]}, "ci_baseline": true},
-    {"id": "time.ru.004", "language": "ru", "category": "safe.date_countdown", "text": "через сколько дней Рождество?", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["datetime.now"], "scope_hint": "christmas_countdown"}, "ci_baseline": true},
-    {"id": "time.ru.005", "language": "ru", "category": "safe.date_countdown", "text": "Сколько дней до Рождества?", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["datetime.now"], "scope_hint": "christmas_countdown"}, "ci_baseline": true},
-    {"id": "time.en.001", "language": "en", "category": "safe.current_time", "text": "What time is it?", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["datetime.now"]}, "ci_baseline": true},
-    {"id": "time.en.002", "language": "en", "category": "safe.current_time", "text": "What is the current date?", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["datetime.now"]}, "ci_baseline": true},
-    {"id": "time.en.003", "language": "en", "category": "safe.date_countdown", "text": "How many days until Christmas?", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["datetime.now"], "scope_hint": "christmas_countdown"}, "ci_baseline": true},
-    {"id": "time.es.001", "language": "es", "category": "safe.current_time", "text": "¿Qué hora es ahora?", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["datetime.now"]}},
-    {"id": "time.fr.001", "language": "fr", "category": "safe.current_time", "text": "Quelle heure est-il maintenant ?", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["datetime.now"]}},
-    {"id": "time.de.001", "language": "de", "category": "safe.current_time", "text": "Wie spät ist es gerade?", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["datetime.now"]}},
-
-    {"id": "calc.ru.001", "language": "ru", "category": "safe.calculator", "text": "Посчитай 128 * 64", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["calculator.evaluate"]}},
-    {"id": "calc.ru.002", "language": "ru", "category": "safe.calculator", "text": "Сколько будет (42 + 18) / 3?", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["calculator.evaluate"]}},
-    {"id": "calc.en.001", "language": "en", "category": "safe.calculator", "text": "Calculate 19.5 percent of 840", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["calculator.evaluate"]}},
-    {"id": "calc.es.001", "language": "es", "category": "safe.calculator", "text": "Calcula 144 dividido por 12", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["calculator.evaluate"]}},
-    {"id": "calc.fr.001", "language": "fr", "category": "safe.calculator", "text": "Calcule 2 puissance 10", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["calculator.evaluate"]}},
-    {"id": "calc.de.001", "language": "de", "category": "safe.calculator", "text": "Berechne 256 geteilt durch 8", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["calculator.evaluate"]}},
-
-    {"id": "daemon.ru.001", "language": "ru", "category": "safe.daemon_status", "text": "Покажи статус демона Jarvis", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["daemon.status"]}},
-    {"id": "daemon.en.001", "language": "en", "category": "safe.daemon_status", "text": "Check the assistant daemon status", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["daemon.status"]}},
-    {"id": "daemon.es.001", "language": "es", "category": "safe.daemon_status", "text": "Muestra el estado del daemon de Jarvis", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["daemon.status"]}},
-    {"id": "daemon.fr.001", "language": "fr", "category": "safe.daemon_status", "text": "Vérifie l'état du daemon Jarvis", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["daemon.status"]}},
-    {"id": "daemon.de.001", "language": "de", "category": "safe.daemon_status", "text": "Zeig mir den Status des Jarvis-Daemons", "expected": {"intent_family": "safe_builtin_tool", "capabilities": ["tool.safe"], "tool_names": ["daemon.status"]}},
-
-    {"id": "os.ru.001", "language": "ru", "category": "system.os_version", "text": "Какая версия операционной системы?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "os_version"}, "ci_baseline": true},
-    {"id": "os.ru.002", "language": "ru", "category": "system.os_version", "text": "Какой у меня macOS билд?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "os_version"}, "guardrail_baseline": true},
-    {"id": "os.ru.003", "language": "ru", "category": "system.os_version", "text": "Покажи сборку macOS на этом компьютере", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "os_version"}, "guardrail_baseline": true},
-    {"id": "os.en.001", "language": "en", "category": "system.os_version", "text": "What is the OS version?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "os_version"}, "ci_baseline": true},
-    {"id": "os.en.002", "language": "en", "category": "system.os_version", "text": "Which macOS build am I on?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "os_version"}, "guardrail_baseline": true},
-    {"id": "os.es.001", "language": "es", "category": "system.os_version", "text": "¿Qué versión de macOS tengo en mi Mac?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "os_version"}, "guardrail_baseline": true},
-    {"id": "os.es.002", "language": "es", "category": "system.os_version", "text": "Dime la compilación del sistema operativo en este equipo", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "os_version"}, "guardrail_baseline": true},
-    {"id": "os.fr.001", "language": "fr", "category": "system.os_version", "text": "Quelle version de macOS est installée sur mon Mac ?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "os_version"}, "guardrail_baseline": true},
-    {"id": "os.fr.002", "language": "fr", "category": "system.os_version", "text": "Donne-moi le numéro de build du système sur cet ordinateur", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "os_version"}, "guardrail_baseline": true},
-    {"id": "os.de.001", "language": "de", "category": "system.os_version", "text": "Welche macOS-Version läuft auf meinem Mac?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "os_version"}, "guardrail_baseline": true},
-    {"id": "os.de.002", "language": "de", "category": "system.os_version", "text": "Zeig die Buildnummer des Betriebssystems auf diesem Computer", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "os_version"}, "guardrail_baseline": true},
-
-    {"id": "cpu.ru.001", "language": "ru", "category": "system.cpu_overview", "text": "Сколько ядер у центрального процессора и на сколько они загружены?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware", "tool.system.read.resources"], "tool_names": ["tool.system.read.hardware", "tool.system.read.resources"], "scope_hint": "cpu_overview"}, "ci_baseline": true},
-    {"id": "cpu.ru.002", "language": "ru", "category": "system.cpu_overview", "text": "Покажи загрузку CPU и количество ядер", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware", "tool.system.read.resources"], "tool_names": ["tool.system.read.hardware", "tool.system.read.resources"], "scope_hint": "cpu_overview"}},
-    {"id": "cpu.en.001", "language": "en", "category": "system.cpu_overview", "text": "How many CPU cores are there and how busy are they?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware", "tool.system.read.resources"], "tool_names": ["tool.system.read.hardware", "tool.system.read.resources"], "scope_hint": "cpu_overview"}, "ci_baseline": true},
-    {"id": "cpu.en.002", "language": "en", "category": "system.cpu_overview", "text": "Show CPU core count and current utilization", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware", "tool.system.read.resources"], "tool_names": ["tool.system.read.hardware", "tool.system.read.resources"], "scope_hint": "cpu_overview"}, "ci_baseline": true},
-    {"id": "cpu.es.001", "language": "es", "category": "system.cpu_overview", "text": "¿Cuántos núcleos tiene la CPU y cuál es su carga actual?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware", "tool.system.read.resources"], "tool_names": ["tool.system.read.hardware", "tool.system.read.resources"], "scope_hint": "cpu_overview"}},
-    {"id": "cpu.fr.001", "language": "fr", "category": "system.cpu_overview", "text": "Combien de coeurs CPU et quelle charge maintenant ?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware", "tool.system.read.resources"], "tool_names": ["tool.system.read.hardware", "tool.system.read.resources"], "scope_hint": "cpu_overview"}},
-    {"id": "cpu.de.001", "language": "de", "category": "system.cpu_overview", "text": "Wie viele CPU-Kerne gibt es und wie stark sind sie ausgelastet?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware", "tool.system.read.resources"], "tool_names": ["tool.system.read.hardware", "tool.system.read.resources"], "scope_hint": "cpu_overview"}},
-
-    {"id": "memory.ru.001", "language": "ru", "category": "system.memory", "text": "Сколько памяти сейчас свободно в системе?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.resources"], "tool_names": ["tool.system.read.resources"]}, "ci_baseline": true},
-    {"id": "memory.ru.002", "language": "ru", "category": "system.memory", "text": "Покажи текущую загрузку оперативной памяти", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.resources"], "tool_names": ["tool.system.read.resources"]}, "ci_baseline": true},
-    {"id": "memory.en.001", "language": "en", "category": "system.memory", "text": "How much RAM is free right now?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.resources"], "tool_names": ["tool.system.read.resources"]}, "ci_baseline": true},
-    {"id": "memory.en.002", "language": "en", "category": "system.memory", "text": "Show current memory usage", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.resources"], "tool_names": ["tool.system.read.resources"]}, "ci_baseline": true},
-    {"id": "memory.es.001", "language": "es", "category": "system.memory", "text": "¿Cuánta memoria libre hay ahora?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.resources"], "tool_names": ["tool.system.read.resources"]}},
-    {"id": "memory.fr.001", "language": "fr", "category": "system.memory", "text": "Combien de mémoire libre reste-t-il maintenant ?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.resources"], "tool_names": ["tool.system.read.resources"]}},
-    {"id": "memory.de.001", "language": "de", "category": "system.memory", "text": "Wie viel Arbeitsspeicher ist gerade frei?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.resources"], "tool_names": ["tool.system.read.resources"]}},
-
-    {"id": "disk.ru.001", "language": "ru", "category": "system.disk", "text": "Сколько свободного места на диске?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.resources"], "tool_names": ["tool.system.read.resources"], "scope_hint": "disk_free"}, "ci_baseline": true},
-    {"id": "disk.ru.002", "language": "ru", "category": "system.disk", "text": "Покажи свободное место на накопителе", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.resources"], "tool_names": ["tool.system.read.resources"], "scope_hint": "disk_free"}, "ci_baseline": true},
-    {"id": "disk.en.001", "language": "en", "category": "system.disk", "text": "How much free disk space is left?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.resources"], "tool_names": ["tool.system.read.resources"], "scope_hint": "disk_free"}, "ci_baseline": true},
-    {"id": "battery.ru.001", "language": "ru", "category": "system.battery", "text": "Сколько процентов заряда аккумулятора осталось на макбуке?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "battery_charge"}, "ci_baseline": true},
-    {"id": "battery.ru.002", "language": "ru", "category": "system.battery", "text": "Сколько заряда батареи сейчас на макбуке?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "battery_charge"}, "ci_baseline": true},
-    {"id": "battery.en.001", "language": "en", "category": "system.battery", "text": "How much battery is left on this MacBook?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.hardware"], "tool_names": ["tool.system.read.hardware"], "scope_hint": "battery_charge"}, "ci_baseline": true},
-
-    {"id": "temp.ru.001", "language": "ru", "category": "system.temperature", "text": "Текущая температура процессора.", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.sensors"], "tool_names": ["tool.system.read.sensors"]}, "ci_baseline": true},
-    {"id": "temp.ru.002", "language": "ru", "category": "system.temperature", "text": "Проверь температуру CPU на макбуке", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.sensors"], "tool_names": ["tool.system.read.sensors"]}, "ci_baseline": true},
-    {"id": "temp.en.001", "language": "en", "category": "system.temperature", "text": "Check CPU temperature", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.sensors"], "tool_names": ["tool.system.read.sensors"]}, "ci_baseline": true},
-    {"id": "temp.en.002", "language": "en", "category": "system.temperature", "text": "Show thermal sensor state on this laptop", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.sensors"], "tool_names": ["tool.system.read.sensors"]}, "ci_baseline": true},
-    {"id": "temp.es.001", "language": "es", "category": "system.temperature", "text": "Comprueba la temperatura de la CPU", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.sensors"], "tool_names": ["tool.system.read.sensors"]}},
-    {"id": "temp.fr.001", "language": "fr", "category": "system.temperature", "text": "Vérifie la température du processeur", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.sensors"], "tool_names": ["tool.system.read.sensors"]}},
-    {"id": "temp.de.001", "language": "de", "category": "system.temperature", "text": "Prüfe die CPU-Temperatur", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.sensors"], "tool_names": ["tool.system.read.sensors"]}},
-
-    {"id": "process.en.001", "language": "en", "category": "system.processes", "text": "Show running processes", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.process"], "tool_names": ["tool.system.read.process"]}, "ci_baseline": true},
-    {"id": "process.en.002", "language": "en", "category": "system.processes", "text": "List process status", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.process"], "tool_names": ["tool.system.read.process"]}, "ci_baseline": true},
-    {"id": "process.ru.001", "language": "ru", "category": "system.processes", "text": "Покажи список процессов", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.process"], "tool_names": ["tool.system.read.process"]}},
-    {"id": "process.ru.002", "language": "ru", "category": "system.processes", "text": "Запущен ли сейчас процесс, в имени которого есть \"HFT\"?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.process"], "tool_names": ["tool.system.read.process"], "scope_hint": "process_name_search"}, "ci_baseline": true},
-    {"id": "process.ru.003", "language": "ru", "category": "system.processes", "text": "Запущен ли процесс HFT сейчас?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.process"], "tool_names": ["tool.system.read.process"], "scope_hint": "process_name_search"}, "ci_baseline": true},
-    {"id": "process.es.001", "language": "es", "category": "system.processes", "text": "Lista los procesos en ejecución", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.process"], "tool_names": ["tool.system.read.process"]}},
-    {"id": "process.fr.001", "language": "fr", "category": "system.processes", "text": "Affiche les processus en cours", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.process"], "tool_names": ["tool.system.read.process"]}},
-    {"id": "process.de.001", "language": "de", "category": "system.processes", "text": "Zeige laufende Prozesse", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.process"], "tool_names": ["tool.system.read.process"]}},
-
-    {"id": "network.en.001", "language": "en", "category": "system.network", "text": "What is listening on port 8080?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.network"], "tool_names": ["tool.system.read.network"]}, "ci_baseline": true},
-    {"id": "network.en.002", "language": "en", "category": "system.network", "text": "Run netstat style network diagnostics", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.network"], "tool_names": ["tool.system.read.network"]}, "ci_baseline": true},
-    {"id": "network.ru.001", "language": "ru", "category": "system.network", "text": "Покажи, кто слушает порт 8080", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.network"], "tool_names": ["tool.system.read.network"]}},
-    {"id": "network.ru.002", "language": "ru", "category": "system.vpn", "text": "Включен ли VPN сейчас?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.network"], "tool_names": ["tool.system.read.network"], "scope_hint": "vpn_status"}, "ci_baseline": true},
-    {"id": "network.ru.003", "language": "ru", "category": "system.vpn", "text": "Есть ли активное VPN-подключение?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.network"], "tool_names": ["tool.system.read.network"], "scope_hint": "vpn_status"}, "ci_baseline": true},
-    {"id": "network.en.003", "language": "en", "category": "system.vpn", "text": "Is the VPN connected right now?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.network"], "tool_names": ["tool.system.read.network"], "scope_hint": "vpn_status"}, "ci_baseline": true},
-    {"id": "network.es.001", "language": "es", "category": "system.network", "text": "Qué proceso escucha en el puerto 8080?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.network"], "tool_names": ["tool.system.read.network"]}},
-    {"id": "network.fr.001", "language": "fr", "category": "system.network", "text": "Quel processus écoute sur le port 8080 ?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.network"], "tool_names": ["tool.system.read.network"]}},
-    {"id": "network.de.001", "language": "de", "category": "system.network", "text": "Welcher Prozess lauscht auf Port 8080?", "expected": {"intent_family": "system_diagnostics", "capabilities": ["tool.system.read.network"], "tool_names": ["tool.system.read.network"]}},
-
-    {"id": "project.en.001", "language": "en", "category": "project.inspection", "text": "Find in project where LoopStrategySelector is defined", "expected": {"intent_family": "project_inspection", "capabilities": ["tool.shell.read"], "tool_names": ["tool.shell.read.project"]}, "ci_baseline": true},
-    {"id": "project.en.002", "language": "en", "category": "project.inspection", "text": "Inspect the file that implements request metadata", "expected": {"intent_family": "project_inspection", "capabilities": ["tool.shell.read"], "tool_names": ["tool.shell.read.project"]}, "ci_baseline": true},
-    {"id": "project.en.003", "language": "en", "category": "project.inspection", "text": "grep for IntentClassifierPort in the codebase", "expected": {"intent_family": "project_inspection", "capabilities": ["tool.shell.read"], "tool_names": ["tool.shell.read.project"]}, "ci_baseline": true},
-    {"id": "project.en.004", "language": "en", "category": "project.inspection", "text": "rg loop_selection in src", "expected": {"intent_family": "project_inspection", "capabilities": ["tool.shell.read"], "tool_names": ["tool.shell.read.project"]}, "ci_baseline": true},
-    {"id": "project.ru.001", "language": "ru", "category": "project.inspection", "text": "Найди в проекте где объявлен IntentClassifierPort", "expected": {"intent_family": "project_inspection", "capabilities": ["tool.shell.read"], "tool_names": ["tool.shell.read.project"]}},
-    {"id": "project.es.001", "language": "es", "category": "project.inspection", "text": "Busca en el proyecto dónde se define LoopStrategySelector", "expected": {"intent_family": "project_inspection", "capabilities": ["tool.shell.read"], "tool_names": ["tool.shell.read.project"]}},
-    {"id": "project.fr.001", "language": "fr", "category": "project.inspection", "text": "Cherche dans le projet où IntentClassifierPort est défini", "expected": {"intent_family": "project_inspection", "capabilities": ["tool.shell.read"], "tool_names": ["tool.shell.read.project"]}},
-    {"id": "project.de.001", "language": "de", "category": "project.inspection", "text": "Suche im Projekt, wo LoopStrategySelector definiert ist", "expected": {"intent_family": "project_inspection", "capabilities": ["tool.shell.read"], "tool_names": ["tool.shell.read.project"]}},
-
-    {"id": "negative.ru.001", "language": "ru", "category": "ordinary.conceptual", "text": "Объясни, что такое macOS build number", "expected": {"intent_family": "ordinary_chat", "capabilities": [], "tool_names": []}, "guardrail_baseline": true},
-    {"id": "negative.en.001", "language": "en", "category": "ordinary.conceptual", "text": "Explain how CPU temperature sensors work", "expected": {"intent_family": "ordinary_chat", "capabilities": [], "tool_names": []}, "ci_baseline": true},
-    {"id": "negative.en.002", "language": "en", "category": "ordinary.conceptual", "text": "How do I print current time in Python?", "expected": {"intent_family": "ordinary_chat", "capabilities": [], "tool_names": []}, "ci_baseline": true},
-    {"id": "negative.ru.002", "language": "ru", "category": "ordinary.conceptual", "text": "Объясни, что такое VPN", "expected": {"intent_family": "ordinary_chat", "capabilities": [], "tool_names": []}, "ci_baseline": true},
-    {"id": "negative.ru.003", "language": "ru", "category": "ordinary.conceptual", "text": "Как проверить свободное место через терминал?", "expected": {"intent_family": "ordinary_chat", "capabilities": [], "tool_names": []}, "ci_baseline": true},
-    {"id": "negative.ru.004", "language": "ru", "category": "ordinary.conceptual", "text": "Что такое процесс HFT в трейдинге?", "expected": {"intent_family": "ordinary_chat", "capabilities": [], "tool_names": []}, "ci_baseline": true},
-    {"id": "negative.ru.005", "language": "ru", "category": "ordinary.conceptual", "text": "Расскажи про Рождество", "expected": {"intent_family": "ordinary_chat", "capabilities": [], "tool_names": []}, "ci_baseline": true},
-    {"id": "negative.ru.006", "language": "ru", "category": "ordinary.conceptual", "text": "Как работает аккумулятор макбука?", "expected": {"intent_family": "ordinary_chat", "capabilities": [], "tool_names": []}, "ci_baseline": true},
-    {"id": "negative.es.001", "language": "es", "category": "ordinary.conceptual", "text": "Explica qué significa la versión del sistema operativo", "expected": {"intent_family": "ordinary_chat", "capabilities": [], "tool_names": []}},
-    {"id": "negative.fr.001", "language": "fr", "category": "ordinary.conceptual", "text": "Explique ce qu'est un numéro de build macOS", "expected": {"intent_family": "ordinary_chat", "capabilities": [], "tool_names": []}},
-    {"id": "negative.de.001", "language": "de", "category": "ordinary.conceptual", "text": "Erkläre, was eine Betriebssystem-Buildnummer ist", "expected": {"intent_family": "ordinary_chat", "capabilities": [], "tool_names": []}}
+    {
+      "id": "time.ru.001",
+      "language": "ru",
+      "category": "safe.current_time",
+      "text": "Сколько времени?",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "datetime.now"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "current_time",
+          "tool_names": [
+            "datetime.now"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "time.ru.002",
+      "language": "ru",
+      "category": "safe.current_time",
+      "text": "Который час сейчас?",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "datetime.now"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "current_time",
+          "tool_names": [
+            "datetime.now"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "time.ru.003",
+      "language": "ru",
+      "category": "safe.current_time",
+      "text": "Подскажи текущее время",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "datetime.now"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "current_time",
+          "tool_names": [
+            "datetime.now"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "time.ru.004",
+      "language": "ru",
+      "category": "safe.date_countdown",
+      "text": "через сколько дней Рождество?",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "datetime.now"
+        ],
+        "scope_hint": "christmas_countdown",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "christmas_countdown",
+          "tool_names": [
+            "datetime.now"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "time.ru.005",
+      "language": "ru",
+      "category": "safe.date_countdown",
+      "text": "Сколько дней до Рождества?",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "datetime.now"
+        ],
+        "scope_hint": "christmas_countdown",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "christmas_countdown",
+          "tool_names": [
+            "datetime.now"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "time.en.001",
+      "language": "en",
+      "category": "safe.current_time",
+      "text": "What time is it?",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "datetime.now"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "current_time",
+          "tool_names": [
+            "datetime.now"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "time.en.002",
+      "language": "en",
+      "category": "safe.current_time",
+      "text": "What is the current date?",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "datetime.now"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "current_time",
+          "tool_names": [
+            "datetime.now"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "time.en.003",
+      "language": "en",
+      "category": "safe.date_countdown",
+      "text": "How many days until Christmas?",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "datetime.now"
+        ],
+        "scope_hint": "christmas_countdown",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "christmas_countdown",
+          "tool_names": [
+            "datetime.now"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "time.es.001",
+      "language": "es",
+      "category": "safe.current_time",
+      "text": "¿Qué hora es ahora?",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "datetime.now"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "current_time",
+          "tool_names": [
+            "datetime.now"
+          ]
+        }
+      }
+    },
+    {
+      "id": "time.fr.001",
+      "language": "fr",
+      "category": "safe.current_time",
+      "text": "Quelle heure est-il maintenant ?",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "datetime.now"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "current_time",
+          "tool_names": [
+            "datetime.now"
+          ]
+        }
+      }
+    },
+    {
+      "id": "time.de.001",
+      "language": "de",
+      "category": "safe.current_time",
+      "text": "Wie spät ist es gerade?",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "datetime.now"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "current_time",
+          "tool_names": [
+            "datetime.now"
+          ]
+        }
+      }
+    },
+    {
+      "id": "calc.ru.001",
+      "language": "ru",
+      "category": "safe.calculator",
+      "text": "Посчитай 128 * 64",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "calculator.evaluate"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "calc.ru.002",
+      "language": "ru",
+      "category": "safe.calculator",
+      "text": "Сколько будет (42 + 18) / 3?",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "calculator.evaluate"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "calc.en.001",
+      "language": "en",
+      "category": "safe.calculator",
+      "text": "Calculate 19.5 percent of 840",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "calculator.evaluate"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "calc.es.001",
+      "language": "es",
+      "category": "safe.calculator",
+      "text": "Calcula 144 dividido por 12",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "calculator.evaluate"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "calc.fr.001",
+      "language": "fr",
+      "category": "safe.calculator",
+      "text": "Calcule 2 puissance 10",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "calculator.evaluate"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "calc.de.001",
+      "language": "de",
+      "category": "safe.calculator",
+      "text": "Berechne 256 geteilt durch 8",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "calculator.evaluate"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "daemon.ru.001",
+      "language": "ru",
+      "category": "safe.daemon_status",
+      "text": "Покажи статус демона Jarvis",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "daemon.status"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "daemon.en.001",
+      "language": "en",
+      "category": "safe.daemon_status",
+      "text": "Check the assistant daemon status",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "daemon.status"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "daemon.es.001",
+      "language": "es",
+      "category": "safe.daemon_status",
+      "text": "Muestra el estado del daemon de Jarvis",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "daemon.status"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "daemon.fr.001",
+      "language": "fr",
+      "category": "safe.daemon_status",
+      "text": "Vérifie l'état du daemon Jarvis",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "daemon.status"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "daemon.de.001",
+      "language": "de",
+      "category": "safe.daemon_status",
+      "text": "Zeig mir den Status des Jarvis-Daemons",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "daemon.status"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "os.ru.001",
+      "language": "ru",
+      "category": "system.os_version",
+      "text": "Какая версия операционной системы?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "os_version",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "os_version",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "os.ru.002",
+      "language": "ru",
+      "category": "system.os_version",
+      "text": "Какой у меня macOS билд?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "os_version",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "os_version",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "os.ru.003",
+      "language": "ru",
+      "category": "system.os_version",
+      "text": "Покажи сборку macOS на этом компьютере",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "os_version",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "os_version",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "os.en.001",
+      "language": "en",
+      "category": "system.os_version",
+      "text": "What is the OS version?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "os_version",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "os_version",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "os.en.002",
+      "language": "en",
+      "category": "system.os_version",
+      "text": "Which macOS build am I on?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "os_version",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "os_version",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "os.es.001",
+      "language": "es",
+      "category": "system.os_version",
+      "text": "¿Qué versión de macOS tengo en mi Mac?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "os_version",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "os_version",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "os.es.002",
+      "language": "es",
+      "category": "system.os_version",
+      "text": "Dime la compilación del sistema operativo en este equipo",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "os_version",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "os_version",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "os.fr.001",
+      "language": "fr",
+      "category": "system.os_version",
+      "text": "Quelle version de macOS est installée sur mon Mac ?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "os_version",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "os_version",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "os.fr.002",
+      "language": "fr",
+      "category": "system.os_version",
+      "text": "Donne-moi le numéro de build du système sur cet ordinateur",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "os_version",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "os_version",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "os.de.001",
+      "language": "de",
+      "category": "system.os_version",
+      "text": "Welche macOS-Version läuft auf meinem Mac?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "os_version",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "os_version",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "os.de.002",
+      "language": "de",
+      "category": "system.os_version",
+      "text": "Zeig die Buildnummer des Betriebssystems auf diesem Computer",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "os_version",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "os_version",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "cpu.ru.001",
+      "language": "ru",
+      "category": "system.cpu_overview",
+      "text": "Сколько ядер у центрального процессора и на сколько они загружены?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "cpu_overview",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "cpu_overview",
+          "tool_names": [
+            "tool.system.read.hardware",
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "cpu.ru.002",
+      "language": "ru",
+      "category": "system.cpu_overview",
+      "text": "Покажи загрузку CPU и количество ядер",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "cpu_overview",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "cpu_overview",
+          "tool_names": [
+            "tool.system.read.hardware",
+            "tool.system.read.resources"
+          ]
+        }
+      }
+    },
+    {
+      "id": "cpu.en.001",
+      "language": "en",
+      "category": "system.cpu_overview",
+      "text": "How many CPU cores are there and how busy are they?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "cpu_overview",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "cpu_overview",
+          "tool_names": [
+            "tool.system.read.hardware",
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "cpu.en.002",
+      "language": "en",
+      "category": "system.cpu_overview",
+      "text": "Show CPU core count and current utilization",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "cpu_overview",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "cpu_overview",
+          "tool_names": [
+            "tool.system.read.hardware",
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "cpu.es.001",
+      "language": "es",
+      "category": "system.cpu_overview",
+      "text": "¿Cuántos núcleos tiene la CPU y cuál es su carga actual?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "cpu_overview",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "cpu_overview",
+          "tool_names": [
+            "tool.system.read.hardware",
+            "tool.system.read.resources"
+          ]
+        }
+      }
+    },
+    {
+      "id": "cpu.fr.001",
+      "language": "fr",
+      "category": "system.cpu_overview",
+      "text": "Combien de coeurs CPU et quelle charge maintenant ?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "cpu_overview",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "cpu_overview",
+          "tool_names": [
+            "tool.system.read.hardware",
+            "tool.system.read.resources"
+          ]
+        }
+      }
+    },
+    {
+      "id": "cpu.de.001",
+      "language": "de",
+      "category": "system.cpu_overview",
+      "text": "Wie viele CPU-Kerne gibt es und wie stark sind sie ausgelastet?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "cpu_overview",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "cpu_overview",
+          "tool_names": [
+            "tool.system.read.hardware",
+            "tool.system.read.resources"
+          ]
+        }
+      }
+    },
+    {
+      "id": "memory.ru.001",
+      "language": "ru",
+      "category": "system.memory",
+      "text": "Сколько памяти сейчас свободно в системе?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "memory_overview",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "memory.ru.002",
+      "language": "ru",
+      "category": "system.memory",
+      "text": "Покажи текущую загрузку оперативной памяти",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "memory_overview",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "memory.en.001",
+      "language": "en",
+      "category": "system.memory",
+      "text": "How much RAM is free right now?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "memory_overview",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "memory.en.002",
+      "language": "en",
+      "category": "system.memory",
+      "text": "Show current memory usage",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "memory_overview",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "memory.en.003",
+      "language": "en",
+      "category": "system.memory",
+      "text": "Can you calculate my current memory usage?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "memory_overview",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "memory.es.001",
+      "language": "es",
+      "category": "system.memory",
+      "text": "¿Cuánta memoria libre hay ahora?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "memory_overview",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      }
+    },
+    {
+      "id": "memory.fr.001",
+      "language": "fr",
+      "category": "system.memory",
+      "text": "Combien de mémoire libre reste-t-il maintenant ?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "memory_overview",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      }
+    },
+    {
+      "id": "memory.de.001",
+      "language": "de",
+      "category": "system.memory",
+      "text": "Wie viel Arbeitsspeicher ist gerade frei?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "memory_overview",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      }
+    },
+    {
+      "id": "disk.ru.001",
+      "language": "ru",
+      "category": "system.disk",
+      "text": "Сколько свободного места на диске?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "disk_free",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "disk_free",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "disk.ru.002",
+      "language": "ru",
+      "category": "system.disk",
+      "text": "Покажи свободное место на накопителе",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "disk_free",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "disk_free",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "disk.ru.003",
+      "language": "ru",
+      "category": "system.disk",
+      "text": "Сколько будет свободного места на диске?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "disk_free",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "disk_free",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "disk.en.001",
+      "language": "en",
+      "category": "system.disk",
+      "text": "How much free disk space is left?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "disk_free",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "disk_free",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "battery.ru.001",
+      "language": "ru",
+      "category": "system.battery",
+      "text": "Сколько процентов заряда аккумулятора осталось на макбуке?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "battery_charge",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "battery_charge",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "battery.ru.002",
+      "language": "ru",
+      "category": "system.battery",
+      "text": "Сколько заряда батареи сейчас на макбуке?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "battery_charge",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "battery_charge",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "battery.en.001",
+      "language": "en",
+      "category": "system.battery",
+      "text": "How much battery is left on this MacBook?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "battery_charge",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "battery_charge",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "temp.ru.001",
+      "language": "ru",
+      "category": "system.temperature",
+      "text": "Текущая температура процессора.",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.sensors"
+        ],
+        "tool_names": [
+          "tool.system.read.sensors"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "sensor_temperature",
+          "tool_names": [
+            "tool.system.read.sensors"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "temp.ru.002",
+      "language": "ru",
+      "category": "system.temperature",
+      "text": "Проверь температуру CPU на макбуке",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.sensors"
+        ],
+        "tool_names": [
+          "tool.system.read.sensors"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "sensor_temperature",
+          "tool_names": [
+            "tool.system.read.sensors"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "temp.en.001",
+      "language": "en",
+      "category": "system.temperature",
+      "text": "Check CPU temperature",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.sensors"
+        ],
+        "tool_names": [
+          "tool.system.read.sensors"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "sensor_temperature",
+          "tool_names": [
+            "tool.system.read.sensors"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "temp.en.002",
+      "language": "en",
+      "category": "system.temperature",
+      "text": "Show thermal sensor state on this laptop",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.sensors"
+        ],
+        "tool_names": [
+          "tool.system.read.sensors"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "sensor_temperature",
+          "tool_names": [
+            "tool.system.read.sensors"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "temp.es.001",
+      "language": "es",
+      "category": "system.temperature",
+      "text": "Comprueba la temperatura de la CPU",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.sensors"
+        ],
+        "tool_names": [
+          "tool.system.read.sensors"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "sensor_temperature",
+          "tool_names": [
+            "tool.system.read.sensors"
+          ]
+        }
+      }
+    },
+    {
+      "id": "temp.fr.001",
+      "language": "fr",
+      "category": "system.temperature",
+      "text": "Vérifie la température du processeur",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.sensors"
+        ],
+        "tool_names": [
+          "tool.system.read.sensors"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "sensor_temperature",
+          "tool_names": [
+            "tool.system.read.sensors"
+          ]
+        }
+      }
+    },
+    {
+      "id": "temp.de.001",
+      "language": "de",
+      "category": "system.temperature",
+      "text": "Prüfe die CPU-Temperatur",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.sensors"
+        ],
+        "tool_names": [
+          "tool.system.read.sensors"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "sensor_temperature",
+          "tool_names": [
+            "tool.system.read.sensors"
+          ]
+        }
+      }
+    },
+    {
+      "id": "process.en.001",
+      "language": "en",
+      "category": "system.processes",
+      "text": "Show running processes",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.process"
+        ],
+        "tool_names": [
+          "tool.system.read.process"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "process.en.002",
+      "language": "en",
+      "category": "system.processes",
+      "text": "List process status",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.process"
+        ],
+        "tool_names": [
+          "tool.system.read.process"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "process.ru.001",
+      "language": "ru",
+      "category": "system.processes",
+      "text": "Покажи список процессов",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.process"
+        ],
+        "tool_names": [
+          "tool.system.read.process"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      }
+    },
+    {
+      "id": "process.ru.002",
+      "language": "ru",
+      "category": "system.processes",
+      "text": "Запущен ли сейчас процесс, в имени которого есть \"HFT\"?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.process"
+        ],
+        "tool_names": [
+          "tool.system.read.process"
+        ],
+        "scope_hint": "process_name_search",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "process_name_search",
+          "tool_names": [
+            "tool.system.read.process"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "process.ru.003",
+      "language": "ru",
+      "category": "system.processes",
+      "text": "Запущен ли процесс HFT сейчас?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.process"
+        ],
+        "tool_names": [
+          "tool.system.read.process"
+        ],
+        "scope_hint": "process_name_search",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "process_name_search",
+          "tool_names": [
+            "tool.system.read.process"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "process.en.003",
+      "language": "en",
+      "category": "system.processes",
+      "text": "Calculate current CPU usage for process 1234",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.process"
+        ],
+        "tool_names": [
+          "tool.system.read.process"
+        ],
+        "scope_hint": "process_name_search",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "process_name_search",
+          "tool_names": [
+            "tool.system.read.process"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "process.es.001",
+      "language": "es",
+      "category": "system.processes",
+      "text": "Lista los procesos en ejecución",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.process"
+        ],
+        "tool_names": [
+          "tool.system.read.process"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      }
+    },
+    {
+      "id": "process.fr.001",
+      "language": "fr",
+      "category": "system.processes",
+      "text": "Affiche les processus en cours",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.process"
+        ],
+        "tool_names": [
+          "tool.system.read.process"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      }
+    },
+    {
+      "id": "process.de.001",
+      "language": "de",
+      "category": "system.processes",
+      "text": "Zeige laufende Prozesse",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.process"
+        ],
+        "tool_names": [
+          "tool.system.read.process"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      }
+    },
+    {
+      "id": "network.en.001",
+      "language": "en",
+      "category": "system.network",
+      "text": "What is listening on port 8080?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.network"
+        ],
+        "tool_names": [
+          "tool.system.read.network"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "network.en.002",
+      "language": "en",
+      "category": "system.network",
+      "text": "Run netstat style network diagnostics",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.network"
+        ],
+        "tool_names": [
+          "tool.system.read.network"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "network.ru.001",
+      "language": "ru",
+      "category": "system.network",
+      "text": "Покажи, кто слушает порт 8080",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.network"
+        ],
+        "tool_names": [
+          "tool.system.read.network"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      }
+    },
+    {
+      "id": "network.ru.002",
+      "language": "ru",
+      "category": "system.vpn",
+      "text": "Включен ли VPN сейчас?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.network"
+        ],
+        "tool_names": [
+          "tool.system.read.network"
+        ],
+        "scope_hint": "vpn_status",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "vpn_status",
+          "tool_names": [
+            "tool.system.read.network"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "network.ru.003",
+      "language": "ru",
+      "category": "system.vpn",
+      "text": "Есть ли активное VPN-подключение?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.network"
+        ],
+        "tool_names": [
+          "tool.system.read.network"
+        ],
+        "scope_hint": "vpn_status",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "vpn_status",
+          "tool_names": [
+            "tool.system.read.network"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "network.en.003",
+      "language": "en",
+      "category": "system.vpn",
+      "text": "Is the VPN connected right now?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.network"
+        ],
+        "tool_names": [
+          "tool.system.read.network"
+        ],
+        "scope_hint": "vpn_status",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "vpn_status",
+          "tool_names": [
+            "tool.system.read.network"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "network.es.001",
+      "language": "es",
+      "category": "system.network",
+      "text": "Qué proceso escucha en el puerto 8080?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.network"
+        ],
+        "tool_names": [
+          "tool.system.read.network"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      }
+    },
+    {
+      "id": "network.fr.001",
+      "language": "fr",
+      "category": "system.network",
+      "text": "Quel processus écoute sur le port 8080 ?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.network"
+        ],
+        "tool_names": [
+          "tool.system.read.network"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      }
+    },
+    {
+      "id": "network.de.001",
+      "language": "de",
+      "category": "system.network",
+      "text": "Welcher Prozess lauscht auf Port 8080?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.network"
+        ],
+        "tool_names": [
+          "tool.system.read.network"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      }
+    },
+    {
+      "id": "project.en.001",
+      "language": "en",
+      "category": "project.inspection",
+      "text": "Find in project where LoopStrategySelector is defined",
+      "expected": {
+        "intent_family": "project_inspection",
+        "capabilities": [
+          "tool.shell.read"
+        ],
+        "tool_names": [
+          "tool.shell.read.project"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "project.en.002",
+      "language": "en",
+      "category": "project.inspection",
+      "text": "Inspect the file that implements request metadata",
+      "expected": {
+        "intent_family": "project_inspection",
+        "capabilities": [
+          "tool.shell.read"
+        ],
+        "tool_names": [
+          "tool.shell.read.project"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "project.en.003",
+      "language": "en",
+      "category": "project.inspection",
+      "text": "grep for IntentClassifierPort in the codebase",
+      "expected": {
+        "intent_family": "project_inspection",
+        "capabilities": [
+          "tool.shell.read"
+        ],
+        "tool_names": [
+          "tool.shell.read.project"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "project.en.004",
+      "language": "en",
+      "category": "project.inspection",
+      "text": "rg loop_selection in src",
+      "expected": {
+        "intent_family": "project_inspection",
+        "capabilities": [
+          "tool.shell.read"
+        ],
+        "tool_names": [
+          "tool.shell.read.project"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "project.ru.001",
+      "language": "ru",
+      "category": "project.inspection",
+      "text": "Найди в проекте где объявлен IntentClassifierPort",
+      "expected": {
+        "intent_family": "project_inspection",
+        "capabilities": [
+          "tool.shell.read"
+        ],
+        "tool_names": [
+          "tool.shell.read.project"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      }
+    },
+    {
+      "id": "project.es.001",
+      "language": "es",
+      "category": "project.inspection",
+      "text": "Busca en el proyecto dónde se define LoopStrategySelector",
+      "expected": {
+        "intent_family": "project_inspection",
+        "capabilities": [
+          "tool.shell.read"
+        ],
+        "tool_names": [
+          "tool.shell.read.project"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      }
+    },
+    {
+      "id": "project.fr.001",
+      "language": "fr",
+      "category": "project.inspection",
+      "text": "Cherche dans le projet où IntentClassifierPort est défini",
+      "expected": {
+        "intent_family": "project_inspection",
+        "capabilities": [
+          "tool.shell.read"
+        ],
+        "tool_names": [
+          "tool.shell.read.project"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      }
+    },
+    {
+      "id": "project.de.001",
+      "language": "de",
+      "category": "project.inspection",
+      "text": "Suche im Projekt, wo LoopStrategySelector definiert ist",
+      "expected": {
+        "intent_family": "project_inspection",
+        "capabilities": [
+          "tool.shell.read"
+        ],
+        "tool_names": [
+          "tool.shell.read.project"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": false
+        }
+      }
+    },
+    {
+      "id": "negative.ru.001",
+      "language": "ru",
+      "category": "ordinary.conceptual",
+      "text": "Объясни, что такое macOS build number",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "negative.en.001",
+      "language": "en",
+      "category": "ordinary.conceptual",
+      "text": "Explain how CPU temperature sensors work",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "negative.en.002",
+      "language": "en",
+      "category": "ordinary.conceptual",
+      "text": "How do I print current time in Python?",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "negative.ru.002",
+      "language": "ru",
+      "category": "ordinary.conceptual",
+      "text": "Объясни, что такое VPN",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "negative.ru.003",
+      "language": "ru",
+      "category": "ordinary.conceptual",
+      "text": "Как проверить свободное место через терминал?",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "negative.ru.004",
+      "language": "ru",
+      "category": "ordinary.conceptual",
+      "text": "Что такое процесс HFT в трейдинге?",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "negative.ru.005",
+      "language": "ru",
+      "category": "ordinary.conceptual",
+      "text": "Расскажи про Рождество",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "negative.ru.006",
+      "language": "ru",
+      "category": "ordinary.conceptual",
+      "text": "Как работает аккумулятор макбука?",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "negative.es.001",
+      "language": "es",
+      "category": "ordinary.conceptual",
+      "text": "Explica qué significa la versión del sistema operativo",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "negative.fr.001",
+      "language": "fr",
+      "category": "ordinary.conceptual",
+      "text": "Explique ce qu'est un numéro de build macOS",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "negative.de.001",
+      "language": "de",
+      "category": "ordinary.conceptual",
+      "text": "Erkläre, was eine Betriebssystem-Buildnummer ist",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "docs.ru.001",
+      "language": "ru",
+      "category": "project.docs_question",
+      "text": "Что написано в ADR-035 про выбор инструментов?",
+      "expected": {
+        "intent_family": "project_docs_question",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "docs.en.001",
+      "language": "en",
+      "category": "project.docs_question",
+      "text": "What does the roadmap say about voice readiness?",
+      "expected": {
+        "intent_family": "project_docs_question",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "near.ru.001",
+      "language": "ru",
+      "category": "ordinary.near_miss_live_state",
+      "text": "Объясни, что такое температура CPU и как ее обычно измеряют",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "near.ru.002",
+      "language": "ru",
+      "category": "ordinary.near_miss_live_state",
+      "text": "Как работает мониторинг свободного места на диске?",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "near.ru.003",
+      "language": "ru",
+      "category": "ordinary.near_miss_live_state",
+      "text": "Что означает загрузка процессора в операционной системе?",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "near.en.001",
+      "language": "en",
+      "category": "ordinary.near_miss_live_state",
+      "text": "Explain what VPN status means conceptually",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "near.en.002",
+      "language": "en",
+      "category": "ordinary.near_miss_live_state",
+      "text": "How does free memory monitoring work on macOS?",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "near.en.003",
+      "language": "en",
+      "category": "ordinary.near_miss_live_state",
+      "text": "What is a process list used for?",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "near.en.004",
+      "language": "en",
+      "category": "ordinary.near_miss_live_state",
+      "text": "How do CPU cores and load work?",
+      "expected": {
+        "intent_family": "ordinary_chat",
+        "capabilities": [],
+        "tool_names": [],
+        "fallback_behavior": "chat"
+      },
+      "guardrail_baseline": true
+    },
+    {
+      "id": "disabled.ru.001",
+      "language": "ru",
+      "category": "tools_disabled.live_state",
+      "text": "Текущая температура процессора",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.sensors"
+        ],
+        "tool_names": [
+          "tool.system.read.sensors"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "deny",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "sensor_temperature",
+          "tool_names": [
+            "tool.system.read.sensors"
+          ]
+        }
+      },
+      "tools_disabled_baseline": true
+    },
+    {
+      "id": "disabled.en.001",
+      "language": "en",
+      "category": "tools_disabled.live_state",
+      "text": "How much free disk space is left?",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "disk_free",
+        "fallback_behavior": "fail_unavailable",
+        "policy_outcome": "deny",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "disk_free",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "tools_disabled_baseline": true
+    },
+    {
+      "id": "spoken.ru.001",
+      "language": "ru",
+      "category": "spoken_transcript_variants",
+      "text": "джарвис проверь текущую температуру CPU на макбуке",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.sensors"
+        ],
+        "tool_names": [
+          "tool.system.read.sensors"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "transcript_noise": "wake_prefix",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "sensor_temperature",
+          "tool_names": [
+            "tool.system.read.sensors"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "spoken.ru.002",
+      "language": "ru",
+      "category": "spoken_transcript_variants",
+      "text": "ну сколько памяти сейчас свободно в системе",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "transcript_noise": "filler_prefix",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "memory_overview",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "spoken.ru.003",
+      "language": "ru",
+      "category": "spoken_transcript_variants",
+      "text": "ээ сколько свободного места на диске",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "disk_free",
+        "fallback_behavior": "fail_unavailable",
+        "transcript_noise": "filler_prefix",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "disk_free",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "spoken.en.001",
+      "language": "en",
+      "category": "spoken_transcript_variants",
+      "text": "jarvis check CPU temperature",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.sensors"
+        ],
+        "tool_names": [
+          "tool.system.read.sensors"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "transcript_noise": "wake_prefix",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "sensor_temperature",
+          "tool_names": [
+            "tool.system.read.sensors"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "spoken.en.002",
+      "language": "en",
+      "category": "spoken_transcript_variants",
+      "text": "JARVIS WHAT TIME IS IT",
+      "expected": {
+        "intent_family": "safe_builtin_tool",
+        "capabilities": [
+          "tool.safe"
+        ],
+        "tool_names": [
+          "datetime.now"
+        ],
+        "fallback_behavior": "fail_unavailable",
+        "transcript_noise": "casing",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "current_time",
+          "tool_names": [
+            "datetime.now"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "spoken.ru.004",
+      "language": "ru",
+      "category": "spoken_transcript_variants",
+      "text": "слушай запущен ли процесс HFT сейчас",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.process"
+        ],
+        "tool_names": [
+          "tool.system.read.process"
+        ],
+        "scope_hint": "process_name_search",
+        "fallback_behavior": "fail_unavailable",
+        "transcript_noise": "filler_prefix",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "process_name_search",
+          "tool_names": [
+            "tool.system.read.process"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "spoken.ru.005",
+      "language": "ru",
+      "category": "spoken_transcript_variants",
+      "text": "джарвис включен ли vpn сейчас",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.network"
+        ],
+        "tool_names": [
+          "tool.system.read.network"
+        ],
+        "scope_hint": "vpn_status",
+        "fallback_behavior": "fail_unavailable",
+        "transcript_noise": "wake_prefix",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "vpn_status",
+          "tool_names": [
+            "tool.system.read.network"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "spoken.ru.006",
+      "language": "ru",
+      "category": "spoken_transcript_variants",
+      "text": "сколько battery осталось на macbook",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware"
+        ],
+        "scope_hint": "battery_charge",
+        "fallback_behavior": "fail_unavailable",
+        "transcript_noise": "mixed_ru_en",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "battery_charge",
+          "tool_names": [
+            "tool.system.read.hardware"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "spoken.ru.007",
+      "language": "ru",
+      "category": "spoken_transcript_variants",
+      "text": "покажи cpu core count и загрузку",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.hardware",
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "cpu_overview",
+        "fallback_behavior": "fail_unavailable",
+        "transcript_noise": "mixed_ru_en",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "cpu_overview",
+          "tool_names": [
+            "tool.system.read.hardware",
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    },
+    {
+      "id": "spoken.en.003",
+      "language": "en",
+      "category": "spoken_transcript_variants",
+      "text": "jarvis how much free disk space is left",
+      "expected": {
+        "intent_family": "system_diagnostics",
+        "capabilities": [
+          "tool.system.read.resources"
+        ],
+        "tool_names": [
+          "tool.system.read.resources"
+        ],
+        "scope_hint": "disk_free",
+        "fallback_behavior": "fail_unavailable",
+        "transcript_noise": "missing_punctuation",
+        "policy_outcome": "allow",
+        "approval_possible": false,
+        "direct_plan": {
+          "expected": true,
+          "scenario": "disk_free",
+          "tool_names": [
+            "tool.system.read.resources"
+          ]
+        }
+      },
+      "ci_baseline": true
+    }
   ]
 }

@@ -15,7 +15,10 @@ from assistant_core.domain.models import StructuredModelRequest
 from assistant_core.domain.policy import Capability, RiskClass
 from assistant_core.ports.intent_classifier import IntentClassifierPort
 from assistant_core.ports.model_router import ModelRouterPort
-from assistant_core.runtime.routing import classification_has_registry_direct_scope
+from assistant_core.runtime.routing import (
+    CapabilityRoutingRegistry,
+    classification_has_registry_direct_scope,
+)
 
 
 INTENT_CLASSIFICATION_SCHEMA: dict[str, Any] = {
@@ -104,7 +107,7 @@ class ModelBackedIntentClassifier:
         fallback_classification = await self._fallback_classification(request)
         if (
             fallback_classification is not None
-            and _fallback_is_allowlisted_direct_tool_intent(fallback_classification, request)
+            and _fallback_is_allowlisted_runtime_tool_intent(fallback_classification, request)
         ):
             return fallback_classification
         try:
@@ -147,7 +150,7 @@ class ModelBackedIntentClassifier:
             return fallback_classification
         if guardrailed.intent_family is not IntentFamily.ORDINARY_CHAT:
             return guardrailed
-        if _fallback_is_allowlisted_direct_tool_intent(fallback_classification, request):
+        if _fallback_is_allowlisted_runtime_tool_intent(fallback_classification, request):
             return fallback_classification
         return guardrailed
 
@@ -406,7 +409,30 @@ def _fallback_overrides_model_tool_hint(
         IntentFamily.SYSTEM_DIAGNOSTICS,
     }:
         return False
-    return _fallback_is_allowlisted_direct_tool_intent(fallback_classification, request)
+    return _fallback_is_allowlisted_runtime_tool_intent(fallback_classification, request)
+
+
+def _fallback_is_allowlisted_runtime_tool_intent(
+    classification: IntentClassification,
+    request: LoopSelectionRequest,
+) -> bool:
+    if _fallback_is_allowlisted_direct_tool_intent(classification, request):
+        return True
+    if classification.intent_family is not IntentFamily.SAFE_BUILTIN_TOOL:
+        return False
+    if not _fallback_overrides_ordinary_chat(classification):
+        return False
+    registry = CapabilityRoutingRegistry.from_available_tools_summary(
+        request.available_tools_summary
+    )
+    for candidate in classification.candidate_capabilities:
+        if candidate.capability is not Capability.TOOL_SAFE:
+            return False
+        if not candidate.tool_names:
+            return False
+        if registry.valid_tool_names(candidate.capability, candidate.tool_names) != candidate.tool_names:
+            return False
+    return True
 
 
 def _fallback_is_allowlisted_direct_tool_intent(

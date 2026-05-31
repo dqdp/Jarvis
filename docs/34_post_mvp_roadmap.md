@@ -456,7 +456,14 @@ PM-08h:
 - keep CPU and memory direct-answer v1 aggregate-only, with per-core and
   per-process resource details deferred to later schemas;
 - keep real local model evaluation out of CI, but require one recorded non-CI
-  local classifier evaluation before PM-09 starts.
+  local classifier evaluation before PM-09 starts;
+- treat the recorded PM-09 readiness evaluation as a full-corpus, model-only
+  local classifier run; deterministic runtime fallback remains separately
+  tested and must not count as local model coverage; guardrail-corrected cases
+  are reported separately and do not count as model-only pass evidence;
+- if PM-08h is completed in an environment where the selected local classifier
+  model is unavailable, record that state explicitly as not voice-ready rather
+  than treating a sandbox placeholder as PM-09 evidence.
 
 Acceptance:
 
