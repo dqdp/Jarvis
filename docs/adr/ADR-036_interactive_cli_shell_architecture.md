@@ -75,10 +75,27 @@ The shell status line shows:
 - model/profile summary when known;
 - working-directory scope in a redacted, bounded form.
 
+The prompt uses the `prompt_toolkit` bottom toolbar while input is active. During
+request streaming, when the prompt application is no longer active, the CLI may
+use a Jarvis-owned single-line ANSI status bar reserved at the bottom of the
+terminal. This keeps the status visible without turning the shell into a
+full-screen TUI.
+
 Activity indication is phase-based, not percentage-based. The shell may show
 submitting, selecting, assembling context, retrieving context, running a tool,
 waiting for approval, streaming, cancelled, failed or done. It must not invent
 fake progress percentages.
+
+TTY activity also includes a timer-driven spinner in the status bar. The spinner
+is purely an activity affordance; it does not imply progress, throughput or
+completion percentage. `--plain` and non-TTY operation must disable terminal
+animation.
+
+TTY color is handled by a small CLI-owned ANSI theme, not by Rich/Textual. The
+theme assigns stable roles such as assistant, tool, error, prompt, status and
+dim text. Color defaults to `auto`, can be forced with `--color always`, can be
+disabled with `--color never`, respects `NO_COLOR` and `TERM=dumb`, and is
+disabled by `--plain`.
 
 Slash command discovery updates while the user types `/...`, filters commands,
 shows descriptions and argument hints, supports keyboard selection/completion
@@ -103,6 +120,19 @@ The shell must not persist:
 Status/toolbars must not leak full secret-like paths. Working-directory display
 must be bounded and redacted enough for normal terminal sharing.
 
+## Classifier Fast Path
+
+The interactive shell may display classifier and model state, but it does not
+own routing policy. The runtime classifier keeps a conservative deterministic
+fast path: deterministic fallback results may skip the structured model only
+when confidence is greater than `0.9` and the classification is an allowlisted
+runtime-tool intent or an explicit ordinary-chat request. Threshold changes and
+smaller structured-model candidates must be justified by the local
+intent-routing evaluation corpus, not by latency alone. The threshold is exposed
+as runtime configuration through
+`JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD` so dogfood runs can
+compare candidate thresholds without code edits.
+
 ## Consequences
 
 Add `prompt_toolkit>=3.0` as a runtime dependency.
@@ -113,6 +143,9 @@ PM-08i adds CLI-internal abstractions such as:
 - `SlashCommandDefinition`;
 - `ShellActivityState`;
 - `PromptToolkitLineReader`;
+- `TerminalColorScheme`;
+- `TerminalStatusBar`;
+- `TerminalStatusAnimator`;
 - status-line renderer helpers.
 
 These abstractions are owned by the CLI package and are not domain/runtime

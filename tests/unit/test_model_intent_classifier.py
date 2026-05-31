@@ -373,8 +373,19 @@ def test_model_backed_classifier_prefers_fallback_for_allowlisted_direct_tool_in
     assert candidate.scope_hint == "os_version"
 
 
-def test_model_backed_classifier_short_circuits_known_direct_intent_before_model_call() -> None:
-    router = FakeStructuredRouter(RuntimeError("model should not be called"))
+def test_model_backed_classifier_calls_model_for_medium_confidence_direct_intent() -> None:
+    router = FakeStructuredRouter(
+        {
+            "intent_family": "ordinary_chat",
+            "confidence": 0.92,
+            "candidate_capabilities": [],
+            "requires_live_state": False,
+            "requires_execution": False,
+            "answer_without_tools_would_be_misleading": False,
+            "reason_code": "ordinary_chat",
+            "fallback_preference": "chat",
+        }
+    )
 
     classification = asyncio.run(
         ModelBackedIntentClassifier(
@@ -383,10 +394,133 @@ def test_model_backed_classifier_short_circuits_known_direct_intent_before_model
         ).classify(_request(user_input="Какая версия операционной системы?"))
     )
 
-    assert router.requests == []
+    assert router.requests
     assert classification.intent_family is IntentFamily.SYSTEM_DIAGNOSTICS
     assert classification.reason_code == "system_diagnostics_hint"
     assert classification.candidate_capabilities[0].scope_hint == "os_version"
+
+
+def test_model_backed_classifier_short_circuits_high_confidence_ordinary_chat_fallback() -> None:
+    router = FakeStructuredRouter(RuntimeError("model should not be called"))
+
+    classification = asyncio.run(
+        ModelBackedIntentClassifier(
+            router=router,
+            fallback=DeterministicIntentClassifier(),
+        ).classify(_request(user_input="Расскажи, как решаются кубические уравнения."))
+    )
+
+    assert router.requests == []
+    assert classification.intent_family is IntentFamily.ORDINARY_CHAT
+    assert classification.reason_code == "ordinary_chat_explicit_hint"
+
+
+def test_model_backed_classifier_short_circuits_direct_answer_prompt() -> None:
+    router = FakeStructuredRouter(RuntimeError("model should not be called"))
+
+    classification = asyncio.run(
+        ModelBackedIntentClassifier(
+            router=router,
+            fallback=DeterministicIntentClassifier(),
+        ).classify(_request(user_input="Ответь ровно одним словом: OK"))
+    )
+
+    assert router.requests == []
+    assert classification.intent_family is IntentFamily.ORDINARY_CHAT
+    assert classification.reason_code == "ordinary_chat_explicit_hint"
+
+
+def test_model_backed_classifier_does_not_short_circuit_default_ordinary_fallback() -> None:
+    router = FakeStructuredRouter(
+        {
+            "intent_family": "project_inspection",
+            "confidence": 0.88,
+            "candidate_capabilities": [
+                {
+                    "capability": "tool.shell.read",
+                    "intent_family": "project_inspection",
+                    "confidence": 0.88,
+                    "requires_live_state": True,
+                    "requires_execution": True,
+                    "requires_write": False,
+                    "tool_names": ["tool.shell.read.project"],
+                    "risk_classes": ["read_only"],
+                    "scope_hint": None,
+                    "evidence_codes": ["model_project_lookup"],
+                }
+            ],
+            "requires_live_state": True,
+            "requires_execution": True,
+            "answer_without_tools_would_be_misleading": True,
+            "reason_code": "model_project_inspection",
+            "fallback_preference": "fail_unavailable",
+        }
+    )
+
+    classification = asyncio.run(
+        ModelBackedIntentClassifier(
+            router=router,
+            fallback=DeterministicIntentClassifier(),
+        ).classify(_request(user_input="Please examine the repository layout"))
+    )
+
+    assert router.requests
+    assert classification.intent_family is IntentFamily.PROJECT_INSPECTION
+    assert classification.reason_code == "model_project_inspection"
+
+
+def test_model_backed_classifier_does_not_short_circuit_at_fast_path_threshold() -> None:
+    router = FakeStructuredRouter(
+        {
+            "intent_family": "project_inspection",
+            "confidence": 0.88,
+            "candidate_capabilities": [
+                {
+                    "capability": "tool.shell.read",
+                    "intent_family": "project_inspection",
+                    "confidence": 0.88,
+                    "requires_live_state": True,
+                    "requires_execution": True,
+                    "requires_write": False,
+                    "tool_names": ["tool.shell.read.project"],
+                    "risk_classes": ["read_only"],
+                    "scope_hint": None,
+                    "evidence_codes": ["model_project_lookup"],
+                }
+            ],
+            "requires_live_state": True,
+            "requires_execution": True,
+            "answer_without_tools_would_be_misleading": True,
+            "reason_code": "model_project_inspection",
+            "fallback_preference": "fail_unavailable",
+        }
+    )
+
+    classification = asyncio.run(
+        ModelBackedIntentClassifier(
+            router=router,
+            fallback=StaticOrdinaryChatClassifier(confidence=0.9),
+        ).classify(_request(user_input="Ответь ровно одним словом: OK"))
+    )
+
+    assert router.requests
+    assert classification.intent_family is IntentFamily.PROJECT_INSPECTION
+
+
+def test_app_factory_wires_configured_fast_path_threshold(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD",
+        "0.91",
+    )
+    from assistant_core.app_factory import build_intent_classifier
+
+    settings = ConfigLoader(Path("config")).load("test")
+    classifier = build_intent_classifier(
+        settings=settings,
+        router=FakeStructuredRouter(RuntimeError("model should not be called")),
+    )
+
+    assert classifier._deterministic_fast_path_threshold == 0.91
 
 
 def test_model_backed_classifier_does_not_short_circuit_generic_fallback_tool_hint() -> None:
@@ -545,6 +679,23 @@ class StaticClassifier:
             answer_without_tools_would_be_misleading=True,
             reason_code="generic_fallback_hint",
             fallback_preference=SelectionFallbackPreference.FAIL_UNAVAILABLE,
+        )
+
+
+class StaticOrdinaryChatClassifier:
+    def __init__(self, *, confidence: float) -> None:
+        self.confidence = confidence
+
+    async def classify(self, request: LoopSelectionRequest) -> IntentClassification:
+        return IntentClassification(
+            intent_family=IntentFamily.ORDINARY_CHAT,
+            confidence=self.confidence,
+            candidate_capabilities=(),
+            requires_live_state=False,
+            requires_execution=False,
+            answer_without_tools_would_be_misleading=False,
+            reason_code="ordinary_chat_explicit_hint",
+            fallback_preference=SelectionFallbackPreference.CHAT,
         )
 
 

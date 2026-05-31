@@ -115,10 +115,19 @@ For local Ollama dogfood, run with:
 make run-ollama
 ```
 
-The `ollama` profile uses the locally available chat model `qwen3.5:9b` and the
-embedding model `embeddinggemma:latest`. This is a runtime
+The `ollama` profile uses the locally available chat model `qwen3.5:9b`, the
+structured/classifier model `qwen3.5:2b`, and the embedding model
+`embeddinggemma:latest`. This is a runtime
 profile behind the existing `ModelRouterPort`; CI still uses fake model and
 embedding providers and does not require real LLM calls.
+The classifier fast path is conservative: deterministic intent routing may skip
+the structured model only when the deterministic confidence is greater than
+`0.9`. Broad tool, project and live-state hints remain model-routed so the
+selector does not silently bypass the classifier on ambiguous input. Smaller
+structured-model candidates, including `qwen3.5:0.8b`, must be compared through
+the local intent-routing evaluation before becoming the default. The threshold
+can be tuned without a code change through
+`JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD`.
 The Ollama adapter sends anti-repeat generation options and terminates obvious
 repeated-line loops before they exhaust the configured output-token budget.
 `GET /v1/health` also performs cheap provider readiness probes: Ollama uses
@@ -156,6 +165,12 @@ also caps chat output at 1024 tokens to bound runaway generations.
 On Unix TTY, Up/Down browse in-session input history. History is intentionally
 not persisted to disk by default to avoid storing raw prompts. `/memory add`
 payloads and `secret` sensitivity sessions are not added to input history.
+
+The interactive TTY shell shows a live status bar with an activity spinner while
+a request is running. `--plain` disables terminal control for deterministic
+scripts and accessibility/debugging. ANSI color defaults to auto-detection and
+can be controlled with `--color auto|always|never`; `NO_COLOR`, `TERM=dumb` and
+`--plain` disable color.
 
 ## 6. Restart
 

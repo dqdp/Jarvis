@@ -4,6 +4,7 @@ from typing import Any, TextIO
 
 from assistant_core.cli_app.client import CliUserError, JarvisClient
 from assistant_core.cli_app.stream_control import cancel_server_request
+from assistant_core.cli_app.terminal_rendering import TerminalColorScheme
 from assistant_core.cli_app.utils import _display_text, _required_str
 
 
@@ -14,17 +15,22 @@ async def handle_approval_prompt(
     stdin: TextIO,
     data: dict[str, Any],
     request_id: str | None = None,
+    color_scheme: TerminalColorScheme | None = None,
 ) -> bool:
     approval_id = _required_str(data, "approval_id")
     approval = await client.get_approval(approval_id)
     status = str(approval.get("status") or data.get("status") or "")
     if status == "expired":
-        stdout.write("approval> expired\n")
+        _write_approval_line(stdout, color_scheme=color_scheme, text="approval> expired")
         return False
     capability = _display_text(approval.get("capability") or data.get("capability"))
     summary = _approval_summary(approval, data)
-    stdout.write(f"approval> {capability} wants to perform {summary}\n")
-    stdout.write("approve? [y/N] ")
+    _write_approval_line(
+        stdout,
+        color_scheme=color_scheme,
+        text=f"approval> {capability} wants to perform {summary}",
+    )
+    stdout.write(_style_approval(color_scheme, "approve? [y/N] "))
     stdout.flush()
     try:
         answer = stdin.readline()
@@ -42,12 +48,16 @@ async def handle_approval_prompt(
             await client.grant_approval(approval_id)
         except CliUserError as exc:
             if _approval_error_is_expired(exc):
-                stdout.write("approval> expired\n")
+                _write_approval_line(
+                    stdout,
+                    color_scheme=color_scheme,
+                    text="approval> expired",
+                )
                 return False
             raise
-        stdout.write("approval> granted\n")
+        _write_approval_line(stdout, color_scheme=color_scheme, text="approval> granted")
         return False
-    if normalized in {"c", "cancel"}:
+    if normalized in {"c", "cancel", "/cancel"}:
         await _cancel_request_from_approval_prompt(
             client=client,
             request_id=request_id,
@@ -58,10 +68,14 @@ async def handle_approval_prompt(
         await client.deny_approval(approval_id)
     except CliUserError as exc:
         if _approval_error_is_expired(exc):
-            stdout.write("approval> expired\n")
+            _write_approval_line(
+                stdout,
+                color_scheme=color_scheme,
+                text="approval> expired",
+            )
             return False
         raise
-    stdout.write("approval> denied\n")
+    _write_approval_line(stdout, color_scheme=color_scheme, text="approval> denied")
     return False
 
 
@@ -84,6 +98,21 @@ def _approval_summary(approval: dict[str, Any], event_data: dict[str, Any]) -> s
 def _approval_error_is_expired(exc: CliUserError) -> bool:
     message = str(exc).lower()
     return "approval_expired" in message or "expired" in message
+
+
+def _write_approval_line(
+    stdout: TextIO,
+    *,
+    color_scheme: TerminalColorScheme | None,
+    text: str,
+) -> None:
+    stdout.write(f"{_style_approval(color_scheme, text)}\n")
+
+
+def _style_approval(color_scheme: TerminalColorScheme | None, text: str) -> str:
+    if color_scheme is None:
+        return text
+    return color_scheme.style("approval", text)
 
 
 async def _cancel_request_from_approval_prompt(

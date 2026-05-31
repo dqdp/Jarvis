@@ -1,30 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
-from uuid import uuid4
 
-from assistant_core.cli_app.approval_flow import handle_approval_prompt
 from assistant_core.cli_app.client import CliUserError, JarvisClient
 from assistant_core.cli_app.config import DEFAULT_MEMORY_TYPE, LOOP_STRATEGY_CHOICES
 from assistant_core.cli_app.line_reader import create_interactive_line_reader
+from assistant_core.cli_app.message_stream import submit_and_stream_message
 from assistant_core.cli_app.renderers import (
-    is_tool_stream_event,
     write_conversation_list,
     write_interactive_help,
     write_memory_list,
     write_model_status,
-    write_request_error,
     write_status,
-    write_tool_stream_event,
 )
 from assistant_core.cli_app.shell import (
     ShellActivityState,
-    TerminalStatusBar,
     context_remaining_summary,
     display_loop_mode,
     model_context_limit,
@@ -32,10 +25,12 @@ from assistant_core.cli_app.shell import (
     render_status_line,
     write_activity_indicator,
 )
-from assistant_core.cli_app.stream_control import (
-    CLI_CANCEL_EVENT,
-    cancel_server_request,
-    stream_with_optional_cancel_command,
+from assistant_core.cli_app.stream_control import cancel_server_request
+from assistant_core.cli_app.terminal_rendering import (
+    TerminalColorScheme,
+    TerminalStatusAnimator,
+    TerminalStatusBar,
+    resolve_terminal_color_enabled,
 )
 from assistant_core.cli_app.utils import _display_text, _required_str
 
@@ -61,6 +56,8 @@ async def run_interactive_chat(
     working_directory: str | None = None,
     plain: bool = False,
     developer_mode: bool = False,
+    color_mode: str = "auto",
+    status_animation_interval: float = 0.12,
 ) -> int:
     state = ChatShellState(conversation_id=None, next_title=title, loop_strategy=loop_strategy)
     request_working_directory = working_directory or str(Path.cwd())
@@ -69,6 +66,9 @@ async def run_interactive_chat(
     model_summary: str | None = None
     max_input_tokens: int | None = None
     context_remaining: str | None = None
+    color_scheme = TerminalColorScheme(
+        enabled=resolve_terminal_color_enabled(color_mode, stdout=stdout, plain=plain),
+    )
 
     def status_provider() -> str:
         return render_status_line(
@@ -85,14 +85,32 @@ async def run_interactive_chat(
         stdout=stdout,
         status_provider=status_provider,
         enabled=not plain and bool(getattr(stdout, "isatty", lambda: False)()),
+        color_scheme=color_scheme,
     )
+    status_animator = TerminalStatusAnimator(
+        status_bar=status_bar,
+        interval_seconds=status_animation_interval,
+    )
+
+    def mark_submit_started() -> None:
+        nonlocal activity_state
+        if activity_state.phase == "submitting":
+            return
+        activity_state = activity_state.mark_submitting()
+        status_bar.start()
+        status_animator.start()
+        write_activity_indicator(stdout, activity_state, enabled=developer_mode)
 
     def mark_request_started(request_id: str) -> None:
         nonlocal activity_state
+        previous_phase = activity_state.phase
         state.last_request_id = request_id
         activity_state = activity_state.mark_submitting(request_id)
         status_bar.start()
-        write_activity_indicator(stdout, activity_state, enabled=developer_mode)
+        status_animator.start()
+        status_bar.render()
+        if previous_phase != "submitting":
+            write_activity_indicator(stdout, activity_state, enabled=developer_mode)
 
     def mark_stream_event(event_type: str, data: dict[str, Any]) -> None:
         nonlocal activity_state, context_remaining
@@ -154,7 +172,11 @@ async def run_interactive_chat(
                 continue
             if line == "/status":
                 stdout.write(f"mode> {display_loop_mode(state.loop_strategy)}\n")
-                payload = await write_status(client=client, stdout=stdout)
+                payload = await write_status(
+                    client=client,
+                    stdout=stdout,
+                    color_scheme=color_scheme,
+                )
                 readiness_summary = _display_text(payload.get("status") or "unknown")
                 continue
             if line == "/mode" or line.startswith("/mode "):
@@ -169,7 +191,11 @@ async def run_interactive_chat(
                 stdout.write(f"mode> {display_loop_mode(state.loop_strategy)}\n")
                 continue
             if line == "/model":
-                payload = await write_model_status(client=client, stdout=stdout)
+                payload = await write_model_status(
+                    client=client,
+                    stdout=stdout,
+                    color_scheme=color_scheme,
+                )
                 model_summary = model_status_summary(payload)
                 max_input_tokens = model_context_limit(payload)
                 context_remaining = context_remaining_summary(
@@ -272,112 +298,25 @@ async def run_interactive_chat(
                     loop_strategy=state.loop_strategy,
                     working_directory=request_working_directory,
                     client_message_id=None,
-                    assistant_prefix="assistant> ",
+                    assistant_prefix=f"{color_scheme.start('assistant')}assistant> ",
+                    assistant_suffix=color_scheme.reset,
                     stdin=stdin,
+                    on_submit_started=mark_submit_started,
                     on_request_started=mark_request_started,
                     on_stream_event=mark_stream_event,
                     allow_tty_cancel_command=not plain,
+                    color_scheme=color_scheme,
                 )
             finally:
+                await status_animator.stop()
                 status_bar.stop()
+                activity_state = ShellActivityState.idle()
             state.last_request_id = None
             if exit_code != 0:
                 continue
         except CliUserError as exc:
             stdout.write(f"error> {exc}\n")
             continue
-
-
-async def submit_and_stream_message(
-    *,
-    client: JarvisClient,
-    stdout: TextIO,
-    conversation_id: str,
-    content: str,
-    sensitivity: str,
-    loop_strategy: str | None = None,
-    working_directory: str | None = None,
-    client_message_id: str | None,
-    assistant_prefix: str | None,
-    stdin: TextIO = sys.stdin,
-    on_request_started: Callable[[str], None] | None = None,
-    on_stream_event: Callable[[str, dict[str, Any]], None] | None = None,
-    allow_tty_cancel_command: bool = False,
-) -> int:
-    submitted = await client.submit_message(
-        conversation_id=conversation_id,
-        client_message_id=client_message_id or str(uuid4()),
-        content=content,
-        sensitivity=sensitivity,
-        loop_strategy=loop_strategy,
-        working_directory=working_directory,
-    )
-    request_id = _required_str(submitted, "request_id")
-    if on_request_started is not None:
-        on_request_started(request_id)
-    assistant_prefix_pending = assistant_prefix is not None
-    assistant_line_open = False
-
-    def write_pending_assistant_prefix() -> None:
-        nonlocal assistant_prefix_pending, assistant_line_open
-        if not assistant_prefix_pending or assistant_prefix is None:
-            return
-        stdout.write(assistant_prefix)
-        stdout.flush()
-        assistant_prefix_pending = False
-        assistant_line_open = True
-
-    def break_assistant_line_if_needed() -> None:
-        nonlocal assistant_line_open
-        if assistant_line_open:
-            stdout.write("\n")
-            assistant_line_open = False
-
-    try:
-        async for event_type, data in stream_with_optional_cancel_command(
-            client=client,
-            request_id=request_id,
-            stdin=stdin,
-            enabled=allow_tty_cancel_command,
-        ):
-            if event_type == CLI_CANCEL_EVENT:
-                break_assistant_line_if_needed()
-                await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
-                return 130
-            if on_stream_event is not None:
-                on_stream_event(event_type, data)
-            if event_type == "token":
-                write_pending_assistant_prefix()
-                stdout.write(data.get("delta", ""))
-                stdout.flush()
-            elif is_tool_stream_event(event_type):
-                break_assistant_line_if_needed()
-                write_tool_stream_event(stdout, event_type=event_type, data=data)
-            elif event_type == "request.processing.failed":
-                break_assistant_line_if_needed()
-                write_request_error(stdout, data)
-                return 1
-            elif event_type == "request.processing.cancelled":
-                break_assistant_line_if_needed()
-                stdout.write(f"cancelled> request {request_id}\n")
-                return 130
-            elif event_type == "approval.required":
-                break_assistant_line_if_needed()
-                cancelled = await handle_approval_prompt(
-                    client=client,
-                    stdout=stdout,
-                    stdin=stdin,
-                    data=data,
-                    request_id=request_id,
-                )
-                if cancelled:
-                    return 130
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        stdout.write("\n")
-        await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
-        return 130
-    stdout.write("\n")
-    return 0
 
 
 def _should_load_toolbar_status(*, stdin: TextIO, stdout: TextIO, plain: bool) -> bool:

@@ -4,7 +4,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 import re
-import shutil
 from typing import Any, TextIO
 
 from assistant_core.cli_app.config import SlashCommand
@@ -68,7 +67,7 @@ class ShellActivityState:
     def idle(cls) -> ShellActivityState:
         return cls(phase="idle")
 
-    def mark_submitting(self, request_id: str) -> ShellActivityState:
+    def mark_submitting(self, request_id: str | None = None) -> ShellActivityState:
         return ShellActivityState(phase="submitting", request_id=request_id)
 
     def apply_stream_event(self, event_type: str, data: dict[str, Any]) -> ShellActivityState:
@@ -99,55 +98,6 @@ def write_activity_indicator(
         return
     stdout.write(f"\n{activity.render_indicator()}\n")
     stdout.flush()
-
-
-class TerminalStatusBar:
-    def __init__(
-        self,
-        *,
-        stdout: TextIO,
-        status_provider: Callable[[], str],
-        enabled: bool | None = None,
-    ) -> None:
-        self._stdout = stdout
-        self._status_provider = status_provider
-        self._enabled = (
-            bool(getattr(stdout, "isatty", lambda: False)())
-            if enabled is None
-            else enabled
-        )
-        self._active = False
-        self._rows = 0
-
-    def start(self) -> None:
-        if not self._enabled or self._active:
-            return
-        size = _terminal_size()
-        self._rows = max(2, size.lines)
-        self._stdout.write(f"\x1b7\x1b[1;{self._rows - 1}r\x1b8")
-        self._active = True
-        self.render()
-
-    def render(self) -> None:
-        if not self._enabled:
-            return
-        size = _terminal_size()
-        rows = self._rows or max(2, size.lines)
-        columns = max(20, size.columns)
-        line = _fit_width(self._status_provider(), columns)
-        self._stdout.write(
-            f"\x1b7\x1b[{rows};1H\x1b[2K\x1b[7m{line}\x1b[0m\x1b8"
-        )
-        self._stdout.flush()
-
-    def stop(self) -> None:
-        if not self._enabled or not self._active:
-            return
-        rows = self._rows or max(2, _terminal_size().lines)
-        self._stdout.write(f"\x1b7\x1b[r\x1b[{rows};1H\x1b[2K\x1b8")
-        self._stdout.flush()
-        self._active = False
-        self._rows = 0
 
 
 class PromptToolkitLineReader:
@@ -209,6 +159,7 @@ class PromptToolkitLineReader:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.completion import Completer, Completion
         from prompt_toolkit.history import History
+        from prompt_toolkit.key_binding import KeyBindings
 
         registry = self._command_registry
         should_add_history = self._should_add_history
@@ -243,6 +194,7 @@ class PromptToolkitLineReader:
             complete_while_typing=True,
             bottom_toolbar=self._status_provider,
             history=FilteredHistory(),
+            key_bindings=_slash_palette_key_bindings(KeyBindings),
             **_prompt_toolkit_stdio_kwargs(self._stdin, self._stdout),
         )
         return self._session
@@ -317,9 +269,45 @@ def context_remaining_summary(
     if max_input_tokens is None or max_input_tokens <= 0:
         return None
     if token_estimate is None:
-        return "100%"
+        return None
     remaining = max(0, max_input_tokens - max(0, token_estimate))
     return f"{round((remaining / max_input_tokens) * 100)}%"
+
+
+def _slash_palette_key_bindings(key_bindings_factory):
+    bindings = key_bindings_factory()
+
+    @bindings.add("right")
+    def _(event):
+        buffer = event.current_buffer
+        complete_state = getattr(buffer, "complete_state", None)
+        current_completion = getattr(complete_state, "current_completion", None)
+        if current_completion is not None:
+            buffer.apply_completion(current_completion)
+            return
+        buffer.cursor_right(count=event.arg)
+
+    @bindings.add("escape")
+    def _(event):
+        event.current_buffer.cancel_completion()
+
+    @bindings.add("up")
+    def _(event):
+        buffer = event.current_buffer
+        if getattr(buffer, "complete_state", None) is not None:
+            buffer.complete_previous()
+            return
+        buffer.history_backward(count=event.arg)
+
+    @bindings.add("down")
+    def _(event):
+        buffer = event.current_buffer
+        if getattr(buffer, "complete_state", None) is not None:
+            buffer.complete_next()
+            return
+        buffer.history_forward(count=event.arg)
+
+    return bindings
 
 
 def _definition_from_command(command: SlashCommand) -> SlashCommandDefinition:
@@ -442,17 +430,12 @@ def _fit_width(value: str, width: int) -> str:
     return value[: width - 1] + "…"
 
 
-def _terminal_size() -> shutil.terminal_size:
-    return shutil.get_terminal_size((120, 24))
-
-
 __all__ = [
     "PromptToolkitLineReader",
     "ShellActivityState",
     "SlashCommandCompletion",
     "SlashCommandDefinition",
     "SlashCommandRegistry",
-    "TerminalStatusBar",
     "display_loop_mode",
     "context_remaining_summary",
     "model_context_limit",

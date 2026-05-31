@@ -15,7 +15,7 @@ from assistant_core.domain.models import StructuredModelRequest, StructuredModel
 from assistant_core.domain.policy import Capability, PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.policy.engine import ConfigPolicyEngine
-from assistant_core.runtime.loop_selection import LoopStrategySelector
+from assistant_core.runtime.loop_selection import DeterministicIntentClassifier, LoopStrategySelector
 from assistant_core.runtime.model_intent_classifier import ModelBackedIntentClassifier
 from assistant_core.runtime.request_metadata import available_tools_summary, metadata_from_decision
 from assistant_core.runtime.routing import CapabilityRoutingRegistry
@@ -25,6 +25,9 @@ pytestmark = pytest.mark.evaluation
 
 CORPUS_PATH = Path("tests/fixtures/intent_routing/tool_intent_corpus.json")
 REPORT_PATH = Path("tests/fixtures/intent_routing/pre_voice_local_model_eval_report.json")
+MODEL_COMPARISON_PATH = Path(
+    "tests/fixtures/intent_routing/pm08i_classifier_model_comparison.json"
+)
 
 
 def test_pre_voice_local_model_eval_report_blocks_voice_until_real_local_run() -> None:
@@ -83,6 +86,34 @@ def test_pre_voice_local_model_eval_report_rejects_partial_pass_evidence() -> No
 
     with pytest.raises(AssertionError):
         _assert_voice_readiness_report_contract(bad_report)
+
+
+def test_local_model_classifier_eval_default_model_tracks_ollama_structured_profile(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("JARVIS_INTENT_ROUTING_EVAL_MODEL", raising=False)
+
+    settings = ConfigLoader(Path("config")).load("ollama")
+
+    assert _eval_model_name() == settings.model_profiles["local_structured"].model
+
+
+def test_pre_voice_local_model_eval_report_tracks_structured_profile() -> None:
+    report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+    settings = ConfigLoader(Path("config")).load("ollama")
+
+    assert report["model"] == settings.model_profiles["local_structured"].model
+
+
+def test_pm08i_classifier_model_comparison_records_default_decision() -> None:
+    report = json.loads(MODEL_COMPARISON_PATH.read_text(encoding="utf-8"))
+
+    assert report["slice"] == "PM-08i"
+    assert report["selected_default_model"] == "qwen3.5:2b"
+    assert report["candidate_models"] == ["qwen3.5:2b", "qwen3.5:0.8b"]
+    assert report["recommendation"] == "keep_qwen3.5:2b"
+    assert report["summary"]["deterministic_fast_path_threshold"] == 0.9
+    assert report["summary"]["qwen3.5:0.8b"]["failed_cases"] > 0
 
 
 def _assert_voice_readiness_report_contract(report: dict[str, Any]) -> None:
@@ -186,10 +217,25 @@ def test_local_model_classifier_routes_pre_voice_corpus_opt_in() -> None:
     cases = _cases()
     router = OllamaStructuredRouter(
         endpoint=os.environ.get("JARVIS_INTENT_ROUTING_EVAL_OLLAMA_URL", "http://127.0.0.1:11434"),
-        model=os.environ.get("JARVIS_INTENT_ROUTING_EVAL_MODEL", "qwen3.5:9b"),
+        model=_eval_model_name(),
         timeout_seconds=int(os.environ.get("JARVIS_INTENT_ROUTING_EVAL_TIMEOUT_SECONDS", "60")),
     )
-    report = asyncio.run(evaluate_local_model_classifier(cases, router=router))
+    report = asyncio.run(
+        evaluate_local_model_classifier(
+            cases,
+            router=router,
+            deterministic_fast_path_threshold=float(
+                os.environ.get(
+                    "JARVIS_INTENT_ROUTING_EVAL_FAST_PATH_THRESHOLD",
+                    "0.9",
+                )
+            ),
+            use_deterministic_fallback=(
+                os.environ.get("JARVIS_INTENT_ROUTING_EVAL_USE_DETERMINISTIC_FALLBACK")
+                == "1"
+            ),
+        )
+    )
 
     assert report["failures"] == []
 
@@ -306,6 +352,8 @@ async def evaluate_local_model_classifier(
     cases: list[dict[str, Any]],
     *,
     router,
+    deterministic_fast_path_threshold: float = 0.9,
+    use_deterministic_fallback: bool = False,
 ) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
     settings = ConfigLoader(Path("config")).load("test")
@@ -316,6 +364,12 @@ async def evaluate_local_model_classifier(
         request = _request(case["text"])
         classification = await ModelBackedIntentClassifier(
             router=counting_router,
+            deterministic_fast_path_threshold=deterministic_fast_path_threshold,
+            fallback=(
+                DeterministicIntentClassifier()
+                if use_deterministic_fallback
+                else None
+            ),
         ).classify(request)
         decision = await LoopStrategySelector(
             intent_classifier=StaticIntentClassifier(classification),
@@ -388,6 +442,8 @@ async def evaluate_local_model_classifier(
             "model_called_cases": counting_router.call_count,
             "fallback_routed_cases": len(cases) - counting_router.call_count,
             "guardrail_corrected_cases": guardrail_corrected_cases,
+            "deterministic_fast_path_threshold": deterministic_fast_path_threshold,
+            "deterministic_fallback_enabled": use_deterministic_fallback,
         },
         "failures": failures,
     }
@@ -523,3 +579,11 @@ def _payload() -> dict[str, Any]:
 
 def _cases() -> list[dict[str, Any]]:
     return _payload()["cases"]
+
+
+def _eval_model_name() -> str:
+    configured = os.environ.get("JARVIS_INTENT_ROUTING_EVAL_MODEL")
+    if configured:
+        return configured
+    settings = ConfigLoader(Path("config")).load("ollama")
+    return settings.model_profiles["local_structured"].model

@@ -156,6 +156,7 @@ def test_local_ollama_ops_targets_match_configured_models() -> None:
     makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
 
     assert f"OLLAMA_CHAT_MODEL ?= {settings.model_profiles['local_main'].model}" in makefile
+    assert f"OLLAMA_STRUCTURED_MODEL ?= {settings.model_profiles['local_structured'].model}" in makefile
     assert f"OLLAMA_EMBED_MODEL ?= {settings.model_profiles['local_embedding'].model}" in makefile
     assert "run-ollama:" in makefile
     assert "CONFIG_PROFILE=ollama $(MAKE) run" in makefile

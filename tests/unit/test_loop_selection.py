@@ -525,6 +525,18 @@ def test_deterministic_classifier_keeps_general_where_question_as_chat() -> None
     assert classification.candidate_capabilities == ()
 
 
+def test_deterministic_classifier_marks_direct_answer_prompt_as_explicit_chat() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="Ответь ровно одним словом: OK")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.ORDINARY_CHAT
+    assert classification.reason_code == "ordinary_chat_explicit_hint"
+    assert classification.confidence == 0.95
+
+
 def test_deterministic_classifier_routes_current_time_question_to_builtin_tool() -> None:
     classification = asyncio.run(
         DeterministicIntentClassifier().classify(

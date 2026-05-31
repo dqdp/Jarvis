@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "slice": "PM-08i",
+  "date": "2026-05-31",
+  "comparison_type": "local_ollama_structured_classifier_smoke",
+  "candidate_models": [
+    "qwen3.5:2b",
+    "qwen3.5:0.8b"
+  ],
+  "selected_default_model": "qwen3.5:2b",
+  "recommendation": "keep_qwen3.5:2b",
+  "summary": {
+    "evaluated_case_ids": [
+      "time.ru.001",
+      "calc.ru.001",
+      "daemon.ru.001",
+      "os.ru.001",
+      "memory.ru.001",
+      "process.en.001",
+      "project.en.001",
+      "negative.ru.001",
+      "docs.ru.001",
+      "near.ru.001"
+    ],
+    "deterministic_fast_path_threshold": 0.9,
+    "deterministic_fallback_enabled": false,
+    "qwen3.5:2b": {
+      "cases": 10,
+      "elapsed_seconds": 103.951,
+      "failed_cases": 10,
+      "failure_count": 20,
+      "observed_schema_following": "returned JSON object but produced out-of-contract enum values on sampled cases"
+    },
+    "qwen3.5:0.8b": {
+      "cases": 10,
+      "elapsed_seconds": 78.048,
+      "failed_cases": 10,
+      "failure_count": 20,
+      "observed_schema_following": "faster on the sampled slice but produced malformed candidate_capabilities on sampled cases"
+    }
+  },
+  "decision_notes": [
+    "qwen3.5:0.8b is faster on this sampled local run, but speed alone is insufficient for the structured classifier default.",
+    "Neither candidate passed the direct model-only sampled evaluation without deterministic fallback.",
+    "qwen3.5:2b remains the default structured profile pending a full corpus pass or an explicit classifier prompt/schema improvement slice."
+  ]
+}

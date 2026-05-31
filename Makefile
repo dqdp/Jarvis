@@ -5,6 +5,7 @@ APP_PYTHONPATH ?= src
 DATABASE_URL ?= postgresql+asyncpg://jarvis:jarvis@127.0.0.1:5432/jarvis
 CONFIG_PROFILE ?= default
 OLLAMA_CHAT_MODEL ?= qwen3.5:9b
+OLLAMA_STRUCTURED_MODEL ?= qwen3.5:2b
 OLLAMA_EMBED_MODEL ?= embeddinggemma:latest
 TEST_DATABASE_URL ?= postgresql+asyncpg://jarvis:jarvis@127.0.0.1:55432/jarvis_test
 TEST_COMPOSE ?= docker compose -f infra/compose/test-postgres.yml
@@ -29,6 +30,7 @@ models-list:
 
 models-pull:
 	ollama pull $(OLLAMA_CHAT_MODEL)
+	ollama pull $(OLLAMA_STRUCTURED_MODEL)
 	ollama pull $(OLLAMA_EMBED_MODEL)
 
 local-smoke:

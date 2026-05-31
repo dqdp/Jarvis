@@ -10,6 +10,7 @@ from assistant_core.cli_app.client import CliUserError, JarvisClient
 
 
 CLI_CANCEL_EVENT = "__cli.cancel_command__"
+CLI_IGNORED_INPUT_EVENT = "__cli.ignored_input__"
 APPROVAL_REQUIRED_EVENT = "approval.required"
 TTY_CANCEL_POLL_SECONDS = 0.05
 
@@ -42,6 +43,7 @@ async def stream_with_optional_cancel_command(
                 if line.strip().startswith("/cancel"):
                     yield CLI_CANCEL_EVENT, {}
                     return
+                yield CLI_IGNORED_INPUT_EVENT, {}
                 continue
 
             event = stream_task.result()
@@ -110,6 +112,7 @@ def _read_available_tty_line(stdin: TextIO) -> str | None:
 
 __all__ = [
     "CLI_CANCEL_EVENT",
+    "CLI_IGNORED_INPUT_EVENT",
     "cancel_server_request",
     "stream_with_optional_cancel_command",
 ]

@@ -63,6 +63,7 @@ async def _run_command(
             working_directory=str(Path.cwd()),
             plain=args.plain,
             developer_mode=args.developer,
+            color_mode=args.color,
         )
 
     if args.command == "health":
@@ -84,6 +85,7 @@ async def _run_command(
                 working_directory=args.working_directory or str(Path.cwd()),
                 plain=args.plain,
                 developer_mode=args.developer,
+                color_mode=args.color,
             )
         conversation_id = args.conversation_id
         if conversation_id is None:
@@ -162,6 +164,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--plain", action="store_true", help="Use deterministic line-oriented CLI.")
     parser.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="Control ANSI terminal colors.",
+    )
+    parser.add_argument(
         "--developer",
         action="store_true",
         help="Show developer diagnostics in interactive CLI.",
@@ -180,6 +188,7 @@ def _parser() -> argparse.ArgumentParser:
     chat.add_argument("--loop-strategy", choices=LOOP_STRATEGY_CHOICES)
     chat.add_argument("--working-directory")
     chat.add_argument("--plain", action="store_true", default=argparse.SUPPRESS)
+    chat.add_argument("--color", choices=("auto", "always", "never"), default=argparse.SUPPRESS)
     chat.add_argument("--developer", action="store_true", default=argparse.SUPPRESS)
 
     memory = subparsers.add_parser("memory")

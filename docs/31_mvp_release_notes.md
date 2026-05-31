@@ -43,8 +43,13 @@ CONFIG_PROFILE=ollama make run
 make cli
 ```
 
-The Ollama profile uses `qwen3.5:9b` for chat/structured calls and
-`embeddinggemma:latest` for embeddings.
+The Ollama profile uses `qwen3.5:9b` for chat, `qwen3.5:2b` for structured
+classification, and `embeddinggemma:latest` for embeddings.
+Classifier fast-path routing is conservative: deterministic classification may
+bypass the structured model only above `0.9` confidence. The threshold is
+runtime-configurable through `JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD`.
+Smaller structured models such as `qwen3.5:0.8b` remain candidates until local
+intent-routing evaluation shows acceptable schema-following and routing quality.
 
 ## Scope Boundary
 

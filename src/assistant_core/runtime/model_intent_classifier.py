@@ -98,16 +98,22 @@ class ModelBackedIntentClassifier:
         router: ModelRouterPort,
         profile: str = "local_structured",
         fallback: IntentClassifierPort | None = None,
+        deterministic_fast_path_threshold: float = 0.9,
     ) -> None:
         self._router = router
         self._profile = profile
         self._fallback = fallback
+        self._deterministic_fast_path_threshold = deterministic_fast_path_threshold
 
     async def classify(self, request: LoopSelectionRequest) -> IntentClassification:
         fallback_classification = await self._fallback_classification(request)
         if (
             fallback_classification is not None
-            and _fallback_is_allowlisted_runtime_tool_intent(fallback_classification, request)
+            and _fallback_can_skip_model(
+                fallback_classification,
+                request,
+                threshold=self._deterministic_fast_path_threshold,
+            )
         ):
             return fallback_classification
         try:
@@ -213,6 +219,33 @@ def _capability_values(request: LoopSelectionRequest) -> str:
             value.value if hasattr(value, "value") else str(value)
             for value in request.available_capabilities
         )
+    )
+
+
+def _fallback_can_skip_model(
+    classification: IntentClassification,
+    request: LoopSelectionRequest,
+    *,
+    threshold: float,
+) -> bool:
+    if classification.confidence <= threshold:
+        return False
+    return _fallback_is_allowlisted_runtime_tool_intent(
+        classification,
+        request,
+    ) or _fallback_is_high_confidence_ordinary_chat(classification)
+
+
+def _fallback_is_high_confidence_ordinary_chat(
+    classification: IntentClassification,
+) -> bool:
+    return (
+        classification.intent_family is IntentFamily.ORDINARY_CHAT
+        and classification.reason_code == "ordinary_chat_explicit_hint"
+        and not classification.requires_live_state
+        and not classification.requires_execution
+        and not classification.answer_without_tools_would_be_misleading
+        and classification.fallback_preference is SelectionFallbackPreference.CHAT
     )
 
 

@@ -141,6 +141,9 @@ runtime_budgets:
     allow_tools: true
     allow_autonomous_memory_write: false
 
+loop_selection:
+  deterministic_fast_path_threshold: 0.9
+
 policy:
   cloud_models_enabled: false
   tools_enabled: true

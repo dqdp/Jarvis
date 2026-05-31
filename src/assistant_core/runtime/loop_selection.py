@@ -179,6 +179,13 @@ class DeterministicIntentClassifier:
                 reason_code="project_inspection_hint",
                 fallback_preference=SelectionFallbackPreference.FAIL_UNAVAILABLE,
             )
+        if _is_explicit_ordinary_chat_request(text):
+            return IntentClassification(
+                intent_family=IntentFamily.ORDINARY_CHAT,
+                confidence=0.95,
+                reason_code="ordinary_chat_explicit_hint",
+                fallback_preference=SelectionFallbackPreference.CHAT,
+            )
         return IntentClassification(
             intent_family=IntentFamily.ORDINARY_CHAT,
             confidence=0.76,
@@ -979,6 +986,55 @@ def _is_explicit_explanation_question(text: str) -> bool:
             "explica",
             "explique",
             "erkläre",
+        ),
+    )
+
+
+def _is_explicit_ordinary_chat_request(text: str) -> bool:
+    if _contains_any(
+        text,
+        (
+            "project",
+            "repo",
+            "repository",
+            "code",
+            "file",
+            "local",
+            "current",
+            "this system",
+            "daemon",
+            "process",
+            "cpu",
+            "memory",
+            "проект",
+            "репозитор",
+            "код",
+            "файл",
+            "сейчас",
+            "текущ",
+            "у меня",
+            "демон",
+            "процесс",
+            "память",
+            "архитектур",
+        ),
+    ):
+        return False
+    return _contains_any(
+        text,
+        (
+            "расскажи, как",
+            "расскажи как",
+            "объясни, как",
+            "объясни как",
+            "ответь ",
+            "ответь:",
+            "напиши ",
+            "explain how ",
+            "answer ",
+            "say ",
+            "tell me how ",
+            "tell me about ",
         ),
     )
 

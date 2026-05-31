@@ -15,6 +15,7 @@ import pytest
 from assistant_core import cli
 from assistant_core.cli_app import client as cli_client_module
 from assistant_core.cli_app import stream_control
+from assistant_core.cli_app import terminal_rendering as terminal_rendering_module
 
 
 pytestmark = pytest.mark.unit
@@ -518,6 +519,18 @@ def test_prompt_toolkit_reader_binds_injected_stdio(monkeypatch) -> None:
     class FakeHistory:
         pass
 
+    class FakeKeyBindings:
+        def __init__(self) -> None:
+            self.bindings: list[tuple[str, ...]] = []
+
+        def add(self, *keys: str):
+            self.bindings.append(keys)
+
+            def decorator(func):
+                return func
+
+            return decorator
+
     prompt_toolkit_module = types.ModuleType("prompt_toolkit")
     prompt_toolkit_module.PromptSession = FakePromptSession
     completion_module = types.ModuleType("prompt_toolkit.completion")
@@ -525,6 +538,8 @@ def test_prompt_toolkit_reader_binds_injected_stdio(monkeypatch) -> None:
     completion_module.Completion = FakeCompletion
     history_module = types.ModuleType("prompt_toolkit.history")
     history_module.History = FakeHistory
+    key_binding_module = types.ModuleType("prompt_toolkit.key_binding")
+    key_binding_module.KeyBindings = FakeKeyBindings
     input_module = types.ModuleType("prompt_toolkit.input")
     input_defaults_module = types.ModuleType("prompt_toolkit.input.defaults")
     output_module = types.ModuleType("prompt_toolkit.output")
@@ -535,6 +550,7 @@ def test_prompt_toolkit_reader_binds_injected_stdio(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "prompt_toolkit", prompt_toolkit_module)
     monkeypatch.setitem(sys.modules, "prompt_toolkit.completion", completion_module)
     monkeypatch.setitem(sys.modules, "prompt_toolkit.history", history_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.key_binding", key_binding_module)
     monkeypatch.setitem(sys.modules, "prompt_toolkit.input", input_module)
     monkeypatch.setitem(sys.modules, "prompt_toolkit.input.defaults", input_defaults_module)
     monkeypatch.setitem(sys.modules, "prompt_toolkit.output", output_module)
@@ -549,6 +565,11 @@ def test_prompt_toolkit_reader_binds_injected_stdio(monkeypatch) -> None:
 
     assert created_kwargs["input"] == ("input", stdin)
     assert created_kwargs["output"] == ("output", stdout)
+    key_bindings = created_kwargs["key_bindings"]
+    assert ("right",) in key_bindings.bindings
+    assert ("escape",) in key_bindings.bindings
+    assert ("up",) in key_bindings.bindings
+    assert ("down",) in key_bindings.bindings
 
 
 def test_prompt_toolkit_filtered_history_initializes_prompt_toolkit_base_state() -> None:
@@ -562,6 +583,33 @@ def test_prompt_toolkit_filtered_history_initializes_prompt_toolkit_base_state()
 
     assert hasattr(session.history, "_loaded")
     assert hasattr(session.history, "_loaded_strings")
+
+
+def test_prompt_toolkit_filtered_history_rejects_memory_add_and_secret_input() -> None:
+    memory_reader = cli.PromptToolkitLineReader(
+        stdin=TtyStringIO(),
+        stdout=TtyStringIO(),
+        command_registry=cli.SlashCommandRegistry.from_commands(cli.SLASH_COMMANDS),
+        should_add_history=lambda line: not line.startswith("/memory add"),
+    )
+
+    memory_history = memory_reader._ensure_session().history
+    memory_history.store_string("normal message")
+    memory_history.store_string("/memory add private fact")
+
+    assert list(memory_history.load_history_strings()) == ["normal message"]
+
+    secret_reader = cli.PromptToolkitLineReader(
+        stdin=TtyStringIO(),
+        stdout=TtyStringIO(),
+        command_registry=cli.SlashCommandRegistry.from_commands(cli.SLASH_COMMANDS),
+        should_add_history=lambda _line: False,
+    )
+
+    secret_history = secret_reader._ensure_session().history
+    secret_history.store_string("secret prompt")
+
+    assert list(secret_history.load_history_strings()) == []
 
 
 def test_prompt_toolkit_reader_uses_async_prompt_inside_interactive_cli(monkeypatch) -> None:
@@ -579,7 +627,7 @@ def test_prompt_toolkit_reader_uses_async_prompt_inside_interactive_cli(monkeypa
         async def prompt_async(self, prompt: str) -> str:
             toolbar = created_kwargs["bottom_toolbar"]()
             assert "model=qwen3.5:9b" in toolbar
-            assert "ctx=100%" in toolbar
+            assert "ctx=" not in toolbar
             prompts.append(prompt)
             return "/exit"
 
@@ -593,6 +641,13 @@ def test_prompt_toolkit_reader_uses_async_prompt_inside_interactive_cli(monkeypa
     class FakeHistory:
         pass
 
+    class FakeKeyBindings:
+        def add(self, *keys: str):
+            def decorator(func):
+                return func
+
+            return decorator
+
     prompt_toolkit_module = types.ModuleType("prompt_toolkit")
     prompt_toolkit_module.PromptSession = FakePromptSession
     completion_module = types.ModuleType("prompt_toolkit.completion")
@@ -600,6 +655,8 @@ def test_prompt_toolkit_reader_uses_async_prompt_inside_interactive_cli(monkeypa
     completion_module.Completion = FakeCompletion
     history_module = types.ModuleType("prompt_toolkit.history")
     history_module.History = FakeHistory
+    key_binding_module = types.ModuleType("prompt_toolkit.key_binding")
+    key_binding_module.KeyBindings = FakeKeyBindings
     input_module = types.ModuleType("prompt_toolkit.input")
     input_defaults_module = types.ModuleType("prompt_toolkit.input.defaults")
     output_module = types.ModuleType("prompt_toolkit.output")
@@ -610,6 +667,7 @@ def test_prompt_toolkit_reader_uses_async_prompt_inside_interactive_cli(monkeypa
     monkeypatch.setitem(sys.modules, "prompt_toolkit", prompt_toolkit_module)
     monkeypatch.setitem(sys.modules, "prompt_toolkit.completion", completion_module)
     monkeypatch.setitem(sys.modules, "prompt_toolkit.history", history_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.key_binding", key_binding_module)
     monkeypatch.setitem(sys.modules, "prompt_toolkit.input", input_module)
     monkeypatch.setitem(sys.modules, "prompt_toolkit.input.defaults", input_defaults_module)
     monkeypatch.setitem(sys.modules, "prompt_toolkit.output", output_module)
@@ -650,6 +708,35 @@ def test_chat_subcommand_accepts_plain_after_subcommand() -> None:
     assert args.plain is True
 
 
+def test_color_flag_controls_terminal_color_mode() -> None:
+    global_args = cli._parser().parse_args(["--color", "never", "chat"])
+    subcommand_args = cli._parser().parse_args(["chat", "--color", "always"])
+
+    assert global_args.color == "never"
+    assert subcommand_args.color == "always"
+
+
+def test_terminal_color_auto_respects_tty_no_color_and_plain() -> None:
+    assert cli.resolve_terminal_color_enabled(
+        "always",
+        stdout=StringIO(),
+        plain=False,
+        env={},
+    ) is True
+    assert cli.resolve_terminal_color_enabled(
+        "auto",
+        stdout=TtyStringIO(),
+        plain=False,
+        env={"NO_COLOR": "1"},
+    ) is False
+    assert cli.resolve_terminal_color_enabled(
+        "auto",
+        stdout=TtyStringIO(),
+        plain=True,
+        env={},
+    ) is False
+
+
 def test_status_line_renders_mode_readiness_model_context_and_cwd_scope() -> None:
     line = cli.render_status_line(
         mode="auto",
@@ -673,7 +760,7 @@ def test_status_line_renders_mode_readiness_model_context_and_cwd_scope() -> Non
 
 
 def test_context_remaining_summary_uses_last_context_token_estimate() -> None:
-    assert cli.context_remaining_summary(token_estimate=None, max_input_tokens=8192) == "100%"
+    assert cli.context_remaining_summary(token_estimate=None, max_input_tokens=8192) is None
     assert cli.context_remaining_summary(token_estimate=2048, max_input_tokens=8192) == "75%"
     assert cli.context_remaining_summary(token_estimate=9000, max_input_tokens=8192) == "0%"
     assert cli.context_remaining_summary(token_estimate=100, max_input_tokens=None) is None
@@ -762,6 +849,56 @@ def test_terminal_status_bar_writes_status_without_activity_transcript_line() ->
     assert "model=qwen3.5:9b" in output
     assert "\x1b[" in output
     assert "activity=" not in output
+
+
+def test_terminal_status_bar_animates_work_indicator_frames() -> None:
+    stdout = TtyStringIO()
+    bar = cli.TerminalStatusBar(
+        stdout=stdout,
+        status_provider=lambda: "mode=auto | status=ready | phase=streaming",
+        enabled=True,
+        spinner_frames=("-", "+"),
+    )
+
+    bar.start()
+    bar.tick()
+    bar.stop()
+
+    output = stdout.getvalue()
+    assert "- mode=auto" in output
+    assert "+ mode=auto" in output
+    assert "%" not in output
+
+
+def test_terminal_status_bar_truncates_to_terminal_width(monkeypatch) -> None:
+    monkeypatch.setattr(
+        terminal_rendering_module.shutil,
+        "get_terminal_size",
+        lambda fallback: os.terminal_size((20, 5)),
+    )
+    stdout = TtyStringIO()
+    bar = cli.TerminalStatusBar(
+        stdout=stdout,
+        status_provider=lambda: "mode=auto | status=ready | phase=streaming | model=qwen3.5:9b",
+        enabled=True,
+    )
+
+    bar.render()
+
+    output = stdout.getvalue()
+    rendered = output.split("\x1b[7m", 1)[1].split("\x1b[0m", 1)[0]
+    assert rendered.endswith("...")
+    assert len(rendered) <= 20
+
+
+def test_terminal_color_scheme_styles_known_roles_only_when_enabled() -> None:
+    enabled = cli.TerminalColorScheme(enabled=True)
+    disabled = cli.TerminalColorScheme(enabled=False)
+
+    assert enabled.style("assistant", "assistant> OK") == "\x1b[32massistant> OK\x1b[0m"
+    assert enabled.style("error", "error> failed") == "\x1b[31merror> failed\x1b[0m"
+    assert disabled.style("assistant", "assistant> OK") == "assistant> OK"
+    assert enabled.style("unknown", "plain") == "plain"
 
 
 def test_status_and_model_renderers_return_payload_for_shell_state() -> None:
@@ -919,6 +1056,7 @@ def test_tty_cancel_poll_keeps_listening_after_non_cancel_typeahead() -> None:
 
     assert exit_code == 130
     assert ("cancel_request", "request-1") in client.calls
+    assert "input> ignored while request is running; use /cancel to cancel" in stdout.getvalue()
 
 
 def test_tty_cancel_awaits_active_stream_cleanup() -> None:
@@ -1353,6 +1491,221 @@ def test_developer_interactive_chat_keeps_activity_transcript_lines() -> None:
     assert exit_code == 0
     assert "assistant> OK" in output
     assert "activity=submitting" in output
+
+
+def test_tty_interactive_chat_animates_status_bar_while_waiting_for_stream() -> None:
+    stdout = TtyStringIO()
+    stdin = StringIO("hello\n/exit\n")
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=DelayedTokenStreamCliClient,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "assistant> late" in output
+    assert "activity=" not in output
+    assert "- mode=auto" in output
+
+
+def test_tty_interactive_chat_starts_status_bar_before_slow_submit_returns() -> None:
+    stdout = TtyStringIO()
+    snapshots: list[str] = []
+
+    class SlowSubmitCliClient(FakeCliClient):
+        async def submit_message(self, **kwargs):
+            snapshots.append(stdout.getvalue())
+            await asyncio.sleep(0.02)
+            snapshots.append(stdout.getvalue())
+            return await super().submit_message(**kwargs)
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=SlowSubmitCliClient,
+            stdout=stdout,
+            stdin=StringIO("hello\n/exit\n"),
+        ),
+    )
+
+    assert exit_code == 0
+    assert snapshots
+    assert "phase=submitting" in snapshots[0]
+    assert "- mode=auto" in snapshots[0]
+
+
+def test_tty_interactive_chat_resets_toolbar_phase_after_submit_failure(monkeypatch) -> None:
+    created_kwargs: dict[str, Any] = {}
+    toolbar_snapshots: list[str] = []
+
+    class SubmitFailingCliClient(FakeCliClient):
+        async def submit_message(self, **kwargs):
+            raise cli.CliUserError("daemon unavailable")
+
+    class FakePromptSession:
+        def __init__(self, **kwargs):
+            created_kwargs.update(kwargs)
+            self._lines = iter(["hello", "/exit"])
+
+        async def prompt_async(self, prompt: str) -> str:
+            toolbar_snapshots.append(created_kwargs["bottom_toolbar"]())
+            return next(self._lines)
+
+    class FakeCompleter:
+        pass
+
+    class FakeCompletion:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class FakeHistory:
+        pass
+
+    class FakeKeyBindings:
+        def add(self, *keys: str):
+            def decorator(func):
+                return func
+
+            return decorator
+
+    prompt_toolkit_module = types.ModuleType("prompt_toolkit")
+    prompt_toolkit_module.PromptSession = FakePromptSession
+    completion_module = types.ModuleType("prompt_toolkit.completion")
+    completion_module.Completer = FakeCompleter
+    completion_module.Completion = FakeCompletion
+    history_module = types.ModuleType("prompt_toolkit.history")
+    history_module.History = FakeHistory
+    key_binding_module = types.ModuleType("prompt_toolkit.key_binding")
+    key_binding_module.KeyBindings = FakeKeyBindings
+    input_module = types.ModuleType("prompt_toolkit.input")
+    input_defaults_module = types.ModuleType("prompt_toolkit.input.defaults")
+    output_module = types.ModuleType("prompt_toolkit.output")
+    output_defaults_module = types.ModuleType("prompt_toolkit.output.defaults")
+    input_defaults_module.create_input = lambda *, stdin=None: ("input", stdin)
+    output_defaults_module.create_output = lambda *, stdout=None: ("output", stdout)
+
+    monkeypatch.setitem(sys.modules, "prompt_toolkit", prompt_toolkit_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.completion", completion_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.history", history_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.key_binding", key_binding_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.input", input_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.input.defaults", input_defaults_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.output", output_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.output.defaults", output_defaults_module)
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=SubmitFailingCliClient,
+            stdout=TtyStringIO(),
+            stdin=TtyStringIO(),
+        )
+    )
+
+    assert exit_code == 0
+    assert len(toolbar_snapshots) == 2
+    assert "phase=idle" in toolbar_snapshots[0]
+    assert "phase=idle" in toolbar_snapshots[1]
+    assert "phase=submitting" not in toolbar_snapshots[1]
+
+
+def test_tty_cancel_command_marks_activity_cancelled_before_return() -> None:
+    client = SlowStreamCliClient("http://test")
+    stdout = TtyStringIO()
+    read_fd, write_fd = os.pipe()
+    stdin = PipeTtyInput(read_fd)
+    events: list[str] = []
+    os.write(write_fd, b"/cancel\n")
+    os.close(write_fd)
+
+    async def scenario() -> int:
+        try:
+            return await cli.submit_and_stream_message(
+                client=client,
+                stdout=stdout,
+                conversation_id="conversation-1",
+                content="slow answer",
+                sensitivity="project",
+                client_message_id="client-cancel-event",
+                assistant_prefix="assistant> ",
+                stdin=stdin,
+                allow_tty_cancel_command=True,
+                on_stream_event=lambda event_type, _data: events.append(event_type),
+            )
+        finally:
+            stdin.close()
+
+    exit_code = asyncio.run(scenario())
+
+    assert exit_code == 130
+    assert "request.processing.cancelled" in events
+
+
+def test_color_always_styles_tty_assistant_output() -> None:
+    stdout = TtyStringIO()
+    stdin = StringIO("hello\n/exit\n")
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "--color", "always"],
+            client_factory=FakeCliClient,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "\x1b[32massistant> OK" in output
+
+
+def test_color_never_suppresses_tty_assistant_color() -> None:
+    stdout = TtyStringIO()
+    stdin = StringIO("hello\n/exit\n")
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "--color", "never"],
+            client_factory=FakeCliClient,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "assistant> OK" in output
+    assert "\x1b[32massistant>" not in output
+
+
+def test_color_always_styles_tool_and_error_roles() -> None:
+    tool_stdout = TtyStringIO()
+    error_stdout = TtyStringIO()
+
+    asyncio.run(
+        cli.run(
+            ["chat", "--color", "always"],
+            client_factory=ToolEventStreamCliClient,
+            stdout=tool_stdout,
+            stdin=StringIO("inspect project\n/exit\n"),
+        ),
+    )
+    asyncio.run(
+        cli.run(
+            ["chat", "--color", "always"],
+            client_factory=ToolUnavailableCliClient,
+            stdout=error_stdout,
+            stdin=StringIO("show cpu usage\n/exit\n"),
+        ),
+    )
+
+    assert "\x1b[33mtool> running" in tool_stdout.getvalue()
+    assert "\x1b[31merror> tool loop is rejected" in error_stdout.getvalue()
 
 
 def test_status_command_prints_degraded_reasons() -> None:
@@ -2023,6 +2376,32 @@ def test_cancel_cli_approval_input_marks_prompt_cancelled() -> None:
 
     assert ("cancel_request", "request-1") in client.calls
     assert ("deny_approval", "approval-1") not in client.calls
+    assert "approval> cancelled" in stdout.getvalue()
+
+
+def test_slash_cancel_cli_approval_input_marks_activity_cancelled() -> None:
+    client = ApprovalPromptCliClient("http://test")
+    stdout = StringIO()
+    events: list[str] = []
+
+    exit_code = asyncio.run(
+        cli.submit_and_stream_message(
+            client=client,
+            stdout=stdout,
+            stdin=StringIO("/cancel\n"),
+            conversation_id="conversation-1",
+            content="use tool",
+            sensitivity="project",
+            client_message_id="client-approval",
+            assistant_prefix=None,
+            on_stream_event=lambda event_type, _data: events.append(event_type),
+        ),
+    )
+
+    assert exit_code == 130
+    assert ("cancel_request", "request-1") in client.calls
+    assert ("deny_approval", "approval-1") not in client.calls
+    assert "request.processing.cancelled" in events
     assert "approval> cancelled" in stdout.getvalue()
 
 

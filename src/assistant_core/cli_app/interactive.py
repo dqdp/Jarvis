@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from assistant_core.cli_app.approval_flow import handle_approval_prompt
-from assistant_core.cli_app.chat_flow import ChatShellState, run_interactive_chat, submit_and_stream_message
+from assistant_core.cli_app.chat_flow import ChatShellState, run_interactive_chat
 from assistant_core.cli_app.line_reader import (
     InteractiveLineReader,
     ReadlineModule,
@@ -13,6 +13,7 @@ from assistant_core.cli_app.line_reader import (
     _trim_readline_history,
     create_interactive_line_reader,
 )
+from assistant_core.cli_app.message_stream import submit_and_stream_message
 from assistant_core.cli_app.shell import (
     PromptToolkitLineReader,
     ShellActivityState,

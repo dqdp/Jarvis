@@ -282,8 +282,13 @@ Implementation notes:
   `assistant_core.app_factory:create_asgi_app --factory`, `make migrate` and
   `make run`.
 - Local Ollama dogfood is available through `config/ollama.yaml`. The current
-  local profile uses `qwen3.5:9b` for chat/structured calls and
-  `embeddinggemma:latest` for embeddings.
+  local profile uses `qwen3.5:9b` for chat, `qwen3.5:2b` for structured
+  classification, and `embeddinggemma:latest` for embeddings.
+- The classifier fast path is intentionally conservative: deterministic routing
+  may bypass the structured model only when its confidence is greater than
+  `0.9`. Lower-confidence tool, project and live-state hints still go through
+  the structured model and fallback guardrails. The threshold is operationally
+  tunable through `JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD`.
 - A thin local CLI is available through `make cli ARGS='...'` or the `jarvis`
   console entrypoint. Running `make cli` without `ARGS` opens an interactive
   chat shell with slash commands.
@@ -327,8 +332,14 @@ Post-MVP planning is tracked in:
 ## Local Ollama and CLI additions in v22
 
 - `config/ollama.yaml` wires local Ollama profiles without cloud fallback.
-- `qwen3.5:9b` is the current chat/structured model for local dogfood
-  verification on the target machine.
+- `qwen3.5:9b` is the current chat model and `qwen3.5:2b` is the current
+  structured classifier model for local dogfood verification on the target
+  machine.
+- Smaller classifier candidates such as `qwen3.5:0.8b` must pass the local
+  intent-routing evaluation before becoming the default; speed alone is not
+  enough if schema-following or routing quality regresses.
+- PM-08i comparison evidence is recorded in
+  `tests/fixtures/intent_routing/pm08i_classifier_model_comparison.json`.
 - `embeddinggemma:latest` is the initial local embedding model.
 - The Ollama adapter passes anti-repeat generation options and cuts off
   repeated-line loops before they run to the full token cap.

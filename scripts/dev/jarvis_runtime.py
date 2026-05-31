@@ -173,7 +173,11 @@ def up(config: JarvisRuntimeConfig) -> None:
 def cli(config: JarvisRuntimeConfig, passthrough: Sequence[str]) -> None:
     env = _runtime_env(config)
     command = [*cli_command(config), *passthrough]
-    _run(command, cwd=config.project_root, env=env)
+    display_command = [
+        *cli_command(config),
+        *(["[cli args redacted]"] if passthrough else []),
+    ]
+    _run(command, cwd=config.project_root, env=env, display_command=display_command)
 
 
 def status(config: JarvisRuntimeConfig) -> None:
@@ -559,10 +563,12 @@ def _run(
     *,
     cwd: Path,
     env: dict[str, str] | None = None,
+    display_command: Sequence[str] | None = None,
 ) -> None:
     result = subprocess.run(command, cwd=cwd, env=env, check=False)
     if result.returncode != 0:
-        raise StartupError(f"command failed ({result.returncode}): {' '.join(command)}")
+        safe_command = command if display_command is None else display_command
+        raise StartupError(f"command failed ({result.returncode}): {' '.join(safe_command)}")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -570,7 +576,7 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("bootstrap")
     subparsers.add_parser("up")
-    subparsers.add_parser("cli").add_argument("args", nargs=argparse.REMAINDER)
+    subparsers.add_parser("cli")
     subparsers.add_parser("status")
     logs_parser = subparsers.add_parser("logs")
     logs_parser.add_argument("--lines", type=int, default=80)
@@ -580,8 +586,17 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if raw_args and raw_args[0] == "cli":
+        args = _parser().parse_args(["cli"])
+        args.args = raw_args[1:]
+        return args
+    return _parser().parse_args(raw_args)
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    args = _parse_args(argv)
     try:
         config = JarvisRuntimeConfig.from_project_root(Path(__file__).resolve().parents[2])
         if args.command == "bootstrap":

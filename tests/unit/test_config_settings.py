@@ -19,6 +19,7 @@ def test_default_config_validates() -> None:
     settings = load_settings("default")
 
     assert settings.app.environment == "local"
+    assert settings.loop_selection.deterministic_fast_path_threshold == 0.9
 
 
 def test_test_config_validates() -> None:
@@ -32,7 +33,7 @@ def test_ollama_config_uses_local_models_and_endpoints() -> None:
 
     assert settings.model_profiles["local_main"].provider == "ollama"
     assert settings.model_profiles["local_main"].model == "qwen3.5:9b"
-    assert settings.model_profiles["local_structured"].model == "qwen3.5:9b"
+    assert settings.model_profiles["local_structured"].model == "qwen3.5:2b"
     assert settings.model_profiles["local_embedding"].model == "embeddinggemma:latest"
     assert settings.model_profiles["local_main"].max_output_tokens == 1024
     assert settings.model_profiles["local_structured"].max_output_tokens == 1024
@@ -47,6 +48,27 @@ def test_env_override_nested_keys_apply_with_jarvis_prefix(monkeypatch) -> None:
     settings = load_settings("default")
 
     assert settings.api.port == 9090
+
+
+def test_loop_selection_fast_path_threshold_is_configurable(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD",
+        "0.92",
+    )
+
+    settings = load_settings("default")
+
+    assert settings.loop_selection.deterministic_fast_path_threshold == 0.92
+
+
+def test_loop_selection_fast_path_threshold_is_bounded(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD",
+        "1.0",
+    )
+
+    with pytest.raises(ConfigError):
+        load_settings("default")
 
 
 def test_cloud_reasoning_disabled_by_default() -> None:

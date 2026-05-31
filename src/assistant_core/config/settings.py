@@ -117,6 +117,11 @@ class RuntimeBudgetConfig:
 
 
 @dataclass(frozen=True)
+class LoopSelectionConfig:
+    deterministic_fast_path_threshold: float = 0.9
+
+
+@dataclass(frozen=True)
 class SensitivityDecisionConfig:
     deny_sensitivity: list[str]
 
@@ -163,6 +168,7 @@ class Settings:
     memory: MemoryConfig
     context_assembly: ContextAssemblyConfig
     runtime_budgets: dict[str, RuntimeBudgetConfig]
+    loop_selection: LoopSelectionConfig
     policy: PolicyConfig
     permissions: PermissionsConfig
     capabilities: dict[str, Any]
@@ -229,6 +235,7 @@ def _settings_from_mapping(data: dict[str, Any], *, project_root: Path) -> Setti
         ),
         context_assembly=ContextAssemblyConfig(**data["context_assembly"]),
         runtime_budgets=runtime_budgets,
+        loop_selection=LoopSelectionConfig(**data.get("loop_selection", {})),
         policy=PolicyConfig(
             cloud_models_enabled=data["policy"]["cloud_models_enabled"],
             tools_enabled=data["policy"]["tools_enabled"],
@@ -302,6 +309,10 @@ def _validate(settings: Settings) -> None:
         raise ConfigError("memory_augmented_answer must be deterministic in Phase 1")
     if budget.allow_cloud or budget.allow_tools or budget.allow_autonomous_memory_write:
         raise ConfigError("Phase 1 runtime capabilities exceed MVP scope")
+
+    fast_path_threshold = settings.loop_selection.deterministic_fast_path_threshold
+    if not isinstance(fast_path_threshold, int | float) or not 0.0 <= fast_path_threshold < 1.0:
+        raise ConfigError("loop_selection.deterministic_fast_path_threshold must be >= 0 and < 1")
 
     if "secret" not in settings.policy.memory_write.deny_sensitivity:
         raise ConfigError("secret memory writes must be denied")

@@ -186,16 +186,23 @@ def create_runtime_app(
         inference_health=router,
         content_ingestion=content_ingestion,
         policy=policy,
-        intent_classifier=ModelBackedIntentClassifier(
-            router=router,
-            fallback=DeterministicIntentClassifier(),
-        ),
+        intent_classifier=build_intent_classifier(settings=settings, router=router),
         lifespan=lifespan,
     )
     runtime_app = RuntimeApplication(app=app, engine=engine, settings=settings, runtime=runtime)
     app.state.runtime_application = runtime_app
 
     return runtime_app
+
+
+def build_intent_classifier(*, settings: Settings, router: ModelRouter) -> ModelBackedIntentClassifier:
+    return ModelBackedIntentClassifier(
+        router=router,
+        fallback=DeterministicIntentClassifier(),
+        deterministic_fast_path_threshold=(
+            settings.loop_selection.deterministic_fast_path_threshold
+        ),
+    )
 
 
 async def _shutdown_request_execution_manager(app: FastAPI) -> None:

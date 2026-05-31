@@ -85,6 +85,33 @@ def test_jarvis_cli_command_uses_canonical_base_url_without_plain_mode() -> None
     assert "--plain" not in command
 
 
+def test_jarvis_cli_passthrough_preserves_option_like_cli_args() -> None:
+    runtime = _load_runtime_module()
+
+    args = runtime._parse_args(["cli", "--color", "always", "chat", "--developer"])
+
+    assert args.command == "cli"
+    assert args.args == ["--color", "always", "chat", "--developer"]
+
+
+def test_jarvis_runtime_cli_failure_redacts_passthrough_prompt_args(tmp_path, monkeypatch) -> None:
+    runtime = _load_runtime_module()
+    config = _config_with_run_dir(runtime, tmp_path)
+
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=2),
+    )
+
+    with pytest.raises(runtime.StartupError) as exc:
+        runtime.cli(config, ["chat", "secret prompt text"])
+
+    message = str(exc.value)
+    assert "secret prompt text" not in message
+    assert "[cli args redacted]" in message
+
+
 def test_jarvis_status_payload_reports_runtime_contract() -> None:
     runtime = _load_runtime_module()
     config = runtime.JarvisRuntimeConfig.from_project_root(PROJECT_ROOT)
