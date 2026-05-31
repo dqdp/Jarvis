@@ -19,7 +19,7 @@ from assistant_core.storage.memory_store import PostgresMemoryStore
 from assistant_core.storage.migrations import run_migrations
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.db]
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 

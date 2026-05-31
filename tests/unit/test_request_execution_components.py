@@ -13,11 +13,13 @@ from assistant_core.domain.conversations import (
     ConversationMessage,
     ConversationStatus,
 )
-from assistant_core.domain.events import EventType
+from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
 from assistant_core.domain.messages import MessageRole
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.runtime.request_command import RuntimeTurnCommandBuilder
+from assistant_core.runtime.agent_runtime import RuntimeStreamEvent
+from assistant_core.runtime.request_execution import RequestExecutionManager
 from assistant_core.runtime.request_lifecycle import RequestLifecycleService
 from assistant_core.runtime.request_stream_buffer import RequestStreamBuffer
 
@@ -122,6 +124,73 @@ class FakeEventLog:
         self.events.append(event)
         return event
 
+    async def query(self, event_filter):
+        return [
+            event
+            for event in self.events
+            if event_filter.request_id is None or event.request_id == event_filter.request_id
+        ]
+
+
+class FastRuntime:
+    async def stream_turn(self, command):
+        yield RuntimeStreamEvent(
+            EventType.REQUEST_PROCESSING_STARTED.value,
+            {"request_id": command.request_id, "event_id": "runtime-started"},
+        )
+        await asyncio.sleep(0)
+        yield RuntimeStreamEvent(
+            EventType.REQUEST_PROCESSING_COMPLETED.value,
+            {
+                "request_id": command.request_id,
+                "event_id": "runtime-completed",
+                "assistant_message_id": "message-assistant",
+            },
+        )
+
+
+class TokenAfterStartedRuntime:
+    async def stream_turn(self, command):
+        yield RuntimeStreamEvent(
+            EventType.REQUEST_PROCESSING_STARTED.value,
+            {"request_id": command.request_id, "event_id": "runtime-started"},
+        )
+        yield RuntimeStreamEvent("token", {"delta": "answer"})
+        yield RuntimeStreamEvent(
+            EventType.REQUEST_PROCESSING_COMPLETED.value,
+            {
+                "request_id": command.request_id,
+                "event_id": "runtime-completed",
+                "assistant_message_id": "message-assistant",
+            },
+        )
+
+
+def _event(event_type: EventType, payload: dict) -> EventEnvelope:
+    now = datetime.now(UTC)
+    return EventEnvelope(
+        event_id=f"event-{event_type.value}",
+        event_seq=0,
+        event_type=event_type,
+        event_version=1,
+        occurred_at=now,
+        recorded_at=now,
+        conversation_id="conversation-1",
+        request_id="request-1",
+        correlation_id="request-1",
+        causation_id=None,
+        parent_event_id=None,
+        actor_type=ActorType.SYSTEM,
+        actor_id=None,
+        source_component="unit_test",
+        source_node=None,
+        sensitivity=Sensitivity.PROJECT,
+        visibility=EventVisibility.INTERNAL,
+        idempotency_key=None,
+        payload=payload,
+        metadata={},
+    )
+
 
 def test_request_stream_buffer_filters_and_replays_public_events() -> None:
     async def scenario():
@@ -174,6 +243,179 @@ def test_request_stream_buffer_replays_public_tool_lifecycle_events_without_raw_
         "exit_code": 0,
         "output_bytes": 42,
     }
+
+
+def test_request_stream_buffer_replays_loop_selection_events_without_raw_prompt() -> None:
+    async def scenario():
+        buffer = RequestStreamBuffer()
+        published = await buffer.publish(
+            "request-1",
+            EventType.LOOP_SELECTION_STARTED.value,
+            {
+                "requested_mode": "auto",
+                "raw_prompt": "must not stream",
+            },
+        )
+        return published, buffer.events_from("request-1", 0)
+
+    published, events = asyncio.run(scenario())
+
+    assert published is True
+    assert events[0].event_type == EventType.LOOP_SELECTION_STARTED.value
+    assert events[0].data == {
+        "request_id": "request-1",
+        "requested_mode": "auto",
+    }
+
+
+def test_request_stream_buffer_replays_content_retrieval_without_raw_query() -> None:
+    async def scenario():
+        buffer = RequestStreamBuffer()
+        published = await buffer.publish(
+            "request-1",
+            EventType.CONTENT_RETRIEVED.value,
+            {
+                "hit_count": 2,
+                "query": "must not stream",
+            },
+        )
+        return published, buffer.events_from("request-1", 0)
+
+    published, events = asyncio.run(scenario())
+
+    assert published is True
+    assert events[0].event_type == EventType.CONTENT_RETRIEVED.value
+    assert events[0].data == {
+        "request_id": "request-1",
+        "hit_count": 2,
+    }
+
+
+def test_request_stream_buffer_derives_content_hit_count_without_streaming_refs() -> None:
+    async def scenario():
+        buffer = RequestStreamBuffer()
+        published = await buffer.publish(
+            "request-1",
+            EventType.CONTENT_RETRIEVED.value,
+            {
+                "retrieved_content_refs": [
+                    {"chunk_id": "chunk-1", "content_hash": "hash-1"},
+                    {"chunk_id": "chunk-2", "content_hash": "hash-2"},
+                ],
+                "full_content_stored": False,
+            },
+        )
+        return published, buffer.events_from("request-1", 0)
+
+    published, events = asyncio.run(scenario())
+
+    assert published is True
+    assert events[0].data == {
+        "request_id": "request-1",
+        "hit_count": 2,
+        "full_content_stored": False,
+    }
+
+
+def test_request_execution_stream_preserves_started_first_then_replays_pre_start_events() -> None:
+    async def scenario():
+        settings = ConfigLoader("config").load("test")
+        store = FakeConversationStore()
+        store.request = _request_record(status=RequestStatus.ACCEPTED)
+        event_log = FakeEventLog()
+        event_log.events.extend(
+            [
+                _event(
+                    EventType.LOOP_SELECTION_STARTED,
+                    {"requested_mode": "auto", "raw_prompt": "must not stream"},
+                ),
+                _event(
+                    EventType.LOOP_SELECTION_COMPLETED,
+                    {
+                        "requested_mode": "auto",
+                        "selected_loop_strategy": "memory_augmented_answer",
+                        "decision_status": "selected",
+                        "raw_prompt": "must not stream",
+                    },
+                ),
+            ],
+        )
+        manager = RequestExecutionManager(
+            runtime=FastRuntime(),
+            conversation_store=store,
+            event_log=event_log,
+            settings=settings,
+        )
+        await manager.start(store.request)
+        events = []
+        try:
+            async for event in manager.stream("request-1"):
+                events.append(event)
+                if event.event_type == EventType.REQUEST_PROCESSING_COMPLETED.value:
+                    break
+        finally:
+            await manager.shutdown()
+        return events
+
+    events = asyncio.run(scenario())
+
+    assert [event.event_type for event in events[:3]] == [
+        EventType.REQUEST_PROCESSING_STARTED.value,
+        EventType.LOOP_SELECTION_STARTED.value,
+        EventType.LOOP_SELECTION_COMPLETED.value,
+    ]
+    assert events[1].data == {
+        "request_id": "request-1",
+        "event_id": f"event-{EventType.LOOP_SELECTION_STARTED.value}",
+        "requested_mode": "auto",
+    }
+    assert "raw_prompt" not in events[2].data
+
+
+def test_request_execution_seed_does_not_publish_terminal_events_before_tokens() -> None:
+    async def scenario():
+        settings = ConfigLoader("config").load("test")
+        store = FakeConversationStore()
+        store.request = _request_record(status=RequestStatus.ACCEPTED)
+        event_log = FakeEventLog()
+        event_log.events.extend(
+            [
+                _event(
+                    EventType.LOOP_SELECTION_STARTED,
+                    {"requested_mode": "auto"},
+                ),
+                _event(
+                    EventType.REQUEST_PROCESSING_COMPLETED,
+                    {"assistant_message_id": "message-assistant-from-log"},
+                ),
+            ],
+        )
+        manager = RequestExecutionManager(
+            runtime=TokenAfterStartedRuntime(),
+            conversation_store=store,
+            event_log=event_log,
+            settings=settings,
+        )
+        await manager.start(store.request)
+        events = []
+        try:
+            async for event in manager.stream("request-1"):
+                events.append(event)
+                if event.event_type == EventType.REQUEST_PROCESSING_COMPLETED.value:
+                    break
+        finally:
+            await manager.shutdown()
+        return events
+
+    events = asyncio.run(scenario())
+
+    assert [event.event_type for event in events] == [
+        EventType.REQUEST_PROCESSING_STARTED.value,
+        EventType.LOOP_SELECTION_STARTED.value,
+        "token",
+        EventType.REQUEST_PROCESSING_COMPLETED.value,
+    ]
+    assert events[-1].data["assistant_message_id"] == "message-assistant"
 
 
 def test_runtime_turn_command_builder_uses_request_metadata_and_user_message() -> None:

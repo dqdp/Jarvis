@@ -97,7 +97,7 @@ checkpointed as a resumable workflow.
 Required follow-up:
 
 ```text
-ADR-036 Graph runtime adapter and LangGraph adoption gate
+ADR-046 Graph runtime adapter and LangGraph adoption gate
 then ADR-038 Scheduler and durable background workflows
 workflow checkpoint/resume decision before planner-executor or long automations
 ```
@@ -496,6 +496,11 @@ PM-08a loop selection domain and selector contract
 PM-08b API/request lifecycle auto mode
 PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
+PM-08e Model-backed intent classifier adapter
+PM-08f Typed tool observations and direct-answer hardening
+PM-08g Direct planner and capability routing registry cleanup
+PM-08h Tool-intent corpus hardening and pre-voice routing gate
+PM-08i interactive CLI shell UX hardening
 PM-09 voice gateway foundation
 then stabilize the implemented Alpha surface
 then choose between durable workflow execution, artifact storage, MCP or integrations
@@ -503,7 +508,8 @@ then choose between durable workflow execution, artifact storage, MCP or integra
 
 Do not start planner-executor, broad MCP, Telegram/Spotify or cloud reasoning
 before PM-08d makes the existing RAG/tools/approval surface usable from normal
-chat and before the durable workflow, artifact, permission and audit questions
-for that specific feature are documented and tested. Voice is the selected
-near-term product direction after PM-08d and must use the same runtime and
-loop-selection path rather than introducing a separate voice agent.
+chat, before PM-08i makes the interactive CLI usable as the pre-voice dogfood
+surface, and before the durable workflow, artifact, permission and audit
+questions for that specific feature are documented and tested. Voice is the
+selected near-term product direction after PM-08i and must use the same runtime
+and loop-selection path rather than introducing a separate voice agent.

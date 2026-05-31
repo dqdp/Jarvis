@@ -35,7 +35,7 @@ from assistant_core.tools.shell_read import ShellExecutionResult
 from assistant_core.tools.system_diagnostics import SystemDiagnosticsTool
 
 
-pytestmark = pytest.mark.e2e
+pytestmark = [pytest.mark.e2e, pytest.mark.db]
 
 
 class FakeDiagnosticsExecutor:

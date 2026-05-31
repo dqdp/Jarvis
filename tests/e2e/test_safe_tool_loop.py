@@ -33,7 +33,7 @@ from assistant_core.tools.gateway import ToolGateway
 from assistant_core.tools.registry import ToolRegistry
 
 
-pytestmark = pytest.mark.e2e
+pytestmark = [pytest.mark.e2e, pytest.mark.db]
 
 
 def _database_url() -> str:

@@ -4,7 +4,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Protocol, TextIO
 
-from assistant_core.cli_app.config import ARROW_DOWN, ARROW_UP, DEFAULT_SENSITIVITY
+from assistant_core.cli_app.config import ARROW_DOWN, ARROW_UP, DEFAULT_SENSITIVITY, SLASH_COMMANDS
 from assistant_core.cli_app.renderers import write_slash_command_menu
 
 
@@ -149,16 +149,22 @@ def create_interactive_line_reader(
     stdin: TextIO,
     stdout: TextIO,
     sensitivity: str = DEFAULT_SENSITIVITY,
+    plain: bool = False,
+    status_provider: Callable[[], str] | None = None,
 ) -> InteractiveLineReader | TerminalInteractiveLineReader:
     should_add_history = lambda line: _should_add_interactive_history(
         line,
         sensitivity=sensitivity,
     )
-    if _is_tty(stdin, stdout):
-        return TerminalInteractiveLineReader(
+    if _is_tty(stdin, stdout) and not plain:
+        from assistant_core.cli_app.shell import PromptToolkitLineReader, SlashCommandRegistry
+
+        return PromptToolkitLineReader(
             stdin=stdin,
             stdout=stdout,
             should_add_history=should_add_history,
+            command_registry=SlashCommandRegistry.from_commands(SLASH_COMMANDS),
+            status_provider=status_provider,
         )
     return InteractiveLineReader(
         stdin=stdin,

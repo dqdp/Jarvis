@@ -53,10 +53,10 @@ test-db-down:
 	$(TEST_COMPOSE) down -v
 
 test-contract: test-db-up
-	DATABASE_URL=$(TEST_DATABASE_URL) $(PYTEST) -m contract tests/contract
+	JARVIS_RUN_DB_TESTS=1 DATABASE_URL=$(TEST_DATABASE_URL) $(PYTEST) --run-db -m contract tests/contract
 
 test-integration: test-db-up
-	DATABASE_URL=$(TEST_DATABASE_URL) $(PYTEST) -m integration tests/integration
+	JARVIS_RUN_DB_TESTS=1 DATABASE_URL=$(TEST_DATABASE_URL) $(PYTEST) --run-db -m integration tests/integration
 
 test-golden:
 	$(PYTEST) -m golden tests/golden
@@ -65,4 +65,4 @@ test-architecture:
 	$(PYTEST) -m architecture tests/architecture
 
 test-e2e: test-db-up
-	DATABASE_URL=$(TEST_DATABASE_URL) $(PYTEST) -m e2e tests/e2e
+	JARVIS_RUN_DB_TESTS=1 DATABASE_URL=$(TEST_DATABASE_URL) $(PYTEST) --run-db -m e2e tests/e2e

@@ -33,20 +33,21 @@ def write_slash_command_menu(stdout: TextIO, *, prefix: str) -> None:
         stdout.write(f"  {command.usage:<{longest}}  {command.description}\n")
 
 
-async def write_status(*, client: JarvisClient, stdout: TextIO) -> None:
+async def write_status(*, client: JarvisClient, stdout: TextIO) -> dict:
     payload = await client.health()
     stdout.write(f"status> {_display_text(payload.get('status'))}\n")
     readiness = payload.get("readiness")
     if not isinstance(readiness, dict):
-        return
+        return payload
     reasons = readiness.get("reasons")
     if not isinstance(reasons, dict):
-        return
+        return payload
     for component, reason in sorted(reasons.items()):
         stdout.write(f"reason> {_display_text(component)}: {_display_text(reason)}\n")
+    return payload
 
 
-async def write_model_status(*, client: JarvisClient, stdout: TextIO) -> None:
+async def write_model_status(*, client: JarvisClient, stdout: TextIO) -> dict:
     payload = await client.runtime_status()
     profile_name = _display_text(payload.get("default_model_profile"))
     profiles = payload.get("model_profiles", {})
@@ -61,6 +62,7 @@ async def write_model_status(*, client: JarvisClient, stdout: TextIO) -> None:
     if temperature is not None:
         stdout.write(f" temperature={temperature}")
     stdout.write("\n")
+    return payload
 
 
 async def write_content_ingest(*, client: JarvisClient, stdout: TextIO) -> None:

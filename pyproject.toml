@@ -13,6 +13,7 @@ dependencies = [
   "fastapi>=0.115",
   "greenlet>=3.0",
   "httpx>=0.27",
+  "prompt_toolkit>=3.0",
   "PyYAML>=6.0",
   "SQLAlchemy>=2.0",
   "uvicorn>=0.32",
@@ -34,5 +35,6 @@ markers = [
   "golden: deterministic golden-output tests",
   "architecture: import and boundary guardrail tests",
   "e2e: end-to-end user-turn lifecycle tests",
+  "db: tests requiring the local PostgreSQL test database",
   "evaluation: opt-in local model evaluation tests, skipped unless explicitly enabled",
 ]

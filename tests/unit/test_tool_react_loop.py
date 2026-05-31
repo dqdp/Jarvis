@@ -422,6 +422,78 @@ def test_tool_react_loop_streams_public_tool_lifecycle_events() -> None:
     assert "raw output must not stream" not in repr(tool_events[0].data)
 
 
+def test_tool_react_loop_streams_context_phase_events() -> None:
+    class RetrievalEventContextAssembler(FakeContextAssembler):
+        def __init__(self, event_log: FakeEventLog) -> None:
+            self._event_log = event_log
+
+        async def assemble(self, request):
+            now = datetime.now(UTC)
+            for event_type, payload in [
+                (EventType.MEMORY_RETRIEVED, {"retrieved_memory_ids": ["mem-1"]}),
+                (
+                    EventType.CONTENT_RETRIEVED,
+                    {
+                        "retrieved_content_refs": [
+                            {"chunk_id": "chunk-1", "content_hash": "hash-1"}
+                        ],
+                        "full_content_stored": False,
+                    },
+                ),
+            ]:
+                await self._event_log.append(
+                    EventEnvelope(
+                        event_id="",
+                        event_seq=0,
+                        event_type=event_type,
+                        event_version=1,
+                        occurred_at=now,
+                        recorded_at=now,
+                        conversation_id=request.conversation_id,
+                        request_id=request.request_id,
+                        correlation_id=request.request_id,
+                        causation_id=request.causation_event_id,
+                        parent_event_id=None,
+                        actor_type=ActorType.SYSTEM,
+                        actor_id=None,
+                        source_component="test",
+                        source_node=None,
+                        sensitivity=Sensitivity.PROJECT,
+                        visibility=EventVisibility.INTERNAL,
+                        idempotency_key=None,
+                        payload=payload,
+                        metadata={},
+                    )
+                )
+            return await super().assemble(request)
+
+    async def scenario():
+        event_log = FakeEventLog()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=RetrievalEventContextAssembler(event_log),
+            model_router=FakeStructuredRouter(
+                [{"action": "final_answer", "final_answer": "done"}],
+            ),
+            event_log=event_log,
+            tool_gateway=object(),
+        )
+        return [event async for event in loop.stream_turn(_request())]
+
+    events = asyncio.run(scenario())
+    event_types = [event.event_type for event in events]
+
+    assert events[0].event_type == EventType.REQUEST_PROCESSING_STARTED.value
+    assert EventType.CONTEXT_ASSEMBLY_STARTED.value in event_types
+    assert EventType.MEMORY_RETRIEVED.value in event_types
+    assert EventType.CONTENT_RETRIEVED.value in event_types
+    content_event = next(
+        event for event in events if event.event_type == EventType.CONTENT_RETRIEVED.value
+    )
+    assert content_event.data["hit_count"] == 1
+    assert "retrieved_content_refs" not in content_event.data
+
+
 class FakeConversationStore:
     async def update_assistant_request_status(self, command):
         return None

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from assistant_core.cli_app.chat_flow import (
     ChatShellState,
-    cancel_server_request,
     handle_approval_prompt,
     submit_and_stream_message,
 )
@@ -20,6 +19,7 @@ from assistant_core.cli_app.config import (
     DEFAULT_SENSITIVITY,
     LOOP_STRATEGY_CHOICES,
     REQUEST_TIMEOUT_SECONDS,
+    SLASH_COMMANDS,
     STREAM_CONNECT_TIMEOUT_SECONDS,
     STREAM_READ_TIMEOUT_SECONDS,
     SlashCommand,
@@ -47,7 +47,17 @@ from assistant_core.cli_app.renderers import (
     write_slash_command_menu,
     write_status,
 )
+from assistant_core.cli_app.shell import (
+    PromptToolkitLineReader,
+    ShellActivityState,
+    SlashCommandCompletion,
+    SlashCommandDefinition,
+    SlashCommandRegistry,
+    render_status_line,
+    write_activity_indicator,
+)
 from assistant_core.cli_app.sse import parse_sse_blocks
+from assistant_core.cli_app.stream_control import cancel_server_request
 from assistant_core.cli_app.utils import _display_text, _required_str
 
 
@@ -58,6 +68,7 @@ __all__ = [
     "DEFAULT_SENSITIVITY",
     "LOOP_STRATEGY_CHOICES",
     "REQUEST_TIMEOUT_SECONDS",
+    "SLASH_COMMANDS",
     "STREAM_CONNECT_TIMEOUT_SECONDS",
     "STREAM_READ_TIMEOUT_SECONDS",
     "ChatShellState",
@@ -65,8 +76,13 @@ __all__ = [
     "HttpJarvisClient",
     "InteractiveLineReader",
     "JarvisClient",
+    "PromptToolkitLineReader",
     "ReadlineModule",
+    "ShellActivityState",
     "SlashCommand",
+    "SlashCommandCompletion",
+    "SlashCommandDefinition",
+    "SlashCommandRegistry",
     "TerminalInteractiveLineReader",
     "_display_text",
     "_http_error_message",
@@ -82,8 +98,10 @@ __all__ = [
     "handle_approval_prompt",
     "main",
     "parse_sse_blocks",
+    "render_status_line",
     "run",
     "submit_and_stream_message",
+    "write_activity_indicator",
     "write_content_ingest",
     "write_content_reindex",
     "write_content_sources",

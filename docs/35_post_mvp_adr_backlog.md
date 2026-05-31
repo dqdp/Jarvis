@@ -355,7 +355,8 @@ Testing:
   PM-08c CLI mode controls, PM-08d CLI tool/RAG/approval readiness and PM-08e
   model-backed intent classifier adapter, followed by PM-08f typed
   tool-observation/direct-answer hardening, PM-08g direct planner/registry
-  cleanup and PM-08h corpus hardening before voice.
+  cleanup, PM-08h corpus hardening and PM-08i interactive CLI shell hardening
+  before voice.
 
 ### Resolved by ADR-031/PM-04 — Bounded tool loop strategy
 
@@ -385,9 +386,10 @@ Needed before voice implementation.
 Current priority:
 
 ```text
-write/promote this ADR after PM-08d CLI tool/RAG/approval readiness, PM-08f
-typed tool-observation hardening, PM-08g direct planner/registry cleanup and
-PM-08h corpus hardening, before PM-09 voice gateway foundation
+write/promote this ADR after PM-08d CLI tool/RAG/approval readiness, PM-08e
+model-backed classifier adapter, PM-08f typed tool-observation hardening,
+PM-08g direct planner/registry cleanup, PM-08h corpus hardening and PM-08i
+interactive CLI shell hardening, before PM-09 voice gateway foundation
 implementation.
 ```
 
@@ -436,7 +438,7 @@ Testing:
 
 ## 4. Medium-priority ADRs
 
-### ADR-036 — Graph runtime adapter and LangGraph adoption gate
+### ADR-046 — Graph runtime adapter and LangGraph adoption gate
 
 Needed before:
 
@@ -611,8 +613,9 @@ ADR-032 Approval extensions/control channel (deferred after PM-05 baseline)
 ADR-033 Shell sandbox (accepted)
 ADR-034 Content Retrieval / Project Docs RAG (accepted)
 ADR-035 Automatic loop strategy selection (accepted)
+ADR-036 Interactive CLI shell architecture (accepted)
 ADR-042 Voice gateway
-ADR-036 Graph runtime adapter and LangGraph adoption gate
+ADR-046 Graph runtime adapter and LangGraph adoption gate
 ADR-037 Planner-executor
 ADR-038 Scheduler
 ADR-039 Sleep/reflection
@@ -630,10 +633,12 @@ Rationale:
 - loop-strategy architecture must precede ReAct/planner loops;
 - shell needs approval before write capability;
 - RAG can proceed after context V2, but must remain separate from memory;
-- voice should wait until PM-08d auto-routing/CLI readiness, PM-08f typed tool
-  observations, PM-08g direct planner/registry cleanup and PM-08h corpus
-  hardening so spoken turns can use the same chat/RAG/tool/approval/cancel path
-  as typed turns without inheriting fragile stdout parsing or unstable routing;
+- voice should wait until PM-08d auto-routing/CLI readiness, PM-08e
+  model-backed classifier behavior, PM-08f typed tool observations, PM-08g
+  direct planner/registry cleanup, PM-08h corpus hardening and PM-08i
+  interactive CLI shell hardening so spoken turns can use the same
+  chat/RAG/tool/approval/cancel path as typed turns without inheriting fragile
+  stdout parsing, unstable routing or an under-tested text shell;
 - before PM-09 starts, PM-08h should include spoken-transcript-like corpus cases
   and one recorded non-CI local classifier evaluation against the selected local
   model, while CI remains fake/deterministic and network-free;

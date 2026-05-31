@@ -356,6 +356,7 @@ PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
 PM-08g Direct planner and capability routing registry cleanup
 PM-08h Tool-intent corpus hardening and pre-voice routing gate
+PM-08i Interactive CLI shell UX hardening
 ```
 
 PM-08a:
@@ -465,6 +466,21 @@ PM-08h:
   model is unavailable, record that state explicitly as not voice-ready rather
   than treating a sandbox placeholder as PM-09 evidence.
 
+PM-08i:
+
+- add Codex-like inline terminal UX before voice starts;
+- use `prompt_toolkit` for TTY prompts, completion menus, status toolbar,
+  in-memory history and key bindings;
+- keep non-TTY and `--plain` behavior deterministic and line-oriented;
+- show user-facing mode, readiness, conversation, request phase, model summary
+  and redacted cwd scope in a live status line;
+- show request activity as real lifecycle phases rather than fake percentages;
+- make slash command discovery dynamic while typing `/...`, including filtered
+  descriptions and argument hints;
+- keep chat, tool, approval, cancellation and error rendering readable and not
+  raw JSON-first;
+- keep routing and policy decisions on the backend, not in CLI code.
+
 Acceptance:
 
 - a plain CLI chat request can automatically use RAG or safe tools when needed;
@@ -479,6 +495,9 @@ Acceptance:
   inside `tool_react_loop`;
 - new diagnostics commands add adapter/normalizer tests instead of bespoke loop
   branches.
+- the interactive CLI has a status line, live activity phases, dynamic slash
+  command palette, in-session history, stable cancel/interrupt behavior and
+  deterministic `--plain`/non-TTY fallback before PM-09 starts.
 
 ### Phase J — Voice gateway foundation
 
@@ -487,9 +506,10 @@ Goal:
 ```text
 Add push-to-talk voice interaction on top of the existing runtime after PM-08d
 proves the text CLI/API surface can use auto-selected chat, RAG, tools,
-approvals and cancellation, PM-08f hardens direct tool answers around typed
-observations, and PM-08g/PM-08h stabilize direct planning and corpus-gated
-routing quality.
+approvals and cancellation, PM-08e proves model-backed classifier behavior,
+PM-08f hardens direct tool answers around typed observations, PM-08g/PM-08h
+stabilize direct planning and corpus-gated routing quality, and PM-08i hardens
+the interactive CLI shell as the pre-voice dogfood surface.
 ```
 
 Work:
@@ -501,7 +521,7 @@ Work:
   gateway can later use local engines, local libraries or external API adapters;
 - add fake STT/TTS adapters for CI;
 - submit transcripts through the same API/runtime path as typed input;
-- use PM-08 `auto` loop selection for spoken turns after PM-08d readiness;
+- use PM-08 `auto` loop selection for spoken turns after PM-08i readiness;
 - stream assistant text through existing runtime events before TTS output;
 - disable raw audio storage by default;
 - keep external speech API and cloud realtime providers disabled until explicit
@@ -699,6 +719,7 @@ PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
 PM-08g Direct planner and capability routing registry cleanup
 PM-08h Tool-intent corpus hardening and pre-voice routing gate
+PM-08i Interactive CLI shell UX hardening
 Voice gateway foundation
 ```
 

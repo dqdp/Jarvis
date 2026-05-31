@@ -32,7 +32,7 @@ from assistant_core.tools.registry import ToolRegistry
 from assistant_core.tools.shell_read import ProjectShellReadTool, ShellExecutionResult
 
 
-pytestmark = pytest.mark.e2e
+pytestmark = [pytest.mark.e2e, pytest.mark.db]
 
 
 class FakeShellExecutor:

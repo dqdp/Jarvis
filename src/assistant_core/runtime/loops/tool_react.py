@@ -152,6 +152,12 @@ class ToolReactLoop:
                 causation_id=loop_started.event_id,
             )
             try:
+                context_started = await self._append_event(
+                    EventType.CONTEXT_ASSEMBLY_STARTED,
+                    request,
+                    payload={"step_id": step_id, "step_index": step_index},
+                    causation_id=step_started.event_id,
+                )
                 context = await asyncio.wait_for(
                     self._context_assembler.assemble(
                         ContextAssemblyRequest(
@@ -164,7 +170,7 @@ class ToolReactLoop:
                             model_profile=request.model_profile,
                             current_message_sensitivity=request.current_message_sensitivity,
                             current_user_message_id=request.user_message_id,
-                            causation_event_id=step_started.event_id,
+                            causation_event_id=context_started.event_id,
                             permission_mode=request.permission_mode,
                             tool_observation_refs=tuple(tool_observation_refs),
                         ),
@@ -326,6 +332,12 @@ class ToolReactLoop:
                 if observation_ref.status != ToolObservationStatus.COMPLETED:
                     raise RuntimeError(f"tool_observation_{observation_ref.status.value}")
             if _has_unparsed_direct_observation(tool_observation_refs):
+                context_started = await self._append_event(
+                    EventType.CONTEXT_ASSEMBLY_STARTED,
+                    request,
+                    payload={"step_id": step_id, "step_index": 1},
+                    causation_id=step_started.event_id,
+                )
                 context = await asyncio.wait_for(
                     self._context_assembler.assemble(
                         ContextAssemblyRequest(
@@ -338,7 +350,7 @@ class ToolReactLoop:
                             model_profile=request.model_profile,
                             current_message_sensitivity=request.current_message_sensitivity,
                             current_user_message_id=request.user_message_id,
-                            causation_event_id=step_started.event_id,
+                            causation_event_id=context_started.event_id,
                             permission_mode=request.permission_mode,
                             tool_observation_refs=tool_observation_refs,
                         ),
@@ -1012,6 +1024,12 @@ def _select_cpu_reading(readings: list[Any]) -> dict[str, Any] | None:
 
 
 _USER_STREAM_EVENT_TYPES = {
+    EventType.REQUEST_PROCESSING_STARTED,
+    EventType.CONTEXT_ASSEMBLY_STARTED,
+    EventType.MEMORY_RETRIEVED,
+    EventType.MEMORY_RETRIEVAL_FAILED,
+    EventType.CONTENT_RETRIEVED,
+    EventType.CONTEXT_ASSEMBLED,
     EventType.APPROVAL_REQUIRED,
     EventType.APPROVAL_GRANTED,
     EventType.APPROVAL_DENIED,

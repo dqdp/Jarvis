@@ -33,6 +33,7 @@ PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
 PM-08g Direct planner and capability routing registry cleanup
 PM-08h Tool-intent corpus hardening and pre-voice routing gate
+PM-08i Interactive CLI shell UX hardening
 PM-09 Voice gateway foundation
 ```
 
@@ -2347,7 +2348,7 @@ Examples:
 
 ### Delivery breakdown
 
-PM-08 is delivered as eight ordered sub-slices:
+PM-08 is delivered as nine ordered sub-slices:
 
 ```text
 PM-08a Loop selection domain and selector contract
@@ -2358,13 +2359,16 @@ PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
 PM-08g Direct planner and capability routing registry cleanup
 PM-08h Tool-intent corpus hardening and pre-voice routing gate
+PM-08i Interactive CLI shell UX hardening
 ```
 
-Do not start PM-09 voice implementation until PM-08d, PM-08f, PM-08g and PM-08h
-are complete. Voice depends on the same user-turn surface being usable from text
-first, on direct answers not inheriting fragile stdout parsing, on registry-backed
-direct planning and on a corpus-gated routing baseline that covers typed and
-spoken-transcript-like requests.
+Do not start PM-09 voice implementation until PM-08d, PM-08e, PM-08f, PM-08g,
+PM-08h and PM-08i are complete. Voice depends on the same user-turn surface
+being usable from text first, on local model-backed classification, on direct
+answers not inheriting fragile stdout parsing, on registry-backed direct
+planning, on a corpus-gated routing baseline that covers typed and
+spoken-transcript-like requests, and on a Codex-like interactive CLI shell that
+is usable enough to dogfood before voice.
 
 ### PM-08a — Loop selection domain and selector contract
 
@@ -3490,6 +3494,118 @@ large benchmark harness
 voice audio test data
 ```
 
+### PM-08i — Interactive CLI shell UX hardening
+
+Goal:
+
+```text
+Make the text CLI a Codex-like interactive dogfood shell before voice starts.
+```
+
+Inputs:
+
+```text
+docs/adr/ADR-036_interactive_cli_shell_architecture.md
+docs/10_api_and_streaming.md
+docs/22_api_shape_and_request_lifecycle.md
+docs/26_testing_strategy.md
+docs/37_post_mvp_tdd_slices_plan.md
+```
+
+Tests first:
+
+```text
+test_slash_command_registry_filters_by_partial_prefix
+test_slash_command_completion_includes_descriptions_and_argument_hints
+test_prompt_toolkit_reader_is_selected_for_tty
+test_plain_flag_forces_line_reader_without_prompt_toolkit
+test_status_line_renders_mode_readiness_conversation_phase_model_and_cwd_scope
+test_status_line_redacts_secret_like_paths_and_truncates_long_values
+test_shell_activity_transitions_follow_public_stream_events
+test_shell_activity_never_renders_fake_percentages
+test_cli_ctrl_c_clears_prompt_or_cancels_active_request
+test_cli_cancel_active_request_keeps_interactive_session_usable
+test_interactive_history_does_not_store_secret_or_memory_add_lines
+test_non_tty_interactive_flow_remains_deterministic
+```
+
+Architecture tests:
+
+```text
+test_cli_does_not_import_loop_selector_or_runtime_tool_adapters
+test_cli_does_not_import_storage_or_model_provider_clients
+test_prompt_toolkit_imports_are_confined_to_cli_shell_modules
+```
+
+Expected red phase:
+
+```text
+SlashCommandRegistry does not exist
+PromptToolkitLineReader does not exist
+ShellActivityState does not exist
+--plain is not accepted
+TTY reader selection still uses the raw manual ANSI reader
+status-line rendering does not exist
+```
+
+Implementation:
+
+```text
+dependencies:
+  prompt_toolkit>=3.0
+
+cli:
+  add SlashCommandRegistry and SlashCommandDefinition
+  add PromptToolkitLineReader for TTY mode
+  keep InteractiveLineReader for non-TTY and --plain mode
+  add ShellActivityState and status-line renderer helpers
+  add global --plain flag
+  route stream events into activity phases while preserving existing transcript
+    rendering
+  keep slash command execution in the current chat flow
+```
+
+User-facing behavior:
+
+```text
+TTY mode:
+  prompt_toolkit prompt
+  dynamic slash command menu while typing /...
+  bottom toolbar with mode, readiness, conversation, request phase, model and
+    redacted cwd scope
+  in-memory history only
+
+non-TTY or --plain:
+  deterministic line-oriented input
+  no animation or terminal-control assumptions
+```
+
+Acceptance:
+
+```text
+TTY mode uses prompt_toolkit-backed input and completion;
+non-TTY and --plain keep deterministic line-oriented behavior;
+status line shows only public/redacted shell state;
+activity indicator is phase-based and never percentage-based;
+slash command discovery filters dynamically and exposes descriptions/hints;
+Ctrl-C, Ctrl-D, /cancel and approval prompts leave the session usable;
+history remains in-memory and filters secret/memory-add input;
+CLI stays client-only and does not import backend routing/tool/storage/provider
+implementation modules.
+```
+
+Out of scope:
+
+```text
+Textual or full-screen TUI
+alternate-screen layout
+session dashboard panes
+persistent command history
+backend API changes
+new tools or voice behavior
+Rich dependency
+```
+
 ### Intent resolution pipeline
 
 Initial pipeline:
@@ -3850,6 +3966,10 @@ PM-08d red phase failed for missing CLI tool/RAG/approval readiness behavior;
 PM-08e red phase failed for missing model-backed classifier behavior;
 PM-08f red phase failed for missing typed tool-observation/direct-answer
   behavior;
+PM-08g red phase failed for missing registry-backed direct planning behavior;
+PM-08h red phase failed for missing pre-voice corpus gate behavior;
+PM-08i red phase failed for missing prompt_toolkit shell/status/completion
+  behavior;
 missing loop_strategy means auto, not direct memory loop;
 ordinary chat still uses memory_augmented_answer;
 project-docs questions use RAG without tool_react_loop;
@@ -3862,6 +3982,8 @@ interactive CLI has /mode auto|chat|tools;
 interactive CLI can drive approval-required tool flows;
 interactive CLI can cancel active requests and remain usable;
 CLI renders tool proposals/results in user-facing language, not raw JSON-first;
+interactive CLI has a Codex-like status line, phase-based activity indicator,
+dynamic slash command palette and deterministic --plain/non-TTY fallback;
 loop-selection events are redacted;
 architecture guardrails pass;
 no real LLM, real shell or host diagnostics calls are required for CI.
@@ -3887,10 +4009,12 @@ RAG as a tool-loop requirement
 ### Goal
 
 Add the first voice assistant path after PM-08d proves the text CLI/API surface
-can use auto-selected chat, RAG, tools, approvals and cancellation, after PM-08f
-hardens direct tool answers around typed observations rather than loop-level
-stdout parsing, and after PM-08g/PM-08h make routing metadata and corpus quality
-stable enough for spoken turns.
+can use auto-selected chat, RAG, tools, approvals and cancellation, after PM-08e
+proves model-backed classifier behavior, after PM-08f hardens direct tool
+answers around typed observations rather than loop-level stdout parsing, after
+PM-08g/PM-08h make routing metadata and corpus quality stable enough for spoken
+turns, and after PM-08i makes the interactive CLI shell usable enough to dogfood
+the same surface before voice.
 
 Voice is a client/channel over the existing runtime, not a separate agent
 runtime. A spoken turn must become the same kind of user turn that CLI/API uses:
@@ -3950,12 +4074,13 @@ PM-08e complete
 PM-08f complete
 PM-08g complete
 PM-08h complete
+PM-08i complete
 ```
 
 In practice this means the text CLI already has a working normal chat surface
 for automatic chat/RAG/tools routing, approval control, cancellation, typed
-direct answers, registry-backed direct planning and corpus-gated routing before
-voice is layered on top.
+direct answers, registry-backed direct planning, corpus-gated routing and
+Codex-like interactive shell UX before voice is layered on top.
 
 Voice must use PM-08 default routing:
 

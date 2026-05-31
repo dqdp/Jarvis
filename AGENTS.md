@@ -164,6 +164,53 @@ e2e smoke test before declaring runtime/API slices complete
 
 Do not rely on manual testing or real LLM behavior as proof of correctness.
 
+## Review agent workflow
+
+Review agents are for independent code and architecture review, not for
+duplicating the verification run.
+
+Start review agents only after the relevant tests and verification for the
+slice have already passed. The review-agent prompt must explicitly say:
+
+```text
+Tests are already green.
+Do not run tests.
+Do not edit files.
+Perform read-only review only.
+Focus on correctness, architecture, contracts, regressions, security/privacy,
+operability and missing coverage.
+Report findings with severity P0/P1/P2/P3 and concrete file/line references.
+```
+
+If a review agent believes an additional test is required, it should report the
+gap and the exact recommended test command or case. It must not run the test
+unless the user explicitly asks for a verification agent rather than a review
+agent.
+
+Relevant P0/P1 findings block the slice. P2/P3 findings may be fixed in the
+current slice or recorded as follow-up work, depending on scope and risk.
+
+## Milestone workflow
+
+For long-running goals split into sequential milestones or implementation
+slices, use this gate after every stage:
+
+```text
+1. Complete the stage using the normal TDD workflow.
+2. Run the required tests and verification for that stage.
+3. Fix test or verification failures until the stage is green.
+4. Start two independent review agents from scratch with the review-agent
+   prompt above.
+5. If there are relevant P0/P1 findings, fix them and repeat verification plus
+   review for the affected stage.
+6. If there are no relevant P0/P1 findings, commit the completed stage.
+7. Move to the next stage only after the commit.
+```
+
+Do not rerun review agents just because they found P2/P3 issues. Rerun review
+agents only after fixing relevant P0/P1 findings or when the user explicitly
+asks for another review pass.
+
 ## Architecture guardrails
 
 AgentRuntime may depend on:

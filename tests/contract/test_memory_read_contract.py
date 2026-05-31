@@ -28,7 +28,7 @@ from assistant_core.storage.memory_store import PostgresMemoryStore
 from assistant_core.storage.migrations import run_migrations
 
 
-pytestmark = pytest.mark.contract
+pytestmark = [pytest.mark.contract, pytest.mark.db]
 
 
 def _database_url() -> str:

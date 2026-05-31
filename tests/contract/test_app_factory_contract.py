@@ -25,7 +25,7 @@ from assistant_core.storage.database import assert_test_database_url, create_dat
 from assistant_core.storage.migrations import run_migrations
 
 
-pytestmark = pytest.mark.contract
+pytestmark = [pytest.mark.contract, pytest.mark.db]
 
 
 def _database_url() -> str:

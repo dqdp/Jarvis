@@ -15,7 +15,7 @@ from assistant_core.storage.event_log import PostgresEventLog
 from assistant_core.storage.migrations import run_migrations
 
 
-pytestmark = pytest.mark.contract
+pytestmark = [pytest.mark.contract, pytest.mark.db]
 
 
 def _database_url() -> str:

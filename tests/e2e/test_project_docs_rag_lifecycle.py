@@ -37,7 +37,7 @@ from assistant_core.storage.migrations import run_migrations
 from assistant_core.storage.model_invocations import PostgresModelInvocationRepository
 
 
-pytestmark = pytest.mark.e2e
+pytestmark = [pytest.mark.e2e, pytest.mark.db]
 
 
 def _database_url() -> str:

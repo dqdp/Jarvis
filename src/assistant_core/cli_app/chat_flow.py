@@ -21,6 +21,18 @@ from assistant_core.cli_app.renderers import (
     write_status,
     write_tool_stream_event,
 )
+from assistant_core.cli_app.shell import (
+    ShellActivityState,
+    display_loop_mode,
+    model_status_summary,
+    render_status_line,
+    write_activity_indicator,
+)
+from assistant_core.cli_app.stream_control import (
+    CLI_CANCEL_EVENT,
+    cancel_server_request,
+    stream_with_optional_cancel_command,
+)
 from assistant_core.cli_app.utils import _display_text, _required_str
 
 
@@ -43,13 +55,43 @@ async def run_interactive_chat(
     title: str | None,
     loop_strategy: str | None = None,
     working_directory: str | None = None,
+    plain: bool = False,
 ) -> int:
     state = ChatShellState(conversation_id=None, next_title=title, loop_strategy=loop_strategy)
     request_working_directory = working_directory or str(Path.cwd())
+    activity_state = ShellActivityState.idle()
+    readiness_summary = "unknown"
+    model_summary: str | None = None
+
+    def status_provider() -> str:
+        return render_status_line(
+            mode=display_loop_mode(state.loop_strategy),
+            readiness=readiness_summary,
+            conversation_id=state.conversation_id,
+            phase=activity_state.phase,
+            model=model_summary,
+            cwd=request_working_directory,
+        )
+
+    def mark_request_started(request_id: str) -> None:
+        nonlocal activity_state
+        state.last_request_id = request_id
+        activity_state = activity_state.mark_submitting(request_id)
+        write_activity_indicator(stdout, activity_state, enabled=False if plain else None)
+
+    def mark_stream_event(event_type: str, data: dict[str, Any]) -> None:
+        nonlocal activity_state
+        previous_phase = activity_state.phase
+        activity_state = activity_state.apply_stream_event(event_type, data)
+        if activity_state.phase != previous_phase:
+            write_activity_indicator(stdout, activity_state, enabled=False if plain else None)
+
     line_reader = create_interactive_line_reader(
         stdin=stdin,
         stdout=stdout,
         sensitivity=sensitivity,
+        plain=plain,
+        status_provider=status_provider,
     )
 
     stdout.write("Jarvis CLI\n")
@@ -74,22 +116,24 @@ async def run_interactive_chat(
                 write_interactive_help(stdout)
                 continue
             if line == "/status":
-                stdout.write(f"mode> {_display_loop_mode(state.loop_strategy)}\n")
-                await write_status(client=client, stdout=stdout)
+                stdout.write(f"mode> {display_loop_mode(state.loop_strategy)}\n")
+                payload = await write_status(client=client, stdout=stdout)
+                readiness_summary = _display_text(payload.get("status") or "unknown")
                 continue
             if line == "/mode" or line.startswith("/mode "):
                 requested_mode = line.removeprefix("/mode").strip()
                 if not requested_mode:
-                    stdout.write(f"mode> {_display_loop_mode(state.loop_strategy)}\n")
+                    stdout.write(f"mode> {display_loop_mode(state.loop_strategy)}\n")
                     continue
                 if requested_mode not in LOOP_STRATEGY_CHOICES:
                     stdout.write("usage> /mode auto|chat|tools\n")
                     continue
                 state.loop_strategy = None if requested_mode == "auto" else requested_mode
-                stdout.write(f"mode> {_display_loop_mode(state.loop_strategy)}\n")
+                stdout.write(f"mode> {display_loop_mode(state.loop_strategy)}\n")
                 continue
             if line == "/model":
-                await write_model_status(client=client, stdout=stdout)
+                payload = await write_model_status(client=client, stdout=stdout)
+                model_summary = model_status_summary(payload)
                 continue
             if line == "/sessions":
                 await write_conversation_list(client=client, stdout=stdout)
@@ -187,7 +231,9 @@ async def run_interactive_chat(
                 client_message_id=None,
                 assistant_prefix="assistant> ",
                 stdin=stdin,
-                on_request_started=lambda request_id: setattr(state, "last_request_id", request_id),
+                on_request_started=mark_request_started,
+                on_stream_event=mark_stream_event,
+                allow_tty_cancel_command=not plain,
             )
             state.last_request_id = None
             if exit_code != 0:
@@ -210,6 +256,8 @@ async def submit_and_stream_message(
     assistant_prefix: str | None,
     stdin: TextIO = sys.stdin,
     on_request_started: Callable[[str], None] | None = None,
+    on_stream_event: Callable[[str, dict[str, Any]], None] | None = None,
+    allow_tty_cancel_command: bool = False,
 ) -> int:
     submitted = await client.submit_message(
         conversation_id=conversation_id,
@@ -226,7 +274,18 @@ async def submit_and_stream_message(
         stdout.write(assistant_prefix)
         stdout.flush()
     try:
-        async for event_type, data in client.stream_request(request_id):
+        async for event_type, data in stream_with_optional_cancel_command(
+            client=client,
+            request_id=request_id,
+            stdin=stdin,
+            enabled=allow_tty_cancel_command,
+        ):
+            if event_type == CLI_CANCEL_EVENT:
+                stdout.write("\n")
+                await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
+                return 130
+            if on_stream_event is not None:
+                on_stream_event(event_type, data)
             if event_type == "token":
                 stdout.write(data.get("delta", ""))
                 stdout.flush()
@@ -352,25 +411,3 @@ async def _cancel_request_from_approval_prompt(
         return
     await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
     stdout.write("approval> cancelled\n")
-
-
-def _display_loop_mode(loop_strategy: str | None) -> str:
-    return loop_strategy or "auto"
-
-
-async def cancel_server_request(
-    *,
-    client: JarvisClient,
-    request_id: str,
-    stdout: TextIO,
-) -> None:
-    try:
-        payload = await client.cancel_request(request_id)
-    except CliUserError as exc:
-        stdout.write(f"cancelled> local client interrupted; server cancel failed: {exc}\n")
-        return
-    status = payload.get("status")
-    if status == "cancelled":
-        stdout.write(f"cancelled> request {request_id}\n")
-        return
-    stdout.write(f"request> {request_id} {status or 'unchanged'}\n")

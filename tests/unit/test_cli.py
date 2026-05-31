@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from io import StringIO
+import os
 from pathlib import Path
+import sys
+import threading
+import types
 from typing import Any
 
 import httpx
@@ -10,6 +14,7 @@ import pytest
 
 from assistant_core import cli
 from assistant_core.cli_app import client as cli_client_module
+from assistant_core.cli_app import stream_control
 
 
 pytestmark = pytest.mark.unit
@@ -206,6 +211,36 @@ class ServerCancelledStreamCliClient(FakeCliClient):
         }
 
 
+class SlowStreamCliClient(FakeCliClient):
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        await asyncio.sleep(1.0)
+        yield "token", {"delta": "late"}
+
+
+class DelayedTokenStreamCliClient(FakeCliClient):
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        await asyncio.sleep(0.2)
+        yield "token", {"delta": "late"}
+        yield "request.processing.completed", {"assistant_message_id": "message-1"}
+
+
+class CleanupTrackingStreamCliClient(FakeCliClient):
+    def __init__(self, base_url: str) -> None:
+        super().__init__(base_url)
+        self.cleaned = False
+
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        try:
+            await asyncio.sleep(1.0)
+            yield "token", {"delta": "late"}
+        finally:
+            await asyncio.sleep(0)
+            self.cleaned = True
+
+
 class ToolEventStreamCliClient(FakeCliClient):
     async def stream_request(self, request_id: str):
         self.calls.append(("stream_request", request_id))
@@ -290,6 +325,33 @@ class ApprovalPromptCliClient(FakeCliClient):
         if self.deny_error is not None:
             raise self.deny_error
         return {"approval_id": approval_id, "status": "denied"}
+
+
+class ApprovalOnlyStreamCliClient(ApprovalPromptCliClient):
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        yield "approval.required", {
+            "approval_id": "approval-1",
+            "capability": "tool.safe",
+            "redacted_summary": "fake.echo(message)",
+            "status": self.approval_status,
+        }
+        yield "token", {"delta": "approved path"}
+        yield "request.processing.completed", {"assistant_message_id": "message-1"}
+
+
+class DelayedApprovalOnlyStreamCliClient(ApprovalOnlyStreamCliClient):
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        await asyncio.sleep(0.1)
+        yield "approval.required", {
+            "approval_id": "approval-1",
+            "capability": "tool.safe",
+            "redacted_summary": "fake.echo(message)",
+            "status": self.approval_status,
+        }
+        yield "token", {"delta": "approved path"}
+        yield "request.processing.completed", {"assistant_message_id": "message-1"}
 
 
 class InterruptingInput:
@@ -377,6 +439,410 @@ def test_slash_command_menu_filters_by_prefix() -> None:
     assert "/memory add" in output
     assert "/memory list" in output
     assert "/new" not in output
+
+
+def test_slash_command_registry_filters_by_partial_prefix() -> None:
+    registry = cli.SlashCommandRegistry.from_commands(cli.SLASH_COMMANDS)
+
+    matches = registry.matches("/memory s")
+    usages = [command.usage for command in matches]
+
+    assert "/memory search TEXT" in usages
+    assert "/memory add TEXT" not in usages
+    assert all(command.description for command in matches)
+
+
+def test_slash_command_completion_includes_descriptions_and_argument_hints() -> None:
+    registry = cli.SlashCommandRegistry.from_commands(cli.SLASH_COMMANDS)
+
+    completion = registry.best_completion("/memory se")
+
+    assert completion is not None
+    assert completion.text == "/memory search "
+    assert completion.display == "/memory search TEXT"
+    assert completion.description == "Search manual memories."
+    assert completion.argument_hint == "TEXT"
+
+
+class TtyStringIO(StringIO):
+    def isatty(self) -> bool:
+        return True
+
+    def fileno(self) -> int:
+        raise OSError("test stream has no fd")
+
+
+class PipeTtyInput:
+    def __init__(self, fd: int) -> None:
+        self._file = os.fdopen(fd, "r", encoding="utf-8")
+
+    def isatty(self) -> bool:
+        return True
+
+    def fileno(self) -> int:
+        return self._file.fileno()
+
+    def readline(self) -> str:
+        return self._file.readline()
+
+    def close(self) -> None:
+        self._file.close()
+
+
+def test_prompt_toolkit_reader_is_selected_for_tty() -> None:
+    reader = cli.create_interactive_line_reader(
+        stdin=TtyStringIO(),
+        stdout=TtyStringIO(),
+    )
+
+    assert isinstance(reader, cli.PromptToolkitLineReader)
+
+
+def test_prompt_toolkit_reader_binds_injected_stdio(monkeypatch) -> None:
+    created_kwargs: dict[str, Any] = {}
+    stdin = TtyStringIO()
+    stdout = TtyStringIO()
+
+    class FakePromptSession:
+        def __init__(self, **kwargs):
+            created_kwargs.update(kwargs)
+
+    class FakeCompleter:
+        pass
+
+    class FakeCompletion:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class FakeHistory:
+        pass
+
+    prompt_toolkit_module = types.ModuleType("prompt_toolkit")
+    prompt_toolkit_module.PromptSession = FakePromptSession
+    completion_module = types.ModuleType("prompt_toolkit.completion")
+    completion_module.Completer = FakeCompleter
+    completion_module.Completion = FakeCompletion
+    history_module = types.ModuleType("prompt_toolkit.history")
+    history_module.History = FakeHistory
+    input_module = types.ModuleType("prompt_toolkit.input")
+    input_defaults_module = types.ModuleType("prompt_toolkit.input.defaults")
+    output_module = types.ModuleType("prompt_toolkit.output")
+    output_defaults_module = types.ModuleType("prompt_toolkit.output.defaults")
+    input_defaults_module.create_input = lambda *, stdin=None: ("input", stdin)
+    output_defaults_module.create_output = lambda *, stdout=None: ("output", stdout)
+
+    monkeypatch.setitem(sys.modules, "prompt_toolkit", prompt_toolkit_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.completion", completion_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.history", history_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.input", input_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.input.defaults", input_defaults_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.output", output_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.output.defaults", output_defaults_module)
+
+    reader = cli.PromptToolkitLineReader(
+        stdin=stdin,
+        stdout=stdout,
+        command_registry=cli.SlashCommandRegistry.from_commands(cli.SLASH_COMMANDS),
+    )
+    reader._ensure_session()
+
+    assert created_kwargs["input"] == ("input", stdin)
+    assert created_kwargs["output"] == ("output", stdout)
+
+
+def test_plain_flag_forces_line_reader_without_prompt_toolkit() -> None:
+    args = cli._parser().parse_args(["--plain", "chat"])
+
+    assert args.plain is True
+
+    reader = cli.create_interactive_line_reader(
+        stdin=TtyStringIO("hello\n"),
+        stdout=TtyStringIO(),
+        plain=True,
+    )
+
+    assert isinstance(reader, cli.InteractiveLineReader)
+    assert not isinstance(reader, cli.PromptToolkitLineReader)
+
+
+def test_chat_subcommand_accepts_plain_after_subcommand() -> None:
+    args = cli._parser().parse_args(["chat", "--plain"])
+
+    assert args.plain is True
+
+
+def test_status_line_renders_mode_readiness_conversation_phase_model_and_cwd_scope() -> None:
+    line = cli.render_status_line(
+        mode="auto",
+        readiness="ready",
+        conversation_id="conversation-1234567890",
+        phase="tool running",
+        model="local_main/qwen3.5:9b",
+        cwd="/Users/alex/Jarvis",
+        width=120,
+    )
+
+    assert "mode=auto" in line
+    assert "ready" in line
+    assert "conversation-1234567890" in line
+    assert "tool running" in line
+    assert "local_main/qwen3.5:9b" in line
+    assert "Jarvis" in line
+    assert len(line) <= 120
+
+
+def test_status_line_redacts_secret_like_paths_and_truncates_long_values() -> None:
+    line = cli.render_status_line(
+        mode="tools",
+        readiness="ready",
+        conversation_id="conversation-" + ("x" * 80),
+        phase="streaming",
+        model="local_main",
+        cwd="/Users/alex/Jarvis/sk-live-secret-token/project",
+        width=88,
+    )
+
+    assert "sk-live-secret-token" not in line
+    assert "project" in line
+    assert len(line) <= 88
+
+
+def test_shell_activity_transitions_follow_public_stream_events() -> None:
+    activity = cli.ShellActivityState.idle().mark_submitting("request-1")
+
+    assert activity.phase == "submitting"
+    assert activity.request_id == "request-1"
+
+    activity = activity.apply_stream_event("request.loop_selection.started", {})
+    assert activity.phase == "selecting"
+    activity = activity.apply_stream_event("context.assembly.started", {})
+    assert activity.phase == "assembling context"
+    activity = activity.apply_stream_event("memory.retrieved", {})
+    assert activity.phase == "retrieving context"
+    activity = activity.apply_stream_event("content.retrieved", {})
+    assert activity.phase == "retrieving context"
+    activity = activity.apply_stream_event("tool.shell.started", {"tool_name": "tool.shell.read.project"})
+    assert activity.phase == "tool running"
+    activity = activity.apply_stream_event("approval.required", {"approval_id": "approval-1"})
+    assert activity.phase == "waiting approval"
+    activity = activity.apply_stream_event("token", {"delta": "O"})
+    assert activity.phase == "streaming"
+    activity = activity.apply_stream_event("request.processing.completed", {})
+    assert activity.phase == "done"
+
+
+def test_shell_activity_never_renders_fake_percentages() -> None:
+    activity = cli.ShellActivityState.idle().mark_submitting("request-1")
+
+    for event_type in [
+        "request.loop_selection.started",
+        "context.assembly.started",
+        "tool.shell.started",
+        "token",
+    ]:
+        activity = activity.apply_stream_event(event_type, {})
+        indicator = activity.render_indicator()
+        assert "%" not in indicator
+        assert "100" not in indicator
+
+
+def test_tty_activity_writer_outputs_phase_without_percentages() -> None:
+    stdout = TtyStringIO()
+    activity = cli.ShellActivityState.idle().mark_submitting("request-1")
+
+    cli.write_activity_indicator(stdout, activity, enabled=True)
+
+    output = stdout.getvalue()
+    assert "activity=submitting" in output
+    assert "%" not in output
+    assert "100" not in output
+
+
+def test_status_and_model_renderers_return_payload_for_shell_state() -> None:
+    client = FakeCliClient("http://test")
+    stdout = StringIO()
+
+    status_payload = asyncio.run(cli.write_status(client=client, stdout=stdout))
+    model_payload = asyncio.run(cli.write_model_status(client=client, stdout=stdout))
+
+    assert status_payload["status"] == "ready"
+    assert model_payload["default_model_profile"] == "local_main"
+
+
+def test_tty_cancel_command_can_cancel_active_stream() -> None:
+    client = SlowStreamCliClient("http://test")
+    stdout = TtyStringIO()
+    read_fd, write_fd = os.pipe()
+    stdin = PipeTtyInput(read_fd)
+
+    async def scenario() -> int:
+        async def write_cancel() -> None:
+            await asyncio.sleep(0.05)
+            os.write(write_fd, b"/cancel\n")
+            os.close(write_fd)
+
+        writer = asyncio.create_task(write_cancel())
+        try:
+            return await cli.submit_and_stream_message(
+                client=client,
+                stdout=stdout,
+                conversation_id="conversation-1",
+                content="slow answer",
+                sensitivity="project",
+                client_message_id="client-slow-cancel",
+                assistant_prefix="assistant> ",
+                stdin=stdin,
+                allow_tty_cancel_command=True,
+            )
+        finally:
+            await writer
+            stdin.close()
+
+    exit_code = asyncio.run(scenario())
+
+    assert exit_code == 130
+    assert ("cancel_request", "request-1") in client.calls
+    assert "cancelled> request request-1" in stdout.getvalue()
+
+
+def test_tty_cancel_monitor_does_not_consume_approval_input() -> None:
+    client = ApprovalOnlyStreamCliClient("http://test")
+    stdout = TtyStringIO()
+    read_fd, write_fd = os.pipe()
+    stdin = PipeTtyInput(read_fd)
+
+    async def scenario() -> int:
+        def write_approval() -> None:
+            os.write(write_fd, b"y\n")
+            os.close(write_fd)
+
+        writer = threading.Timer(0.05, write_approval)
+        writer.start()
+        try:
+            return await asyncio.wait_for(
+                cli.submit_and_stream_message(
+                    client=client,
+                    stdout=stdout,
+                    conversation_id="conversation-1",
+                    content="needs approval",
+                    sensitivity="project",
+                    client_message_id="client-approval-tty",
+                    assistant_prefix="assistant> ",
+                    stdin=stdin,
+                    allow_tty_cancel_command=True,
+                ),
+                timeout=1.0,
+            )
+        finally:
+            writer.join(timeout=1.0)
+            stdin.close()
+
+    exit_code = asyncio.run(scenario())
+
+    assert exit_code == 0
+    assert ("grant_approval", "approval-1") in client.calls
+    assert "approval> granted" in stdout.getvalue()
+
+
+def test_tty_cancel_poll_does_not_reuse_typeahead_as_approval_input() -> None:
+    client = DelayedApprovalOnlyStreamCliClient("http://test")
+    stdout = TtyStringIO()
+    read_fd, write_fd = os.pipe()
+    stdin = PipeTtyInput(read_fd)
+    os.write(write_fd, b"not approval\n")
+
+    async def scenario() -> int:
+        def write_approval() -> None:
+            os.write(write_fd, b"y\n")
+            os.close(write_fd)
+
+        writer = threading.Timer(0.2, write_approval)
+        writer.start()
+        try:
+            return await asyncio.wait_for(
+                cli.submit_and_stream_message(
+                    client=client,
+                    stdout=stdout,
+                    conversation_id="conversation-1",
+                    content="needs delayed approval",
+                    sensitivity="project",
+                    client_message_id="client-delayed-approval-tty",
+                    assistant_prefix="assistant> ",
+                    stdin=stdin,
+                    allow_tty_cancel_command=True,
+                ),
+                timeout=1.0,
+            )
+        finally:
+            writer.join(timeout=1.0)
+            stdin.close()
+
+    exit_code = asyncio.run(scenario())
+
+    assert exit_code == 0
+    assert ("grant_approval", "approval-1") in client.calls
+    assert ("deny_approval", "approval-1") not in client.calls
+    assert "approval> granted" in stdout.getvalue()
+
+
+def test_tty_cancel_poll_keeps_listening_after_non_cancel_typeahead() -> None:
+    client = DelayedTokenStreamCliClient("http://test")
+    stdout = TtyStringIO()
+    read_fd, write_fd = os.pipe()
+    stdin = PipeTtyInput(read_fd)
+    os.write(write_fd, b"not a command\n/cancel\n")
+    os.close(write_fd)
+
+    async def scenario() -> int:
+        try:
+            return await cli.submit_and_stream_message(
+                client=client,
+                stdout=stdout,
+                conversation_id="conversation-1",
+                content="slow answer",
+                sensitivity="project",
+                client_message_id="client-typeahead-cancel",
+                assistant_prefix="assistant> ",
+                stdin=stdin,
+                allow_tty_cancel_command=True,
+            )
+        finally:
+            stdin.close()
+
+    exit_code = asyncio.run(scenario())
+
+    assert exit_code == 130
+    assert ("cancel_request", "request-1") in client.calls
+
+
+def test_tty_cancel_awaits_active_stream_cleanup() -> None:
+    client = CleanupTrackingStreamCliClient("http://test")
+    stdout = TtyStringIO()
+    read_fd, write_fd = os.pipe()
+    stdin = PipeTtyInput(read_fd)
+    os.write(write_fd, b"/cancel\n")
+    os.close(write_fd)
+
+    async def scenario() -> int:
+        try:
+            return await cli.submit_and_stream_message(
+                client=client,
+                stdout=stdout,
+                conversation_id="conversation-1",
+                content="slow answer",
+                sensitivity="project",
+                client_message_id="client-cleanup-cancel",
+                assistant_prefix="assistant> ",
+                stdin=stdin,
+                allow_tty_cancel_command=True,
+            )
+        finally:
+            stdin.close()
+
+    exit_code = asyncio.run(scenario())
+
+    assert exit_code == 130
+    assert client.cleaned is True
 
 
 def test_terminal_line_reader_uses_in_session_arrow_history() -> None:
@@ -723,6 +1189,25 @@ def test_interactive_chat_continues_after_stream_interrupt() -> None:
     assert "cancelled> request request-1" in output
     assert "status> ready" in output
     assert output.rstrip().endswith("bye")
+
+
+def test_plain_interactive_chat_suppresses_tty_activity_indicator() -> None:
+    stdout = TtyStringIO()
+    stdin = StringIO("hello\n/exit\n")
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "--plain"],
+            client_factory=FakeCliClient,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "assistant> OK" in output
+    assert "activity=" not in output
 
 
 def test_status_command_prints_degraded_reasons() -> None:

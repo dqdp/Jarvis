@@ -26,9 +26,13 @@ TERMINAL_EVENT_TYPES = {
 }
 STREAM_REPLAY_EVENT_TYPES = {
     EventType.REQUEST_PROCESSING_STARTED.value,
+    EventType.LOOP_SELECTION_STARTED.value,
+    EventType.LOOP_SELECTION_COMPLETED.value,
+    EventType.LOOP_SELECTION_FAILED.value,
     EventType.CONTEXT_ASSEMBLY_STARTED.value,
     EventType.MEMORY_RETRIEVED.value,
     EventType.MEMORY_RETRIEVAL_FAILED.value,
+    EventType.CONTENT_RETRIEVED.value,
     EventType.CONTEXT_ASSEMBLED.value,
     EventType.MODEL_REQUEST_CREATED.value,
     EventType.MODEL_RESPONSE_RECEIVED.value,
@@ -58,9 +62,52 @@ STREAM_REPLAY_EVENT_TYPES = {
 PUBLIC_STREAM_FIELDS = {
     "token": ("request_id", "delta"),
     EventType.REQUEST_PROCESSING_STARTED.value: ("request_id", "event_id"),
+    EventType.LOOP_SELECTION_STARTED.value: (
+        "request_id",
+        "event_id",
+        "requested_mode",
+    ),
+    EventType.LOOP_SELECTION_COMPLETED.value: (
+        "request_id",
+        "event_id",
+        "requested_mode",
+        "selected_loop_strategy",
+        "selected_model_profile",
+        "intent_family",
+        "reason_code",
+        "classification_source",
+        "confidence",
+        "requires_tools",
+        "requires_live_state",
+        "policy_outcome",
+        "approval_possible",
+        "fallback_behavior",
+        "decision_status",
+    ),
+    EventType.LOOP_SELECTION_FAILED.value: (
+        "request_id",
+        "event_id",
+        "requested_mode",
+        "intent_family",
+        "reason_code",
+        "classification_source",
+        "confidence",
+        "requires_tools",
+        "requires_live_state",
+        "policy_outcome",
+        "approval_possible",
+        "fallback_behavior",
+        "decision_status",
+    ),
     EventType.CONTEXT_ASSEMBLY_STARTED.value: ("request_id", "event_id"),
     EventType.MEMORY_RETRIEVED.value: ("request_id", "event_id"),
     EventType.MEMORY_RETRIEVAL_FAILED.value: ("request_id", "event_id", "error"),
+    EventType.CONTENT_RETRIEVED.value: (
+        "request_id",
+        "event_id",
+        "hit_count",
+        "full_content_stored",
+    ),
     EventType.CONTEXT_ASSEMBLED.value: (
         "request_id",
         "event_id",
@@ -216,9 +263,22 @@ PUBLIC_STREAM_FIELDS = {
 
 async def event_log_stream(event_log, request_record):
     yielded_terminal = False
-    for event in await event_log.query(EventFilter(request_id=request_record.request_id)):
-        if event.event_type.value not in STREAM_REPLAY_EVENT_TYPES:
-            continue
+    events = [
+        event
+        for event in await event_log.query(EventFilter(request_id=request_record.request_id))
+        if event.event_type.value in STREAM_REPLAY_EVENT_TYPES
+    ]
+    started_event = next(
+        (
+            event
+            for event in events
+            if event.event_type.value == EventType.REQUEST_PROCESSING_STARTED.value
+        ),
+        None,
+    )
+    if started_event is not None:
+        events = [started_event, *(event for event in events if event is not started_event)]
+    for event in events:
         if event.event_type.value in TERMINAL_EVENT_TYPES:
             yielded_terminal = True
         yield event_stream_event(event)
@@ -302,6 +362,10 @@ def public_stream_data(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
             "request_id": public_data.get("request_id"),
             "details": {},
         }
+    if event_type == EventType.CONTENT_RETRIEVED.value and "hit_count" not in public_data:
+        content_refs = public_data.get("retrieved_content_refs")
+        if isinstance(content_refs, list):
+            public_data["hit_count"] = len(content_refs)
 
     fields = PUBLIC_STREAM_FIELDS.get(event_type, ("request_id", "event_id"))
     return {

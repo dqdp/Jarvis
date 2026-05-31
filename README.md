@@ -112,6 +112,7 @@ docs/adr/
   ADR-033_shell_sandbox_and_local_command_policy.md
   ADR-034_content_retrieval_subsystem_and_project_docs_rag.md
   ADR-035_automatic_loop_strategy_selection.md
+  ADR-036_interactive_cli_shell_architecture.md
 ```
 
 ## Ключевые принятые решения
@@ -173,10 +174,11 @@ docs/adr/
 - Phase 1 loop = deterministic `memory_augmented_answer`; LangGraph is deferred.
 - Original MVP shipped with only `memory_augmented_answer`; current post-MVP
   Alpha adds bounded `tool_react_loop` behind the loop-strategy boundary.
-- Near-term priority is PM-08a through PM-08d: backend auto-selection, API
-  lifecycle wiring, CLI mode controls and CLI tool/RAG/approval readiness. PM-09
-  voice gateway foundation starts only after that text surface is usable.
-  LangGraph stays a follow-up for later durable workflows.
+- Near-term priority is PM-08a through PM-08i: backend auto-selection, API
+  lifecycle wiring, CLI mode controls, CLI tool/RAG/approval readiness,
+  direct-answer hardening, routing quality gates and Codex-like interactive CLI
+  shell UX. PM-09 voice gateway foundation starts only after that text surface
+  is usable. LangGraph stays a follow-up for later durable workflows.
 - Planner-executor and unbounded autonomous ReAct behavior remain future scope.
 - Future loop strategies must declare budgets, capabilities, policy hooks, failure semantics and emitted events.
 
@@ -231,6 +233,9 @@ docs/adr/
 - Required layers: unit, contract, integration, golden, architecture, e2e.
 - Fake model/embedding providers are mandatory.
 - Real LLM calls are not required for CI.
+- Plain `pytest` is sandbox-safe: PostgreSQL tests are marked `db` and require
+  `--run-db` or `JARVIS_RUN_DB_TESTS=1`. Use the `make test-*` targets for
+  DB-enabled runs.
 - TDD implementation slice plan is accepted as provisional baseline.
 
 ## Current package status
@@ -253,10 +258,11 @@ wave:
 - event/data hardening, append-only event protection and no-secret storage
   constraints.
 
-PM-08a through PM-08d are documented as the next implementation sequence. They
-make `auto` the user-facing default and harden the CLI/API surface so normal
-chat can route to ordinary answer, Project Docs RAG or safe/read-only tools
-without requiring the user to choose internal loop strategies.
+PM-08a through PM-08i are documented as the next implementation sequence. They
+make `auto` the user-facing default, harden routing/direct-answer behavior and
+turn the interactive CLI into the pre-voice dogfood shell so normal chat can
+route to ordinary answer, Project Docs RAG or safe/read-only tools without
+requiring the user to choose internal loop strategies.
 
 Implementation notes:
 

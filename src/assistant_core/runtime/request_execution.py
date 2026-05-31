@@ -5,6 +5,7 @@ import asyncio
 from assistant_core.config.settings import Settings
 from assistant_core.domain.events import EventType
 from assistant_core.domain.requests import RequestStatus
+from assistant_core.ports.event_log import EventFilter
 from assistant_core.runtime.request_command import RuntimeTurnCommandBuilder
 from assistant_core.runtime.request_lifecycle import (
     RequestLifecycleService,
@@ -16,11 +17,19 @@ from assistant_core.runtime.request_streaming import (
     TERMINAL_EVENT_TYPES,
     TERMINAL_REQUEST_STATUSES,
     RequestStreamEvent,
+    event_stream_event,
     event_log_stream,
     has_terminal_event,
     terminal_stream_event,
     terminal_stream_event_from_log,
 )
+
+
+PRE_START_STREAM_EVENT_TYPES = {
+    EventType.LOOP_SELECTION_STARTED.value,
+    EventType.LOOP_SELECTION_COMPLETED.value,
+    EventType.LOOP_SELECTION_FAILED.value,
+}
 
 
 class RequestExecutionManager:
@@ -189,9 +198,19 @@ class RequestExecutionManager:
             )
 
     async def _execute(self, command) -> None:
+        seeded_event_log = False
         try:
             async for event in self._runtime.stream_turn(command):
                 await self._publish(command.request_id, event.event_type, event.data)
+                if (
+                    not seeded_event_log
+                    and event.event_type == EventType.REQUEST_PROCESSING_STARTED.value
+                ):
+                    await self._seed_stream_buffer_from_event_log(
+                        command.request_id,
+                        exclude_event_types={EventType.REQUEST_PROCESSING_STARTED.value},
+                    )
+                    seeded_event_log = True
         except asyncio.CancelledError:
             request_record = await self._conversation_store.get_assistant_request(command.request_id)
             if request_record is not None and request_record.status not in TERMINAL_REQUEST_STATUSES:
@@ -212,6 +231,25 @@ class RequestExecutionManager:
         await self._stream_buffer.publish(request_id, event_type, data)
         if event_type in TERMINAL_EVENT_TYPES:
             await self._cleanup_terminal_state(request_id)
+
+    async def _seed_stream_buffer_from_event_log(
+        self,
+        request_id: str,
+        *,
+        exclude_event_types: set[str] | None = None,
+    ) -> None:
+        excluded = exclude_event_types or set()
+        for event in await self._event_log.query(EventFilter(request_id=request_id)):
+            if event.event_type.value not in PRE_START_STREAM_EVENT_TYPES:
+                continue
+            if event.event_type.value in excluded:
+                continue
+            stream_event = event_stream_event(event)
+            await self._stream_buffer.publish(
+                request_id,
+                stream_event.event_type,
+                stream_event.data,
+            )
 
     def _start_lock(self) -> asyncio.Lock:
         if self._lock is None:

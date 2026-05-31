@@ -29,7 +29,7 @@ from assistant_core.storage.migrations import run_migrations
 from assistant_core.storage.model_invocations import PostgresModelInvocationRepository
 
 
-pytestmark = pytest.mark.contract
+pytestmark = [pytest.mark.contract, pytest.mark.db]
 
 
 def _database_url() -> str:

@@ -33,6 +33,7 @@ from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.ports.memory import MemoryRetrievalError
 from assistant_core.runtime.agent_runtime import AgentRuntime
+from assistant_core.runtime.agent_runtime import RuntimeStreamEvent
 from assistant_core.storage.conversation_store import PostgresConversationStore
 from assistant_core.storage.database import assert_test_database_url, create_database_engine
 from assistant_core.storage.event_log import PostgresEventLog
@@ -41,7 +42,7 @@ from assistant_core.storage.migrations import run_migrations
 from assistant_core.storage.model_invocations import PostgresModelInvocationRepository
 
 
-pytestmark = pytest.mark.contract
+pytestmark = [pytest.mark.contract, pytest.mark.db]
 
 
 def _database_url() -> str:
@@ -113,6 +114,40 @@ class BrokenRuntime:
         yield
 
 
+class ToolPhaseRuntime:
+    async def stream_turn(self, command):
+        yield RuntimeStreamEvent(
+            EventType.REQUEST_PROCESSING_STARTED.value,
+            {"request_id": command.request_id, "event_id": "runtime-started"},
+        )
+        yield RuntimeStreamEvent(
+            EventType.CONTEXT_ASSEMBLY_STARTED.value,
+            {"request_id": command.request_id, "event_id": "context-started"},
+        )
+        yield RuntimeStreamEvent(
+            EventType.MEMORY_RETRIEVED.value,
+            {"request_id": command.request_id, "event_id": "memory-retrieved"},
+        )
+        yield RuntimeStreamEvent(
+            EventType.CONTENT_RETRIEVED.value,
+            {
+                "request_id": command.request_id,
+                "event_id": "content-retrieved",
+                "retrieved_content_refs": [{"chunk_id": "chunk-1", "content_hash": "hash"}],
+                "full_content_stored": False,
+            },
+        )
+        yield RuntimeStreamEvent("token", {"delta": "tool answer"})
+        yield RuntimeStreamEvent(
+            EventType.REQUEST_PROCESSING_COMPLETED.value,
+            {
+                "request_id": command.request_id,
+                "event_id": "runtime-completed",
+                "assistant_message_id": "message-tool",
+            },
+        )
+
+
 @pytest.fixture
 def stream_parts():
     database_url = _database_url()
@@ -161,6 +196,7 @@ def stream_parts():
             settings=app_settings,
             runtime=runtime_override or runtime,
             event_log=event_log,
+            policy=policy,
         )
         app.state.test_engine = engine
         app.state.test_conversation_store = conversation_store
@@ -323,6 +359,58 @@ def test_sse_stream_emits_memory_retrieved_event(stream_parts) -> None:
     events = asyncio.run(scenario())
 
     assert "memory.retrieved" in [event for event, _ in events]
+
+
+def test_live_sse_stream_exposes_tool_phase_events_without_losing_token(stream_parts) -> None:
+    async def scenario():
+        make_app, _ = stream_parts
+        app = make_app(
+            FakeModelProvider(stream_tokens=["unused"]),
+            runtime_override=ToolPhaseRuntime(),
+        )
+        _, conversation_raw = await _request(
+            app,
+            "POST",
+            "/v1/conversations",
+            {"title": "tool sse", "active_project_namespace": "project.personal_assistant"},
+        )
+        conversation = json.loads(conversation_raw)
+        status, message_raw = await _request(
+            app,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-tool-phase-sse",
+                "content": "what is listening on port 8080?",
+                "sensitivity": "project",
+                "loop_strategy": "auto",
+                "working_directory": str(Path.cwd()),
+            },
+        )
+        submitted = json.loads(message_raw)
+        assert status == 202, submitted
+        stream_status, raw = await _request(
+            app,
+            "GET",
+            f"/v1/requests/{submitted['request_id']}/stream",
+        )
+        return status, stream_status, _sse_events(raw)
+
+    submit_status, stream_status, events = asyncio.run(scenario())
+    event_types = [event for event, _ in events]
+
+    assert submit_status == 202
+    assert stream_status == 200
+    assert event_types[0] == EventType.REQUEST_PROCESSING_STARTED.value
+    assert EventType.LOOP_SELECTION_STARTED.value in event_types
+    assert EventType.LOOP_SELECTION_COMPLETED.value in event_types
+    assert EventType.CONTEXT_ASSEMBLY_STARTED.value in event_types
+    assert EventType.MEMORY_RETRIEVED.value in event_types
+    assert EventType.CONTENT_RETRIEVED.value in event_types
+    assert event_types.index("token") < event_types.index(EventType.REQUEST_PROCESSING_COMPLETED.value)
+    content_event = next(data for event, data in events if event == EventType.CONTENT_RETRIEVED.value)
+    assert content_event["hit_count"] == 1
+    assert "retrieved_content_refs" not in content_event
 
 
 def test_running_request_owned_by_another_manager_is_not_marked_orphaned(stream_parts) -> None:

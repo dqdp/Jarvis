@@ -401,6 +401,17 @@ integration
 golden
 architecture
 e2e
+db
+```
+
+Sandbox behavior:
+
+```text
+plain pytest is sandbox-safe and skips tests marked db unless explicitly enabled
+db tests require the local PostgreSQL test database on TEST_DATABASE_URL
+enable db tests with --run-db or JARVIS_RUN_DB_TESTS=1
+make test-contract/test-integration/test-e2e start the docker-compose test database
+and enable db tests explicitly
 ```
 
 ---

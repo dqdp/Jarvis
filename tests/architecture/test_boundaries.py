@@ -242,6 +242,45 @@ def test_no_raw_prompt_logging_by_default() -> None:
     assert settings.observability.log_raw_prompts is False
 
 
+def test_cli_does_not_import_loop_selector_or_runtime_tool_adapters() -> None:
+    _assert_no_import_prefixes(
+        _python_files("cli_app"),
+        {
+            "assistant_core.runtime.loop_selection",
+            "assistant_core.runtime.direct_tools",
+            "assistant_core.tools",
+        },
+    )
+
+
+def test_cli_does_not_import_storage_or_model_provider_clients() -> None:
+    _assert_no_import_prefixes(
+        _python_files("cli_app"),
+        {
+            "assistant_core.storage",
+            "assistant_core.models",
+            "openai",
+            "ollama",
+            "vllm",
+        },
+    )
+
+
+def test_prompt_toolkit_imports_are_confined_to_cli_shell_modules() -> None:
+    offenders: list[str] = []
+    allowed = {
+        Path("cli_app") / "shell.py",
+    }
+    for path in SRC_ROOT.rglob("*.py"):
+        relative = path.relative_to(SRC_ROOT)
+        for module in _imported_modules(path):
+            if module == "prompt_toolkit" or module.startswith("prompt_toolkit."):
+                if relative not in allowed:
+                    offenders.append(f"{path.relative_to(PROJECT_ROOT)} imports {module}")
+
+    assert offenders == []
+
+
 def test_tool_react_loop_has_no_scope_specific_stdout_parsers() -> None:
     source = (SRC_ROOT / "runtime" / "loops" / "tool_react.py").read_text(encoding="utf-8")
 

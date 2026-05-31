@@ -13,6 +13,7 @@ from assistant_core.domain.conversations import (
     AssistantResponseCompletion,
     ConversationMessage,
 )
+from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
 from assistant_core.domain.messages import ChatMessage, MessageRole, TextPart
 from assistant_core.domain.models import ChatModelResponse
 from assistant_core.domain.requests import RequestStatus
@@ -82,6 +83,50 @@ class PromptContextAssembler:
         )
 
 
+class ContentEventContextAssembler(PromptContextAssembler):
+    def __init__(self, event_log: InMemoryEventLog) -> None:
+        self._event_log = event_log
+
+    async def assemble(self, request) -> AssembledContext:
+        now = datetime.now(UTC)
+        await self._event_log.append(
+            EventEnvelope(
+                event_id="content-retrieved-event",
+                event_seq=0,
+                event_type=EventType.CONTENT_RETRIEVED,
+                event_version=1,
+                occurred_at=now,
+                recorded_at=now,
+                conversation_id=request.conversation_id,
+                request_id=request.request_id,
+                correlation_id=request.request_id,
+                causation_id=request.causation_event_id,
+                parent_event_id=None,
+                actor_type=ActorType.SYSTEM,
+                actor_id=None,
+                source_component="unit_test_context_assembler",
+                source_node=None,
+                sensitivity=Sensitivity.PROJECT,
+                visibility=EventVisibility.INTERNAL,
+                idempotency_key=None,
+                payload={
+                    "retrieved_content_refs": [
+                        {
+                            "source_id": "source-1",
+                            "chunk_id": "chunk-1",
+                            "citation": "README.md:1-3",
+                            "score": 0.8,
+                            "content_hash": "hash",
+                        }
+                    ],
+                    "full_content_stored": False,
+                },
+                metadata={},
+            ),
+        )
+        return await super().assemble(request)
+
+
 class RecordingModelRouter:
     def __init__(self) -> None:
         self.chat_messages: list[ChatMessage] | None = None
@@ -148,12 +193,19 @@ class FakeConversationStore:
         return self.request
 
 
-def _runtime(model_router: RecordingModelRouter, store: FakeConversationStore) -> AgentRuntime:
+def _runtime(
+    model_router: RecordingModelRouter,
+    store: FakeConversationStore,
+    *,
+    context_assembler=None,
+    event_log=None,
+) -> AgentRuntime:
+    event_log = event_log or InMemoryEventLog()
     return AgentRuntime(
         conversation_store=store,
-        context_assembler=PromptContextAssembler(),
+        context_assembler=context_assembler or PromptContextAssembler(),
         model_router=model_router,
-        event_log=InMemoryEventLog(),
+        event_log=event_log,
         settings=ConfigLoader("config").load("test"),
     )
 
@@ -210,3 +262,25 @@ def test_stream_turn_passes_context_assembler_messages_to_model_prompt() -> None
     assert messages[0].metadata == {"source": "context_assembler"}
     assert messages[-1].role == MessageRole.USER
     assert messages[-1].content[0].text == "current question"
+
+
+def test_stream_turn_emits_content_retrieved_phase_event_from_context_assembly() -> None:
+    async def scenario():
+        model_router = RecordingModelRouter()
+        store = FakeConversationStore()
+        event_log = InMemoryEventLog()
+        runtime = _runtime(
+            model_router,
+            store,
+            context_assembler=ContentEventContextAssembler(event_log),
+            event_log=event_log,
+        )
+        return [event async for event in runtime.stream_turn(_command())]
+
+    emitted = asyncio.run(scenario())
+
+    content_event = next(
+        event for event in emitted if event.event_type == EventType.CONTENT_RETRIEVED.value
+    )
+    assert content_event.data["event_id"] == "content-retrieved-event"
+    assert content_event.data["retrieved_content_refs"][0]["chunk_id"] == "chunk-1"

@@ -282,6 +282,13 @@ class MemoryAugmentedAnswerLoop:
             )
             if memory_event is not None:
                 yield _stream_event(memory_event)
+            content_event = await self._latest_event(
+                request.request_id,
+                EventType.CONTENT_RETRIEVED,
+                causation_id=context_started.event_id,
+            )
+            if content_event is not None:
+                yield _stream_event(content_event)
             context_event = await self._context_event(
                 request.request_id,
                 context.manifest.context_manifest_id,

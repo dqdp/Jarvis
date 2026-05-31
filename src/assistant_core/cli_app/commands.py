@@ -61,6 +61,7 @@ async def _run_command(
             title=None,
             loop_strategy=None,
             working_directory=str(Path.cwd()),
+            plain=args.plain,
         )
 
     if args.command == "health":
@@ -80,6 +81,7 @@ async def _run_command(
                 title=args.title,
                 loop_strategy=args.loop_strategy,
                 working_directory=args.working_directory or str(Path.cwd()),
+                plain=args.plain,
             )
         conversation_id = args.conversation_id
         if conversation_id is None:
@@ -156,6 +158,7 @@ def main(argv: list[str] | None = None) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="jarvis")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    parser.add_argument("--plain", action="store_true", help="Use deterministic line-oriented CLI.")
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("health")
@@ -169,6 +172,7 @@ def _parser() -> argparse.ArgumentParser:
     chat.add_argument("--title")
     chat.add_argument("--loop-strategy", choices=LOOP_STRATEGY_CHOICES)
     chat.add_argument("--working-directory")
+    chat.add_argument("--plain", action="store_true", default=argparse.SUPPRESS)
 
     memory = subparsers.add_parser("memory")
     memory_subparsers = memory.add_subparsers(dest="memory_command", required=True)
