@@ -205,6 +205,7 @@ def render_status_line(
     conversation_id: str | None,
     phase: str | None,
     model: str | None,
+    context_remaining: str | None = None,
     cwd: str | None,
     width: int = 120,
 ) -> str:
@@ -215,6 +216,8 @@ def render_status_line(
     ]
     if model:
         parts.append(f"model={_clip(model, 32)}")
+    if context_remaining:
+        parts.append(f"ctx={_clip(context_remaining, 8)}")
     if cwd:
         parts.append(f"cwd={_clip(_cwd_scope(cwd), 28)}")
     if conversation_id:
@@ -237,13 +240,36 @@ def model_status_summary(payload: dict[str, Any]) -> str | None:
     if not isinstance(profile, dict):
         return profile_name
     model = profile.get("model")
-    provider = profile.get("provider")
-    pieces = [profile_name]
-    if isinstance(provider, str) and provider:
-        pieces.append(provider)
     if isinstance(model, str) and model:
-        pieces.append(model)
-    return "/".join(pieces)
+        return model
+    return profile_name
+
+
+def model_context_limit(payload: dict[str, Any]) -> int | None:
+    profile_name = payload.get("default_model_profile")
+    profiles = payload.get("model_profiles")
+    if not isinstance(profile_name, str) or not isinstance(profiles, dict):
+        return None
+    profile = profiles.get(profile_name)
+    if not isinstance(profile, dict):
+        return None
+    max_input_tokens = profile.get("max_input_tokens")
+    if isinstance(max_input_tokens, int) and max_input_tokens > 0:
+        return max_input_tokens
+    return None
+
+
+def context_remaining_summary(
+    *,
+    token_estimate: int | None,
+    max_input_tokens: int | None,
+) -> str | None:
+    if max_input_tokens is None or max_input_tokens <= 0:
+        return None
+    if token_estimate is None:
+        return "100%"
+    remaining = max(0, max_input_tokens - max(0, token_estimate))
+    return f"{round((remaining / max_input_tokens) * 100)}%"
 
 
 def _definition_from_command(command: SlashCommand) -> SlashCommandDefinition:
@@ -373,6 +399,8 @@ __all__ = [
     "SlashCommandDefinition",
     "SlashCommandRegistry",
     "display_loop_mode",
+    "context_remaining_summary",
+    "model_context_limit",
     "model_status_summary",
     "render_status_line",
     "write_activity_indicator",

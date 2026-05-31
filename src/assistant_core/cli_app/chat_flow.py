@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
 
+from assistant_core.cli_app.approval_flow import handle_approval_prompt
 from assistant_core.cli_app.client import CliUserError, JarvisClient
 from assistant_core.cli_app.config import DEFAULT_MEMORY_TYPE, LOOP_STRATEGY_CHOICES
 from assistant_core.cli_app.line_reader import create_interactive_line_reader
@@ -23,7 +24,9 @@ from assistant_core.cli_app.renderers import (
 )
 from assistant_core.cli_app.shell import (
     ShellActivityState,
+    context_remaining_summary,
     display_loop_mode,
+    model_context_limit,
     model_status_summary,
     render_status_line,
     write_activity_indicator,
@@ -62,6 +65,8 @@ async def run_interactive_chat(
     activity_state = ShellActivityState.idle()
     readiness_summary = "unknown"
     model_summary: str | None = None
+    max_input_tokens: int | None = None
+    context_remaining: str | None = None
 
     def status_provider() -> str:
         return render_status_line(
@@ -70,6 +75,7 @@ async def run_interactive_chat(
             conversation_id=state.conversation_id,
             phase=activity_state.phase,
             model=model_summary,
+            context_remaining=context_remaining,
             cwd=request_working_directory,
         )
 
@@ -80,11 +86,29 @@ async def run_interactive_chat(
         write_activity_indicator(stdout, activity_state, enabled=False if plain else None)
 
     def mark_stream_event(event_type: str, data: dict[str, Any]) -> None:
-        nonlocal activity_state
+        nonlocal activity_state, context_remaining
         previous_phase = activity_state.phase
         activity_state = activity_state.apply_stream_event(event_type, data)
+        if event_type == "context.assembled":
+            context_remaining = context_remaining_summary(
+                token_estimate=_optional_int(data.get("token_estimate")),
+                max_input_tokens=max_input_tokens,
+            )
         if activity_state.phase != previous_phase:
             write_activity_indicator(stdout, activity_state, enabled=False if plain else None)
+
+    if _should_load_toolbar_status(stdin=stdin, stdout=stdout, plain=plain):
+        try:
+            payload = await client.runtime_status()
+        except CliUserError:
+            payload = {}
+        readiness_summary = _display_text(payload.get("status") or readiness_summary)
+        model_summary = model_status_summary(payload)
+        max_input_tokens = model_context_limit(payload)
+        context_remaining = context_remaining_summary(
+            token_estimate=None,
+            max_input_tokens=max_input_tokens,
+        )
 
     line_reader = create_interactive_line_reader(
         stdin=stdin,
@@ -134,6 +158,11 @@ async def run_interactive_chat(
             if line == "/model":
                 payload = await write_model_status(client=client, stdout=stdout)
                 model_summary = model_status_summary(payload)
+                max_input_tokens = model_context_limit(payload)
+                context_remaining = context_remaining_summary(
+                    token_estimate=None,
+                    max_input_tokens=max_input_tokens,
+                )
                 continue
             if line == "/sessions":
                 await write_conversation_list(client=client, stdout=stdout)
@@ -321,93 +350,16 @@ async def submit_and_stream_message(
     return 0
 
 
-async def handle_approval_prompt(
-    *,
-    client: JarvisClient,
-    stdout: TextIO,
-    stdin: TextIO,
-    data: dict[str, Any],
-    request_id: str | None = None,
-) -> bool:
-    approval_id = _required_str(data, "approval_id")
-    approval = await client.get_approval(approval_id)
-    status = str(approval.get("status") or data.get("status") or "")
-    if status == "expired":
-        stdout.write("approval> expired\n")
+def _should_load_toolbar_status(*, stdin: TextIO, stdout: TextIO, plain: bool) -> bool:
+    if plain:
         return False
-    capability = _display_text(approval.get("capability") or data.get("capability"))
-    summary = _approval_summary(approval, data)
-    stdout.write(f"approval> {capability} wants to perform {summary}\n")
-    stdout.write("approve? [y/N] ")
-    stdout.flush()
-    try:
-        answer = stdin.readline()
-    except KeyboardInterrupt:
-        stdout.write("\n")
-        await _cancel_request_from_approval_prompt(
-            client=client,
-            request_id=request_id,
-            stdout=stdout,
-        )
-        return True
-    normalized = answer.strip().lower()
-    if normalized in {"y", "yes"}:
-        try:
-            await client.grant_approval(approval_id)
-        except CliUserError as exc:
-            if _approval_error_is_expired(exc):
-                stdout.write("approval> expired\n")
-                return False
-            raise
-        stdout.write("approval> granted\n")
-        return False
-    if normalized in {"c", "cancel"}:
-        await _cancel_request_from_approval_prompt(
-            client=client,
-            request_id=request_id,
-            stdout=stdout,
-        )
-        return True
-    try:
-        await client.deny_approval(approval_id)
-    except CliUserError as exc:
-        if _approval_error_is_expired(exc):
-            stdout.write("approval> expired\n")
-            return False
-        raise
-    stdout.write("approval> denied\n")
-    return False
+    return bool(
+        getattr(stdin, "isatty", lambda: False)()
+        and getattr(stdout, "isatty", lambda: False)()
+    )
 
 
-def _approval_summary(approval: dict[str, Any], event_data: dict[str, Any]) -> str:
-    if isinstance(event_data.get("redacted_summary"), str):
-        return _display_text(event_data["redacted_summary"])
-    payload = approval.get("redacted_payload")
-    if isinstance(payload, dict) and isinstance(payload.get("summary"), str):
-        return _display_text(payload["summary"])
-    scope = approval.get("scope")
-    if isinstance(scope, dict):
-        tool_name = _display_text(scope.get("tool_name"))
-        argument_keys = scope.get("argument_keys")
-        if isinstance(argument_keys, list):
-            return f"{tool_name}({', '.join(str(key) for key in argument_keys)})"
-        return tool_name
-    return "requested action"
-
-
-def _approval_error_is_expired(exc: CliUserError) -> bool:
-    message = str(exc).lower()
-    return "approval_expired" in message or "expired" in message
-
-
-async def _cancel_request_from_approval_prompt(
-    *,
-    client: JarvisClient,
-    request_id: str | None,
-    stdout: TextIO,
-) -> None:
-    if request_id is None:
-        stdout.write("approval> cancelled\n")
-        return
-    await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
-    stdout.write("approval> cancelled\n")
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    return None

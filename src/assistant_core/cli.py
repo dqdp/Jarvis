@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from assistant_core.cli_app.chat_flow import (
-    ChatShellState,
-    handle_approval_prompt,
-    submit_and_stream_message,
-)
+from assistant_core.cli_app.approval_flow import handle_approval_prompt
+from assistant_core.cli_app.chat_flow import ChatShellState, submit_and_stream_message
 from assistant_core.cli_app.client import (
     CliUserError,
     HttpJarvisClient,
@@ -53,6 +50,9 @@ from assistant_core.cli_app.shell import (
     SlashCommandCompletion,
     SlashCommandDefinition,
     SlashCommandRegistry,
+    context_remaining_summary,
+    model_context_limit,
+    model_status_summary,
     render_status_line,
     write_activity_indicator,
 )
@@ -84,6 +84,7 @@ __all__ = [
     "SlashCommandDefinition",
     "SlashCommandRegistry",
     "TerminalInteractiveLineReader",
+    "context_remaining_summary",
     "_display_text",
     "_http_error_message",
     "_is_tty",
@@ -97,6 +98,8 @@ __all__ = [
     "create_interactive_line_reader",
     "handle_approval_prompt",
     "main",
+    "model_context_limit",
+    "model_status_summary",
     "parse_sse_blocks",
     "render_status_line",
     "run",

@@ -165,6 +165,7 @@ class FakeCliClient:
                 "local_main": {
                     "provider": "ollama",
                     "model": "qwen3.5:9b",
+                    "max_input_tokens": 8192,
                     "max_output_tokens": 1024,
                     "temperature": 0.3,
                 },
@@ -565,16 +566,20 @@ def test_prompt_toolkit_filtered_history_initializes_prompt_toolkit_base_state()
 
 def test_prompt_toolkit_reader_uses_async_prompt_inside_interactive_cli(monkeypatch) -> None:
     prompts: list[str] = []
+    created_kwargs: dict[str, Any] = {}
     stdout = TtyStringIO()
 
     class FakePromptSession:
         def __init__(self, **kwargs):
-            pass
+            created_kwargs.update(kwargs)
 
         def prompt(self, prompt: str) -> str:
             raise AssertionError("sync prompt must not run inside asyncio CLI")
 
         async def prompt_async(self, prompt: str) -> str:
+            toolbar = created_kwargs["bottom_toolbar"]()
+            assert "model=qwen3.5:9b" in toolbar
+            assert "ctx=100%" in toolbar
             prompts.append(prompt)
             return "/exit"
 
@@ -645,13 +650,14 @@ def test_chat_subcommand_accepts_plain_after_subcommand() -> None:
     assert args.plain is True
 
 
-def test_status_line_renders_mode_readiness_conversation_phase_model_and_cwd_scope() -> None:
+def test_status_line_renders_mode_readiness_model_context_and_cwd_scope() -> None:
     line = cli.render_status_line(
         mode="auto",
         readiness="ready",
         conversation_id="conversation-1234567890",
         phase="tool running",
-        model="local_main/qwen3.5:9b",
+        model="qwen3.5:9b",
+        context_remaining="87%",
         cwd="/Users/alex/Jarvis",
         width=120,
     )
@@ -660,9 +666,17 @@ def test_status_line_renders_mode_readiness_conversation_phase_model_and_cwd_sco
     assert "ready" in line
     assert "conversation-1234567890" in line
     assert "tool running" in line
-    assert "local_main/qwen3.5:9b" in line
+    assert "model=qwen3.5:9b" in line
+    assert "ctx=87%" in line
     assert "Jarvis" in line
     assert len(line) <= 120
+
+
+def test_context_remaining_summary_uses_last_context_token_estimate() -> None:
+    assert cli.context_remaining_summary(token_estimate=None, max_input_tokens=8192) == "100%"
+    assert cli.context_remaining_summary(token_estimate=2048, max_input_tokens=8192) == "75%"
+    assert cli.context_remaining_summary(token_estimate=9000, max_input_tokens=8192) == "0%"
+    assert cli.context_remaining_summary(token_estimate=100, max_input_tokens=None) is None
 
 
 def test_status_line_redacts_secret_like_paths_and_truncates_long_values() -> None:
