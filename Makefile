@@ -56,6 +56,7 @@ jarvis-down:
 	$(JARVIS_RUNTIME) down
 
 jarvis-reset:
+	@if [ "$(CONFIRM)" != "YES" ]; then echo "error> destructive reset requires CONFIRM=YES"; exit 1; fi
 	$(JARVIS_RUNTIME) reset --yes
 
 test: test-unit test-contract test-integration test-golden test-architecture test-e2e

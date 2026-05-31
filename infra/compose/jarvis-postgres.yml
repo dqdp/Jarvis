@@ -1,3 +1,5 @@
+name: jarvis-runtime
+
 services:
   postgres-jarvis:
     image: pgvector/pgvector:pg17

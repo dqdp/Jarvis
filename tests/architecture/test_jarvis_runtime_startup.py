@@ -17,6 +17,7 @@ def test_jarvis_runtime_compose_uses_persistent_database_not_test_database() -> 
     assert COMPOSE_PATH.is_file(), "infra/compose/jarvis-postgres.yml must exist"
     compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
 
+    assert compose["name"] == "jarvis-runtime"
     service = compose["services"]["postgres-jarvis"]
 
     assert service["environment"]["POSTGRES_DB"] == "jarvis_local"
@@ -46,6 +47,18 @@ def test_makefile_jarvis_targets_delegate_to_single_startup_script() -> None:
         assert "$(JARVIS_RUNTIME)" in block, target
 
     assert "dogfood-" not in makefile
+
+
+def test_makefile_jarvis_reset_requires_explicit_confirmation() -> None:
+    makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
+
+    start = makefile.index("jarvis-reset:")
+    end = makefile.find("\n\n", start)
+    block = makefile[start:] if end == -1 else makefile[start:end]
+
+    assert "$(CONFIRM)" in block
+    assert "CONFIRM=YES" in block
+    assert "reset --yes" in block
 
 
 def test_jarvis_startup_script_is_operational_glue_not_runtime_composition() -> None:
@@ -84,4 +97,15 @@ def test_jarvis_startup_script_has_no_secret_defaults() -> None:
     assert "openai_api_key" not in source
     assert "sk-" not in source
     assert "api_key=" not in source
-    assert "password" not in source.replace("postgresql+asyncpg://jarvis:jarvis", "")
+    assert "postgres_password" not in source
+    assert "database_url=postgresql" not in source
+    assert "sensitive" not in source
+
+
+def test_jarvis_startup_script_pins_compose_project_name() -> None:
+    assert SCRIPT_PATH.is_file(), "scripts/dev/jarvis_runtime.py must exist"
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert 'JARVIS_COMPOSE_PROJECT = "jarvis-runtime"' in source
+    assert '"-p",' in source
+    assert "JARVIS_COMPOSE_PROJECT" in source

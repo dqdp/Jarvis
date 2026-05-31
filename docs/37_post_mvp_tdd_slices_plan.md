@@ -3674,9 +3674,9 @@ scripts:
   add a small Python startup driver, for example scripts/dev/jarvis_runtime.py
   commands: bootstrap, up, down, status, logs, cli, reset
   store runtime files under .run/jarvis/
-  write daemon.pid and daemon.log
+  write daemon.pid, daemon.log and redacted runtime metadata
   perform stale PID cleanup
-  check port 8080 ownership before daemon start
+  check PID/process ownership and port 8080 before daemon start
   poll /v1/health until ready or timeout
 
 Makefile:
@@ -3712,14 +3712,17 @@ jarvis-cli:
   must not pass --plain
 
 jarvis-status:
-  reports daemon pid, port, base URL, profile, health summary and log path
+  reports daemon pid, port, base URL, profile, health summary, log path and
+  redacted database URL
 
 jarvis-down:
-  stops only the daemon it owns through the PID file
+  stops only the daemon it owns through the PID file plus runtime metadata and
+  process-command ownership checks
   leaves Jarvis runtime database volume intact
 
 jarvis-reset:
   is explicitly destructive
+  requires explicit confirmation, for example CONFIRM=YES
   stops daemon and removes Jarvis runtime database volume only when requested directly
 ```
 
@@ -3734,6 +3737,8 @@ startup fails clearly if prompt_toolkit or configured local models are missing;
 startup never silently falls back to the old plain reader because dependencies
 are absent;
 normal startup does not install packages, pull models or destroy data;
+destructive reset requires explicit confirmation;
+status/runtime metadata does not persist raw database credentials;
 architecture tests pin the startup script as operational glue, not runtime
 business logic.
 ```
