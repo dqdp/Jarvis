@@ -354,6 +354,8 @@ PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
 PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
+PM-08g Direct planner and capability routing registry cleanup
+PM-08h Tool-intent corpus hardening and pre-voice routing gate
 ```
 
 PM-08a:
@@ -419,7 +421,7 @@ PM-08f:
 - use one typed contract:
   `structured_content`, `structured_schema`, `structured_schema_version`,
   `parse_status` and `parse_warnings`;
-- move OS, battery, disk, VPN and process-output interpretation into
+- move OS, battery, disk, VPN, memory and process-output interpretation into
   capability-specific adapters/normalizers with platform fixture tests;
 - make direct answers consume typed fields only;
 - answer directly from `parsed` payloads, answer cautiously from `partial`
@@ -428,6 +430,33 @@ PM-08f:
 - when a tool returns raw or unrecognized output, either route the bounded
   observation through normal ReAct/model analysis or return a clear
   unavailable/unparsed result.
+
+PM-08g:
+
+- move auto-routable tool metadata into one capability routing registry;
+- make the model-backed classifier validate `tool_names` against the available
+  registry instead of accepting any stable-looking label;
+- replace loose direct metadata with a typed `DirectToolPlan`;
+- keep direct execution eligibility as a deterministic runtime decision that
+  validates tool, capability, scenario, scope and classifier source together;
+- remove duplicated direct allowlists from selector/classifier/request metadata
+  paths.
+
+PM-08h:
+
+- turn the multilingual tool-intent corpus into a pre-voice routing quality gate;
+- add exact CI baseline checks for critical tool names and direct-plan outcomes;
+- add negative near-miss examples so conceptual questions do not become tools;
+- cover datetime, calculator, daemon status, diagnostics, process search, VPN,
+  disk, battery, CPU, memory, temperature, project inspection and ordinary chat;
+- cover spoken-transcript-like variants before PM-09, including fillers, missing
+  punctuation, wake-name prefixes, casing variants and mixed-language terms;
+- keep misheard tool nouns as advisory evaluation cases until real STT output
+  shows recurring errors worth promoting to hard-gate fixtures;
+- keep CPU and memory direct-answer v1 aggregate-only, with per-core and
+  per-process resource details deferred to later schemas;
+- keep real local model evaluation out of CI, but require one recorded non-CI
+  local classifier evaluation before PM-09 starts.
 
 Acceptance:
 
@@ -451,8 +480,9 @@ Goal:
 ```text
 Add push-to-talk voice interaction on top of the existing runtime after PM-08d
 proves the text CLI/API surface can use auto-selected chat, RAG, tools,
-approvals and cancellation, and PM-08f hardens direct tool answers around typed
-observations.
+approvals and cancellation, PM-08f hardens direct tool answers around typed
+observations, and PM-08g/PM-08h stabilize direct planning and corpus-gated
+routing quality.
 ```
 
 Work:
@@ -616,6 +646,9 @@ Capability/permissions
       -> CLI shell tools
       -> automatic loop selection
       -> CLI tool/RAG/approval readiness surface
+          -> typed tool observations and direct-answer hardening
+          -> direct planner and capability routing registry cleanup
+          -> tool-intent corpus hardening
       -> voice gateway foundation
       -> MCP/integrations
       -> bounded ReAct loop details
@@ -657,6 +690,8 @@ PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
 PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
+PM-08g Direct planner and capability routing registry cleanup
+PM-08h Tool-intent corpus hardening and pre-voice routing gate
 Voice gateway foundation
 ```
 

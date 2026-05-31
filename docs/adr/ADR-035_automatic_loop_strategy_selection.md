@@ -614,6 +614,7 @@ tools/system_diagnostics/normalizers/disk.py
 tools/system_diagnostics/normalizers/vpn.py
 tools/system_diagnostics/normalizers/process.py
 tools/system_diagnostics/normalizers/cpu.py
+tools/system_diagnostics/normalizers/memory.py
 tools/system_diagnostics/normalizers/sensors.py
 ```
 
@@ -623,7 +624,14 @@ The same provider-neutral schema is used across platforms:
 sw_vers / uname / os-release -> system.os_version v1
 pmset / upower              -> system.battery_charge v1
 df on macOS/Linux          -> system.disk_free v1
+vm_stat / free              -> system.memory_overview v1
 ```
+
+CPU and memory direct-answer schemas are aggregate-only in v1. Per-core CPU
+usage, per-process memory, top-process resource summaries, thread-level stats and
+memory pressure/stall breakdowns are deferred to later schemas such as
+`system.cpu_per_core_snapshot`, `system.process_resource_snapshot` or
+`system.memory_pressure` if they become necessary.
 
 Process command lines, network evidence and similar host details are
 sensitivity-aware fields. They should be omitted or redacted by default unless
@@ -674,6 +682,82 @@ default_selection_policy:
 The selector should not need bespoke code for the code sandbox. It should see a
 `code_execution` classification and candidate capability, then validate the
 capability through policy and route to the appropriate tool-capable loop.
+
+Before voice work starts, PM-08 must also harden this metadata path:
+
+```text
+CapabilityRoutingRegistry
+  -> available_tools_summary for classifiers
+  -> registry-backed candidate tool validation
+  -> DirectToolPlanner
+      -> DirectToolPlan
+      -> ToolGateway execution through the selected loop
+```
+
+The direct planner is not an execution engine. It only decides whether a selected
+tool-capable turn is eligible for the low-latency direct path. It must validate
+tool name, capability, scenario, scope hint and classifier source together, and
+it must reject stable-looking model output that is not present in the active
+capability registry. This prevents future channels such as voice from depending
+on scattered direct-tool allowlists or loose request metadata.
+
+The multilingual routing corpus is also a pre-voice gate. Critical cases must
+assert exact tool names and direct-plan eligibility, while extensible cases may
+remain subset-based only when explicitly marked as such. Real local model
+evaluation remains opt-in and must not become a CI dependency.
+
+Planning decisions for PM-08g/PM-08h:
+
+```text
+CapabilityRoutingRegistry:
+  chosen over inline request_metadata summaries and purely dynamic ToolGateway
+  introspection. Settings still enable/disable capabilities, but registry
+  metadata is the single source of truth for auto-routing descriptions.
+  Tool descriptors declare static routing metadata; settings activate or disable
+  capabilities and families; the registry merges both into the active tool view.
+
+DirectToolPlan:
+  chosen over loose loop_selection_direct_tool_name metadata. The plan is a
+  redacted decision artifact, not an executable command payload.
+  Event logs and request metadata store only redacted plan summaries, not raw
+  prompts, raw command output or executable argv.
+
+model-origin direct execution:
+  denied by default. Model-origin classification may select the tool-capable
+  loop, but low-latency direct execution requires DirectToolPlanner approval
+  from allowlisted scenario/scope evidence.
+  Direct evidence comes from registry-backed scenario and argument extractors
+  with fixture tests, not from a new global keyword-list selector.
+
+model tool_name validation:
+  invalid candidates are rejected at the classifier/parser boundary. If other
+  valid candidates remain, the whole classification does not need to fail; if no
+  valid tool candidate remains for a tool intent, fallback/unavailable behavior
+  applies.
+
+corpus strictness:
+  exact for critical ci_baseline/direct-plan cases; subset-style only for cases
+  explicitly marked extensible.
+
+mandatory pre-voice corpus:
+  datetime, countdown, calculator, daemon status, OS, CPU, memory, disk,
+  battery, temperature, processes, network, VPN, project inspection, project
+  docs, ordinary conceptual near-misses, tools-disabled live-state cases and
+  spoken-transcript-like variants with filler words, wake-name prefixes, missing
+  punctuation, inconsistent casing, mixed-language terms and common ASR-style
+  wording noise. Misheard tool nouns are advisory evaluation cases until real STT
+  output shows recurring errors that should become hard-gate fixtures.
+
+local model evaluation:
+  opt-in and outside CI until enough data exists to set a stable threshold, but
+  PM-09 requires one recorded local classifier evaluation against the selected
+  local model with either fixes or accepted known failures.
+
+PM-08f/PM-08g sequencing:
+  PM-08f stays focused on typed observations and loop parser removal. PM-08g is
+  the separate registry/planner cleanup slice, with its own red phase and
+  architecture tests.
+```
 
 ## Default behavior
 
@@ -879,6 +963,7 @@ reason_code
 confidence
 candidate_capabilities
 policy_outcome
+approval_possible
 ```
 
 Do not include raw full prompt text.

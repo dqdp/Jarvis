@@ -31,6 +31,8 @@ PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
 PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
+PM-08g Direct planner and capability routing registry cleanup
+PM-08h Tool-intent corpus hardening and pre-voice routing gate
 PM-09 Voice gateway foundation
 ```
 
@@ -2345,7 +2347,7 @@ Examples:
 
 ### Delivery breakdown
 
-PM-08 is delivered as six ordered sub-slices:
+PM-08 is delivered as eight ordered sub-slices:
 
 ```text
 PM-08a Loop selection domain and selector contract
@@ -2354,11 +2356,15 @@ PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
 PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
+PM-08g Direct planner and capability routing registry cleanup
+PM-08h Tool-intent corpus hardening and pre-voice routing gate
 ```
 
-Do not start PM-09 voice implementation until PM-08d and PM-08f are complete.
-Voice depends on the same user-turn surface being usable from text first, and
-voice output should not inherit fragile direct-answer parsing.
+Do not start PM-09 voice implementation until PM-08d, PM-08f, PM-08g and PM-08h
+are complete. Voice depends on the same user-turn surface being usable from text
+first, on direct answers not inheriting fragile stdout parsing, on registry-backed
+direct planning and on a corpus-gated routing baseline that covers typed and
+spoken-transcript-like requests.
 
 ### PM-08a — Loop selection domain and selector contract
 
@@ -2675,6 +2681,9 @@ is configured, with deterministic fallback for startup, failure and tests.
 PM-08f must then harden the direct-tool answer path before PM-09 voice work:
 fast direct execution may stay, but user-facing answers must consume typed tool
 observations rather than command-specific stdout parsing inside the loop.
+PM-08g and PM-08h are mandatory pre-voice hardening slices: routing metadata,
+direct-tool eligibility and corpus expectations must be centralized and tested
+before spoken turns start relying on automatic routing.
 
 ### PM-08e — Model-backed intent classifier adapter
 
@@ -2770,6 +2779,7 @@ test_system_diagnostics_tool_returns_typed_battery_payload
 test_system_diagnostics_tool_returns_typed_disk_payload
 test_system_diagnostics_tool_returns_typed_vpn_payload
 test_system_diagnostics_tool_returns_typed_process_search_payload
+test_system_diagnostics_tool_returns_typed_memory_payload
 test_direct_answer_uses_typed_payload_not_raw_stdout
 test_direct_answer_falls_back_when_typed_payload_missing
 test_direct_answer_does_not_parse_unrecognized_stdout_format
@@ -2797,6 +2807,83 @@ ToolInvocationResult and ToolObservationRef cannot carry typed payloads through
 tool_react_loop owns os/battery/disk/vpn/process stdout parsing
 diagnostics adapters do not expose typed normalized payloads
 direct answers cannot distinguish typed data from raw fallback text
+```
+
+Planning decisions before implementation:
+
+```text
+typed payload shape:
+  chosen:
+    start with one generic provider-neutral envelope:
+      structured_content
+      structured_schema
+      structured_schema_version
+      parse_status
+      parse_warnings
+  rejected for PM-08f:
+    a large class hierarchy per diagnostics command
+  reason:
+    the important boundary is typed data propagation and parse_status semantics;
+    detailed domain classes can be added later only where they remove complexity
+
+unparsed behavior:
+  chosen:
+    direct answers never infer live state from unparsed stdout
+    if policy, budget and loop state allow it, bounded/redacted raw output may
+      enter the ordinary ReAct/model analysis path as data
+    otherwise return a clear unparsed/unavailable answer
+  rejected:
+    best-effort direct regex fallback inside tool_react_loop
+  reason:
+    fragile parsing was the failure mode that PM-08f is removing
+
+partial behavior:
+  chosen:
+    answer only from present typed fields and include a cautious warning
+  open detail:
+    exact user-facing warning text can be finalized during implementation tests
+
+raw content compatibility:
+  chosen:
+    keep content/content_type for bounded human/debug text, event payloads and
+    ReAct fallback
+  rejected:
+    deleting raw content from ToolObservation in PM-08f
+  reason:
+    audit/debug and ordinary ReAct still need bounded source material
+
+redaction:
+  chosen:
+    process command lines, network evidence, paths and host-specific identifiers
+    are redacted or bounded by default unless the capability contract explicitly
+    requires them and policy permits disclosure
+  open detail:
+    per-schema sensitivity labels may be added when a field needs finer control
+
+scope:
+  chosen:
+    PM-08f covers existing direct diagnostics scenarios only:
+      OS version
+      battery
+      disk
+      VPN
+      process search
+      CPU/resources
+      memory/resources
+      sensors
+  rejected:
+    adding new tools or write-capable actions in PM-08f
+
+sequencing:
+  chosen:
+    PM-08f does not absorb the full registry/planner cleanup. It may add typed
+    fields and migration-compatible metadata hooks needed for PM-08g, but
+    CapabilityRoutingRegistry and DirectToolPlan ownership remain a separate
+    PM-08g slice.
+  reason:
+    PM-08f should stay focused on typed observation propagation and parser
+    removal; mixing it with routing registry cleanup would make the slice too
+    broad to verify cleanly.
 ```
 
 Implementation:
@@ -2863,6 +2950,19 @@ tools/system_diagnostics:
       physical_cores optional
       load_percent optional
       load_average optional
+      user_percent optional
+      system_percent optional
+      idle_percent optional
+      source
+    system.memory_overview v1:
+      total
+      used optional
+      available
+      free optional
+      used_percent optional
+      swap_total optional
+      swap_used optional
+      source
     system.sensor_snapshot v1:
       sensors[]
         name
@@ -2877,6 +2977,12 @@ tools/system_diagnostics:
 
 runtime/loops:
   direct answer builders read typed payloads only
+  CPU and memory direct-answer v1 is aggregate-only:
+    no per-core usage
+    no per-process memory
+    no top-process list
+    no thread-level statistics
+    no pressure/stall breakdown
   parsed:
     answer deterministically from structured_content
   partial:
@@ -2893,6 +2999,7 @@ Acceptance:
 
 ```text
 direct OS, battery, disk, VPN and process answers come from typed payloads;
+direct CPU, memory and sensor answers come from typed payloads;
 typed payloads propagate from ToolInvocationResult through ToolObservation and
 ToolObservationRef into direct formatters and context/event payloads;
 loop-level parsers for command-specific stdout are removed or reduced to generic
@@ -2914,7 +3021,459 @@ provider-native tool calling
 MCP tool schema export
 artifact storage for large raw outputs
 write-capable tools
+per-core CPU direct answer payloads
+per-process memory/resource payloads
+top-process resource summaries
 voice input/output
+```
+
+### PM-08g — Direct planner and capability routing registry cleanup
+
+Goal:
+
+```text
+Replace scattered direct-tool metadata and allowlists with one typed routing
+registry and one direct-tool planning component.
+```
+
+Rationale:
+
+```text
+PM-08e/PM-08f make auto-routing useful, but direct eligibility is currently a
+cross-cutting concern: request metadata builds tool summaries, the model
+classifier knows a direct allowlist, and the tool loop validates persisted
+metadata again. Before adding voice or more tools, this must become one
+auditable decision point.
+```
+
+Tests first:
+
+```text
+test_capability_routing_registry_lists_enabled_tools_from_settings
+test_capability_routing_registry_rejects_duplicate_tool_names
+test_model_classifier_rejects_tool_names_not_in_available_registry
+test_direct_tool_planner_allows_known_safe_scenario
+test_direct_tool_planner_denies_model_origin_direct_execution
+test_direct_tool_planner_denies_tool_scope_mismatch
+test_direct_scope_evidence_comes_from_registry_backed_extractors
+test_direct_argument_extractor_fixtures_cover_supported_scenarios
+test_direct_tool_plan_round_trips_through_request_metadata
+test_tool_react_loop_consumes_direct_tool_plan_not_loose_tool_name_metadata
+test_direct_tool_plan_requires_process_search_pattern
+```
+
+Architecture tests:
+
+```text
+test_loop_selector_does_not_import_direct_tool_planner
+test_direct_tool_planner_does_not_execute_tools
+test_model_intent_classifier_does_not_own_direct_execution_allowlist
+test_request_metadata_does_not_define_tool_registry_literals
+```
+
+Expected red phase:
+
+```text
+tool routing metadata is built inline in request_metadata
+direct scenarios are inferred from loose metadata keys
+model classifier accepts stable-looking but unregistered tool_names
+tool_react_loop accepts direct tool metadata by tool name instead of a typed plan
+```
+
+Decision matrix:
+
+```text
+registry ownership:
+  options:
+    A. keep available_tools_summary assembled inline in request_metadata
+    B. derive everything dynamically from ToolGateway at request time
+    C. introduce CapabilityRoutingRegistry fed by registered tool metadata and
+       settings enablement
+  chosen:
+    C
+  reason:
+    A keeps duplication; B makes settings/policy visibility unclear; C gives one
+    auditable metadata source without making ToolGateway an authorization system
+  resolved details:
+    tool descriptors declare static routing metadata
+    settings enable/disable capabilities and tool families
+    CapabilityRoutingRegistry merges descriptors with active settings into the
+    available registry used by classifiers and direct planning
+    ToolGateway remains the execution boundary, not the metadata authority
+
+tool_name validation:
+  options:
+    A. accept stable-looking labels and let later stages filter
+    B. strip unknown tool names but keep the candidate
+    C. reject the candidate when all proposed tool_names are unknown; strip only
+       mixed unknown extras when at least one valid registered tool remains
+  chosen:
+    C
+  reason:
+    model output is advice, but registry membership should be enforced at the
+    classifier/parser boundary before selection metadata is persisted
+  resolved details:
+    reject only the invalid candidate when possible, not the whole classification
+    if other candidates remain valid
+    if a tool-intent classification has no valid candidates after validation,
+    return classifier_unavailable/unknown or fail_unavailable according to the
+    existing fallback rules instead of silently fabricating a tool candidate
+
+direct execution authority:
+  options:
+    A. model-origin classification can directly authorize direct execution
+    B. model-origin classification can choose tool_react_loop, but direct
+       execution needs DirectToolPlanner approval from deterministic/guardrail
+       direct scope evidence
+    C. remove direct execution and always use bounded ReAct
+  chosen:
+    B
+  reason:
+    direct execution is useful for latency, but it is an optimization granted by
+    runtime policy/planning, not by the model
+  resolved details:
+    deterministic/guardrail direct scope evidence must come from registry-backed
+    scenario extractors and argument extractors with fixture tests
+    it must not become a new global keyword-list selector hidden inside
+    DirectToolPlanner
+
+DirectToolPlan shape:
+  options:
+    A. keep loose loop_selection_direct_tool_name metadata
+    B. store a typed redacted DirectToolPlan in request metadata
+    C. keep DirectToolPlan transient only and do not persist selection details
+  chosen:
+    B
+  reason:
+    execution, events and later debugging need a clear decision artifact, but the
+    artifact must be redacted and non-executable by itself
+  resolved details:
+    request metadata and event logs store only a redacted DirectToolPlan summary:
+      scenario
+      tool_names
+      capability labels
+      scope_hint
+      classification_source
+      provenance/evidence labels
+      redacted required argument labels or values approved by policy
+    raw command output, raw user prompt and executable argv are not stored inside
+    the DirectToolPlan
+
+planner placement:
+  options:
+    A. put direct planning inside LoopStrategySelector
+    B. put direct planning inside request metadata after loop selection
+    C. put direct planning inside tool_react_loop only
+  chosen:
+    B
+  reason:
+    selector should choose a loop; the loop should execute a plan; request
+    metadata is the boundary where selected loop, classifier output, registry and
+    redacted persisted metadata meet
+
+argument ownership:
+  options:
+    A. DirectToolPlan includes final argv
+    B. DirectToolPlan includes scenario/scope/required argument values; direct
+       tool helpers build argv from registered scenarios
+    C. model classifier emits tool arguments
+  chosen:
+    B
+  reason:
+    plans should be auditable and non-provider-specific, while executable argv
+    remains deterministic runtime code behind ToolGateway
+
+process search:
+  chosen:
+    DirectToolPlanner must require an extracted process search pattern for the
+    process_name_search direct scenario
+  fallback:
+    if no pattern is available, route to ordinary bounded ReAct/clarification
+    instead of direct pgrep
+
+implementation sequencing:
+  chosen:
+    implement PM-08g after PM-08f as a separate TDD slice
+  allowed PM-08f preparation:
+    typed observation fields and backward-compatible metadata fields that make
+    DirectToolPlan migration straightforward
+  rejected:
+    doing registry cleanup opportunistically inside PM-08f without its own red
+    phase and architecture tests
+```
+
+Implementation:
+
+```text
+runtime/routing:
+  CapabilityRoutingRegistry
+    reads settings and registered ToolGateway metadata
+    produces available_tools_summary for classifiers
+    owns stable tool_name -> capability/risk/intent metadata
+    owns or references scenario/argument extractor descriptors for direct-capable
+      tools
+
+runtime/direct_tools:
+  DirectToolPlan
+    tool_names
+    scenario
+    scope_hint
+    required_arguments
+    classification_source
+    provenance
+  DirectToolPlanner
+    accepts LoopSelectionDecision plus registry metadata
+    consumes registry-backed scenario/argument extractor output
+    grants direct execution only for allowlisted tool+scenario+scope combinations
+    denies direct execution for model-origin classifier output unless a separate
+      deterministic/guardrail direct scope approved it
+    keeps policy and ToolGateway as execution authorities
+
+runtime/request_metadata:
+  requests available_tools_summary from the registry
+  stores a redacted DirectToolPlan shape, not ad hoc direct_tool_name fields
+
+runtime/loops:
+  reads DirectToolPlan and delegates argument construction to direct-tool helpers
+  does not reinterpret classifier candidates as execution authorization
+```
+
+Acceptance:
+
+```text
+there is one source of truth for auto-routable tool metadata;
+unknown model-proposed tool_names are rejected or stripped before selection;
+direct execution eligibility is represented as DirectToolPlan, not loose metadata;
+direct planning validates tool, capability, scenario, scope and source together;
+ToolGateway remains the only execution boundary;
+adding a new direct-capable tool changes registry/planner fixtures, not selector
+or CLI routing code;
+adding a new direct-capable tool requires a descriptor plus registry/planner
+fixture coverage before it can be auto-routed or direct-planned.
+```
+
+Out of scope:
+
+```text
+new tool families
+write-capable direct tools
+provider-native tool calling
+voice input/output
+```
+
+### PM-08h — Tool-intent corpus hardening and pre-voice routing gate
+
+Goal:
+
+```text
+Turn the multilingual tool-intent corpus into a pre-voice quality gate for
+automatic routing, direct planning and safe fallback behavior.
+```
+
+Rationale:
+
+```text
+Voice will make routing misses more visible and more expensive to correct in the
+moment. Before PM-09, typed turns must prove that varied natural-language
+requests route to the expected family, capabilities, tool names, direct plan or
+safe fallback without relying on one-off fixes for each phrasing.
+```
+
+Tests first:
+
+```text
+test_tool_intent_corpus_has_required_categories_for_pre_voice_gate
+test_tool_intent_corpus_exact_ci_baseline_matches_expected_tools
+test_tool_intent_corpus_covers_negative_live_state_near_misses
+test_tool_intent_corpus_covers_direct_plan_scenarios
+test_tool_intent_corpus_covers_model_classifier_fake_payloads
+test_tool_intent_corpus_covers_spoken_transcript_variants
+test_tool_intent_corpus_asserts_policy_outcome_for_relevant_cases
+test_pre_voice_local_model_eval_report_is_recorded
+test_tool_intent_corpus_requires_languages_for_priority_categories
+test_guardrail_baseline_does_not_turn_conceptual_questions_into_tools
+test_pre_voice_routing_gate_blocks_missing_priority_categories
+```
+
+Evaluation tests:
+
+```text
+test_local_model_classifier_routes_pre_voice_corpus_opt_in
+test_local_model_classifier_reports_failures_without_ci_network_or_real_llm
+```
+
+Decision matrix:
+
+```text
+baseline strictness:
+  options:
+    A. subset assertions for all corpus cases
+    B. exact assertions for every corpus case
+    C. exact assertions for critical ci_baseline/direct-plan cases, subset only
+       for explicitly marked extensible cases
+  chosen:
+    C
+  reason:
+    critical routing must be stable, but future multi-tool or explanatory cases
+    may legitimately add non-breaking candidates
+
+corpus dimensions:
+  chosen required expectation fields:
+    intent_family
+    capabilities
+    tool_names
+    scope_hint
+    direct_plan expected/forbidden
+    fallback_behavior
+    policy_outcome optional
+    approval_possible optional
+    spoken_transcript_variants optional
+  reason:
+    before voice, correctness is not only intent family; it is also whether the
+    system will execute directly, fall back, require approval, or refuse
+    misleading live-state chat
+
+mandatory pre-voice categories:
+  chosen:
+    safe.current_time
+    safe.date_countdown
+    safe.calculator
+    safe.daemon_status
+    system.os_version
+    system.cpu_overview
+    system.memory
+    system.disk
+    system.battery
+    system.temperature
+    system.processes
+    system.network
+    system.vpn
+    project.inspection
+    project.docs_question
+    ordinary.conceptual
+    ordinary.near_miss_live_state
+    tools_disabled.live_state
+    spoken_transcript_variants
+  reason:
+    these categories cover the expected typed CLI/voice surface before adding
+    audio, and they directly match prior failures around local diagnostics,
+    false live-state answers and per-phrase routing fixes
+
+language coverage:
+  options:
+    A. require every category in every supported language
+    B. require Russian and English for all priority categories, plus additional
+       languages for representative live-state and ordinary-chat groups
+    C. keep current ad hoc language coverage
+  chosen:
+    B
+  reason:
+    A is too heavy for the near term; C already missed phrasing diversity; B is
+    a practical pre-voice quality gate
+
+spoken transcript coverage:
+  chosen:
+    priority categories include mandatory transcript-like variants before PM-09:
+      fillers and conversational prefixes such as "ээ", "ну", "слушай"
+      wake-name prefixes such as "джарвис проверь" or "jarvis check"
+      missing punctuation
+      inconsistent casing
+      mixed Russian/English terms
+      common ASR-like inflections and phrasing variants
+  advisory:
+    representative misheard tool nouns may be included in opt-in/evaluation cases
+    once real STT output shows concrete recurring errors, but they are not a hard
+    PM-08h gate
+  reason:
+    PM-09 consumes STT transcripts, not clean typed prompts; the pre-voice gate
+    must catch common transcript noise without turning speculative ASR mistakes
+    into an unbounded required corpus
+
+negative examples:
+  chosen:
+    every priority live-state category gets conceptual near-misses that must stay
+    ordinary_chat, plus tools-disabled/fail-unavailable cases where relevant
+  examples:
+    explain what VPN means
+    how does CPU temperature monitoring work
+    what is disk space conceptually
+  reason:
+    voice and natural phrasing increase false-positive risk
+
+model evaluation:
+  chosen:
+    CI uses deterministic/fake classifier and fake model-router payloads
+    real local model evaluation is opt-in and reports category/language failures
+    before PM-09 starts, run the opt-in local classifier evaluation once against
+    the selected local classifier model and record either fixes or accepted known
+    failures in the slice notes
+  rejected:
+    requiring a real local model in CI
+  reason:
+    CI must stay deterministic and network-free, but voice readiness needs one
+    explicit local-model confidence check outside CI
+
+pre-voice gate:
+  chosen:
+    PM-09 cannot start until PM-08h exact ci_baseline and guardrail baseline are
+    green
+  open detail:
+    exact pass threshold for optional local model evaluation remains advisory
+    until we collect enough failures to set a meaningful threshold
+```
+
+Implementation:
+
+```text
+tests/fixtures/intent_routing:
+  split corpus expectations into:
+    intent_family
+    capabilities
+    tool_names
+    scope_hint
+    direct_plan expected/forbidden
+    fallback_behavior
+    policy_outcome optional
+    approval_possible optional
+    spoken_transcript_variants optional
+    ci_baseline
+    guardrail_baseline
+    opt_in_model_eval
+
+tests/unit:
+  make critical CI baseline assertions exact for tool_names and direct_plan
+  keep subset-style assertions only for explicitly marked extensible cases
+
+tests/evaluation:
+  keep real local model evaluation opt-in and non-CI
+  report confusion by category/language/scope
+  require one recorded local classifier evaluation before PM-09 starts
+```
+
+Acceptance:
+
+```text
+priority live-state categories have positive and negative examples in multiple
+languages;
+critical CI baseline cases assert exact expected tool_names and direct_plan
+state;
+calculator, daemon status, datetime, diagnostics, process search, VPN, disk,
+battery, CPU, memory, temperature, project inspection and ordinary conceptual
+near-misses are represented;
+spoken-transcript-like variants are represented for priority categories;
+relevant cases assert expected policy_outcome and approval_possible behavior;
+one non-CI local classifier evaluation against the chosen local model is recorded
+before PM-09 starts;
+guardrail tests prove conceptual questions do not accidentally route to tools;
+PM-09 cannot start until the pre-voice corpus gate is green.
+```
+
+Out of scope:
+
+```text
+requiring a real local model in CI
+large benchmark harness
+voice audio test data
 ```
 
 ### Intent resolution pipeline
@@ -3314,9 +3873,10 @@ RAG as a tool-loop requirement
 ### Goal
 
 Add the first voice assistant path after PM-08d proves the text CLI/API surface
-can use auto-selected chat, RAG, tools, approvals and cancellation, and after
-PM-08f hardens direct tool answers around typed observations rather than
-loop-level stdout parsing.
+can use auto-selected chat, RAG, tools, approvals and cancellation, after PM-08f
+hardens direct tool answers around typed observations rather than loop-level
+stdout parsing, and after PM-08g/PM-08h make routing metadata and corpus quality
+stable enough for spoken turns.
 
 Voice is a client/channel over the existing runtime, not a separate agent
 runtime. A spoken turn must become the same kind of user turn that CLI/API uses:
@@ -3374,10 +3934,13 @@ PM-08c complete
 PM-08d complete
 PM-08e complete
 PM-08f complete
+PM-08g complete
+PM-08h complete
 ```
 
 In practice this means the text CLI already has a working normal chat surface
-for automatic chat/RAG/tools routing, approval control and cancellation before
+for automatic chat/RAG/tools routing, approval control, cancellation, typed
+direct answers, registry-backed direct planning and corpus-gated routing before
 voice is layered on top.
 
 Voice must use PM-08 default routing:
