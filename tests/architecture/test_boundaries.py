@@ -523,6 +523,29 @@ def test_loop_selector_depends_on_intent_classifier_port_not_model_provider() ->
     )
 
 
+def test_model_backed_intent_classifier_depends_on_model_router_port_not_provider_adapters() -> None:
+    classifier_path = SRC_ROOT / "runtime" / "model_intent_classifier.py"
+    assert classifier_path.is_file()
+    imported = _imported_modules(classifier_path)
+
+    assert "assistant_core.ports.model_router" in imported
+    _assert_no_import_prefixes(
+        [classifier_path],
+        {
+            "assistant_core.models",
+            "assistant_core.ports.model_provider",
+            "assistant_core.tools",
+            "assistant_core.ports.tools",
+            "assistant_core.storage",
+            "openai",
+            "ollama",
+            "vllm",
+            "httpx",
+            "subprocess",
+        },
+    )
+
+
 def test_loop_selector_does_not_import_tool_adapters() -> None:
     selector_path = SRC_ROOT / "runtime" / "loop_selection.py"
     assert selector_path.is_file()

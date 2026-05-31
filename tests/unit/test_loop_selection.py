@@ -525,6 +525,193 @@ def test_deterministic_classifier_keeps_general_where_question_as_chat() -> None
     assert classification.candidate_capabilities == ()
 
 
+def test_deterministic_classifier_routes_current_time_question_to_builtin_tool() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="Сколько время?")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.SAFE_BUILTIN_TOOL
+    assert classification.candidate_capabilities
+    candidate = classification.candidate_capabilities[0]
+    assert candidate.capability is Capability.TOOL_SAFE
+    assert candidate.tool_names == ("datetime.now",)
+    assert classification.answer_without_tools_would_be_misleading is True
+
+
+def test_deterministic_classifier_routes_common_russian_current_time_question_to_builtin_tool() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="Сколько времени?")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.SAFE_BUILTIN_TOOL
+    assert classification.candidate_capabilities[0].tool_names == ("datetime.now",)
+
+
+def test_deterministic_classifier_routes_russian_christmas_countdown_to_datetime_tool() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="через сколько дней Рождество?")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.SAFE_BUILTIN_TOOL
+    assert classification.candidate_capabilities
+    candidate = classification.candidate_capabilities[0]
+    assert candidate.capability is Capability.TOOL_SAFE
+    assert candidate.tool_names == ("datetime.now",)
+    assert candidate.scope_hint == "christmas_countdown"
+    assert classification.answer_without_tools_would_be_misleading is True
+
+
+def test_deterministic_classifier_keeps_coding_current_time_question_as_chat() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="How do I print current time in Python?")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.ORDINARY_CHAT
+    assert classification.candidate_capabilities == ()
+
+
+def test_deterministic_classifier_routes_russian_cpu_temperature_to_sensors_tool() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="Текущая температура процессора.")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.SYSTEM_DIAGNOSTICS
+    assert classification.candidate_capabilities
+    candidate = classification.candidate_capabilities[0]
+    assert candidate.capability is Capability.TOOL_SYSTEM_READ_SENSORS
+    assert candidate.tool_names == ("tool.system.read.sensors",)
+    assert classification.answer_without_tools_would_be_misleading is True
+
+
+def test_deterministic_classifier_routes_russian_free_memory_to_resources_tool() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="Сколько памяти сейчас свободно в системе?")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.SYSTEM_DIAGNOSTICS
+    assert classification.candidate_capabilities
+    candidate = classification.candidate_capabilities[0]
+    assert candidate.capability is Capability.TOOL_SYSTEM_READ_RESOURCES
+    assert candidate.tool_names == ("tool.system.read.resources",)
+    assert classification.answer_without_tools_would_be_misleading is True
+
+
+def test_deterministic_classifier_routes_russian_free_disk_to_resources_tool() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="Сколько свободного места на диске?")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.SYSTEM_DIAGNOSTICS
+    assert classification.candidate_capabilities
+    candidate = classification.candidate_capabilities[0]
+    assert candidate.capability is Capability.TOOL_SYSTEM_READ_RESOURCES
+    assert candidate.tool_names == ("tool.system.read.resources",)
+    assert candidate.scope_hint == "disk_free"
+    assert classification.answer_without_tools_would_be_misleading is True
+
+
+def test_deterministic_classifier_routes_russian_battery_charge_to_hardware_tool() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="Сколько процентов заряда аккумулятора осталось на макбуке?")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.SYSTEM_DIAGNOSTICS
+    assert classification.candidate_capabilities
+    candidate = classification.candidate_capabilities[0]
+    assert candidate.capability is Capability.TOOL_SYSTEM_READ_HARDWARE
+    assert candidate.tool_names == ("tool.system.read.hardware",)
+    assert candidate.scope_hint == "battery_charge"
+    assert classification.answer_without_tools_would_be_misleading is True
+
+
+def test_deterministic_classifier_routes_russian_cpu_cores_and_load_to_cpu_overview_tools() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="Сколько ядер у центрального процессора и на сколько они загружены?")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.SYSTEM_DIAGNOSTICS
+    assert [candidate.capability for candidate in classification.candidate_capabilities] == [
+        Capability.TOOL_SYSTEM_READ_HARDWARE,
+        Capability.TOOL_SYSTEM_READ_RESOURCES,
+    ]
+    assert [
+        candidate.tool_names for candidate in classification.candidate_capabilities
+    ] == [
+        ("tool.system.read.hardware",),
+        ("tool.system.read.resources",),
+    ]
+    assert classification.answer_without_tools_would_be_misleading is True
+
+
+def test_deterministic_classifier_routes_russian_os_version_to_hardware_tool() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="Какая версия операционной системы?")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.SYSTEM_DIAGNOSTICS
+    assert classification.candidate_capabilities
+    candidate = classification.candidate_capabilities[0]
+    assert candidate.capability is Capability.TOOL_SYSTEM_READ_HARDWARE
+    assert candidate.tool_names == ("tool.system.read.hardware",)
+    assert candidate.scope_hint == "os_version"
+    assert classification.answer_without_tools_would_be_misleading is True
+
+
+def test_deterministic_classifier_keeps_weather_temperature_question_as_chat() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="Какая температура на улице?")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.ORDINARY_CHAT
+    assert classification.candidate_capabilities == ()
+
+
+def test_deterministic_classifier_does_not_match_temp_inside_template() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="Explain the system template.")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.ORDINARY_CHAT
+    assert classification.candidate_capabilities == ()
+
+
+def test_auto_selects_tool_loop_for_current_time_question() -> None:
+    decision = asyncio.run(
+        LoopStrategySelector(
+            intent_classifier=DeterministicIntentClassifier(),
+            policy=FakeCapabilityPolicy(),
+        ).select(_request(user_input="what time is it?"))
+    )
+
+    assert decision.selected_loop_strategy is LoopStrategyName.TOOL_REACT_LOOP
+    assert decision.intent_family is IntentFamily.SAFE_BUILTIN_TOOL
+    assert decision.reason_code == "tool_intent_safe_builtin"
+
+
 def test_selector_does_not_treat_rag_as_tool_loop() -> None:
     decision = _select(
         _classification(
@@ -642,6 +829,22 @@ def test_deterministic_classifier_routes_process_listening_on_port_to_network_di
     assert classification.candidate_capabilities[0].capability is Capability.TOOL_SYSTEM_READ_NETWORK
 
 
+def test_deterministic_classifier_routes_russian_vpn_status_to_network_tool() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input="Включен ли VPN сейчас?")
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.SYSTEM_DIAGNOSTICS
+    assert classification.candidate_capabilities
+    candidate = classification.candidate_capabilities[0]
+    assert candidate.capability is Capability.TOOL_SYSTEM_READ_NETWORK
+    assert candidate.tool_names == ("tool.system.read.network",)
+    assert candidate.scope_hint == "vpn_status"
+    assert classification.answer_without_tools_would_be_misleading is True
+
+
 def test_deterministic_classifier_does_not_route_generic_process_word_to_tools() -> None:
     classification = asyncio.run(
         DeterministicIntentClassifier().classify(
@@ -651,6 +854,22 @@ def test_deterministic_classifier_does_not_route_generic_process_word_to_tools()
 
     assert classification.intent_family is IntentFamily.ORDINARY_CHAT
     assert classification.candidate_capabilities == ()
+
+
+def test_deterministic_classifier_routes_russian_process_name_search_to_process_tool() -> None:
+    classification = asyncio.run(
+        DeterministicIntentClassifier().classify(
+            _request(user_input='Запущен ли сейчас процесс, в имени которого есть "HFT"?')
+        )
+    )
+
+    assert classification.intent_family is IntentFamily.SYSTEM_DIAGNOSTICS
+    assert classification.candidate_capabilities
+    candidate = classification.candidate_capabilities[0]
+    assert candidate.capability is Capability.TOOL_SYSTEM_READ_PROCESS
+    assert candidate.tool_names == ("tool.system.read.process",)
+    assert candidate.scope_hint == "process_name_search"
+    assert classification.answer_without_tools_would_be_misleading is True
 
 
 def test_deterministic_classifier_keeps_general_network_question_as_chat() -> None:

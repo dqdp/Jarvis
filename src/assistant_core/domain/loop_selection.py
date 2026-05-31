@@ -112,6 +112,7 @@ class IntentClassification:
     answer_without_tools_would_be_misleading: bool = False
     reason_code: str = "unknown"
     fallback_preference: SelectionFallbackPreference | str = SelectionFallbackPreference.CHAT
+    classification_source: str = "deterministic"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "intent_family", IntentFamily(self.intent_family))
@@ -124,6 +125,8 @@ class IntentClassification:
         )
         if not _is_stable_label(self.reason_code):
             raise ValueError("reason_code must be a stable label")
+        if not _is_stable_label(self.classification_source):
+            raise ValueError("classification_source must be a stable label")
 
 
 @dataclass(frozen=True)
@@ -181,6 +184,7 @@ class LoopSelectionDecision:
     approval_possible: bool
     fallback_behavior: SelectionFallbackPreference | str
     decision_status: SelectionDecisionStatus | str
+    classification_source: str = "unknown"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "requested_mode", LoopSelectionMode(self.requested_mode))
@@ -203,6 +207,8 @@ class LoopSelectionDecision:
             SelectionFallbackPreference(self.fallback_behavior),
         )
         object.__setattr__(self, "decision_status", SelectionDecisionStatus(self.decision_status))
+        if not _is_stable_label(self.classification_source):
+            raise ValueError("classification_source must be a stable label")
 
     def redacted_event_payload(self, *, request_id: str, conversation_id: str) -> dict[str, Any]:
         return {
@@ -213,6 +219,7 @@ class LoopSelectionDecision:
             "selected_model_profile": self.selected_model_profile,
             "intent_family": self.intent_family.value,
             "reason_code": self.reason_code,
+            "classification_source": self.classification_source,
             "confidence": self.confidence,
             "candidate_capabilities": [
                 candidate.redacted_payload() for candidate in self.candidate_capabilities

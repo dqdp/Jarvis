@@ -34,4 +34,5 @@ markers = [
   "golden: deterministic golden-output tests",
   "architecture: import and boundary guardrail tests",
   "e2e: end-to-end user-turn lifecycle tests",
+  "evaluation: opt-in local model evaluation tests, skipped unless explicitly enabled",
 ]
