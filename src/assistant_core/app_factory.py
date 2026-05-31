@@ -34,8 +34,10 @@ from assistant_core.models.router import ModelRouter
 from assistant_core.ports.model_provider import ModelProviderPort
 from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.runtime.agent_runtime import AgentRuntime
+from assistant_core.runtime.loop_selection import DeterministicIntentClassifier
 from assistant_core.runtime.loops import LoopStrategyRegistry, MemoryAugmentedAnswerLoop
 from assistant_core.runtime.loops.tool_react import ToolReactLoop
+from assistant_core.runtime.model_intent_classifier import ModelBackedIntentClassifier
 from assistant_core.storage.conversation_store import PostgresConversationStore
 from assistant_core.storage.approval_store import PostgresApprovalStore
 from assistant_core.storage.content_store import PostgresContentStore
@@ -184,6 +186,10 @@ def create_runtime_app(
         inference_health=router,
         content_ingestion=content_ingestion,
         policy=policy,
+        intent_classifier=ModelBackedIntentClassifier(
+            router=router,
+            fallback=DeterministicIntentClassifier(),
+        ),
         lifespan=lifespan,
     )
     runtime_app = RuntimeApplication(app=app, engine=engine, settings=settings, runtime=runtime)

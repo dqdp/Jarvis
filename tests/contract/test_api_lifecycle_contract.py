@@ -575,6 +575,156 @@ def test_auto_mode_persists_requested_mode_and_selected_loop_metadata(app_parts)
     assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
 
 
+def test_auto_mode_routes_current_time_question_to_safe_builtin_tool_loop(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        status, accepted = await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-auto-current-time",
+                "content": "Сколько время?",
+                "sensitivity": "project",
+                "working_directory": str(Path.cwd()),
+            },
+        )
+        assert status == 202
+        return await _request(app_parts, "GET", f"/v1/requests/{accepted['request_id']}")
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 200
+    metadata = payload["metadata"]
+    assert metadata["requested_loop_mode"] == "auto"
+    assert metadata["selected_loop_strategy"] == "tool_react_loop"
+    assert metadata["selected_model_profile"] == "local_structured"
+    assert metadata["loop_selection_reason_code"] == "tool_intent_safe_builtin"
+
+
+def test_auto_mode_routes_russian_cpu_temperature_to_system_sensors(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        status, accepted = await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-auto-russian-cpu-temperature",
+                "content": "Текущая температура процессора.",
+                "sensitivity": "project",
+                "working_directory": str(Path.cwd()),
+            },
+        )
+        assert status == 202
+        return await _request(app_parts, "GET", f"/v1/requests/{accepted['request_id']}")
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 200
+    metadata = payload["metadata"]
+    assert metadata["requested_loop_mode"] == "auto"
+    assert metadata["selected_loop_strategy"] == "tool_react_loop"
+    assert metadata["selected_model_profile"] == "local_structured"
+    assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
+    assert metadata["loop_selection_tool_names"] == ["tool.system.read.sensors"]
+    assert metadata["loop_selection_direct_tool_name"] == "tool.system.read.sensors"
+
+
+def test_auto_mode_routes_russian_free_memory_to_system_resources(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        status, accepted = await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-auto-russian-free-memory",
+                "content": "Сколько памяти сейчас свободно в системе?",
+                "sensitivity": "project",
+                "working_directory": str(Path.cwd()),
+            },
+        )
+        assert status == 202
+        return await _request(app_parts, "GET", f"/v1/requests/{accepted['request_id']}")
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 200
+    metadata = payload["metadata"]
+    assert metadata["requested_loop_mode"] == "auto"
+    assert metadata["selected_loop_strategy"] == "tool_react_loop"
+    assert metadata["selected_model_profile"] == "local_structured"
+    assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
+    assert metadata["loop_selection_tool_names"] == ["tool.system.read.resources"]
+    assert metadata["loop_selection_direct_tool_name"] == "tool.system.read.resources"
+
+
+def test_auto_mode_routes_russian_cpu_cores_and_load_to_cpu_overview_plan(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        status, accepted = await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-auto-russian-cpu-overview",
+                "content": "Сколько ядер у центрального процессора и на сколько они загружены?",
+                "sensitivity": "project",
+                "working_directory": str(Path.cwd()),
+            },
+        )
+        assert status == 202
+        return await _request(app_parts, "GET", f"/v1/requests/{accepted['request_id']}")
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 200
+    metadata = payload["metadata"]
+    assert metadata["requested_loop_mode"] == "auto"
+    assert metadata["selected_loop_strategy"] == "tool_react_loop"
+    assert metadata["selected_model_profile"] == "local_structured"
+    assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
+    assert metadata["loop_selection_tool_names"] == [
+        "tool.system.read.hardware",
+        "tool.system.read.resources",
+    ]
+    assert metadata["loop_selection_direct_tool_names"] == [
+        "tool.system.read.hardware",
+        "tool.system.read.resources",
+    ]
+
+
+def test_auto_mode_routes_russian_os_version_to_hardware_tool(app_parts) -> None:
+    async def scenario():
+        conversation = await _create_conversation(app_parts)
+        status, accepted = await _request(
+            app_parts,
+            "POST",
+            f"/v1/conversations/{conversation['conversation_id']}/messages",
+            {
+                "client_message_id": "client-auto-russian-os-version",
+                "content": "Какая версия операционной системы?",
+                "sensitivity": "project",
+                "working_directory": str(Path.cwd()),
+            },
+        )
+        assert status == 202
+        return await _request(app_parts, "GET", f"/v1/requests/{accepted['request_id']}")
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 200
+    metadata = payload["metadata"]
+    assert metadata["requested_loop_mode"] == "auto"
+    assert metadata["selected_loop_strategy"] == "tool_react_loop"
+    assert metadata["selected_model_profile"] == "local_structured"
+    assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
+    assert metadata["loop_selection_tool_names"] == ["tool.system.read.hardware"]
+    assert metadata["loop_selection_direct_tool_name"] == "tool.system.read.hardware"
+    assert metadata["loop_selection_direct_scenario"] == "os_version"
+
+
 def test_auto_mode_emits_loop_selection_event(app_parts) -> None:
     async def scenario():
         settings = ConfigLoader(Path("config")).load("test")

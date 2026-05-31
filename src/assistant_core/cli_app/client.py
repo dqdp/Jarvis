@@ -273,8 +273,43 @@ def _http_error_message(exc: httpx.HTTPStatusError, action: str) -> str:
         if isinstance(error, dict) and isinstance(error.get("message"), str):
             code = error.get("code")
             detail = f"{code}: {error['message']}" if isinstance(code, str) else error["message"]
+            validation_detail = _validation_error_detail(error.get("details"))
+            if validation_detail:
+                detail = f"{detail} ({validation_detail})"
         elif isinstance(payload.get("detail"), str):
             detail = payload["detail"]
     return f"{action} failed: {exc.response.status_code} {detail}"
+
+
+def _validation_error_detail(details: Any) -> str | None:
+    if not isinstance(details, dict):
+        return None
+    errors = details.get("errors")
+    if not isinstance(errors, list):
+        return None
+    rendered = [_render_validation_error(error) for error in errors[:3]]
+    rendered = [item for item in rendered if item]
+    if not rendered:
+        return None
+    if len(errors) > len(rendered):
+        rendered.append(f"+{len(errors) - len(rendered)} more")
+    return "; ".join(rendered)
+
+
+def _render_validation_error(error: Any) -> str | None:
+    if not isinstance(error, dict):
+        return None
+    location = error.get("loc")
+    error_type = error.get("type")
+    message = error.get("msg")
+    parts: list[str] = []
+    if isinstance(location, list) and location:
+        parts.append(".".join(str(item) for item in location))
+    if isinstance(error_type, str) and error_type:
+        parts.append(error_type)
+    if isinstance(message, str) and message:
+        parts.append(message)
+    return ": ".join(parts) if parts else None
+
 
 __all__ = ["CliUserError", "HttpJarvisClient", "JarvisClient", "_http_error_message"]

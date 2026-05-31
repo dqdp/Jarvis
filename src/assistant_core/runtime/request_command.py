@@ -32,4 +32,5 @@ class RuntimeTurnCommandBuilder:
             loop_strategy=request_record.metadata.get("loop_strategy", "memory_augmented_answer"),
             working_directory=request_record.metadata.get("working_directory"),
             permission_mode=self._settings.permissions.mode,
+            metadata=dict(request_record.metadata),
         )

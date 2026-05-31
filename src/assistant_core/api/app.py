@@ -107,6 +107,7 @@ def create_app(
     inference_health=None,
     content_ingestion=None,
     policy=None,
+    intent_classifier=None,
     lifespan=None,
 ) -> FastAPI:
     app = FastAPI(title="Jarvis Assistant Core", version="0.0.0", lifespan=lifespan)
@@ -237,6 +238,7 @@ def create_app(
                     working_directory=body.working_directory,
                     policy=selection_policy,
                     event_log=None,
+                    intent_classifier=intent_classifier,
                 )
             except LoopSelectionError as exc:
                 failure_request_id = _pre_submit_failure_request_id(

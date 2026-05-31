@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from assistant_core.config.settings import Settings
@@ -33,6 +33,7 @@ class RuntimeTurnCommand:
     loop_strategy: str = LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value
     working_directory: str | None = None
     permission_mode: PermissionMode | str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -124,4 +125,5 @@ class AgentRuntime:
             correlation_id=command.request_id,
             working_directory=command.working_directory,
             permission_mode=command.permission_mode,
+            metadata=command.metadata,
         )

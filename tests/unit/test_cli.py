@@ -1492,6 +1492,35 @@ def test_http_error_message_uses_api_error_payload() -> None:
     assert cli._http_error_message(exc, "health") == "health failed: 503 daemon warming up"
 
 
+def test_http_error_message_includes_validation_error_locations() -> None:
+    request = httpx.Request("POST", "http://testserver/v1/conversations/id/messages")
+    response = httpx.Response(
+        400,
+        request=request,
+        json={
+            "error": {
+                "code": "invalid_request",
+                "message": "request validation failed",
+                "details": {
+                    "errors": [
+                        {
+                            "loc": ["body", "working_directory"],
+                            "msg": "Extra inputs are not permitted",
+                            "type": "extra_forbidden",
+                        },
+                    ],
+                },
+            },
+        },
+    )
+    exc = httpx.HTTPStatusError("bad request", request=request, response=response)
+
+    assert cli._http_error_message(exc, "post message") == (
+        "post message failed: 400 invalid_request: request validation failed "
+        "(body.working_directory: extra_forbidden: Extra inputs are not permitted)"
+    )
+
+
 def test_http_client_uses_explicit_non_stream_timeout(monkeypatch) -> None:
     timeouts: list[float | None] = []
 
