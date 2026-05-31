@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, date, datetime
 import json
-import re
-import sys
 from typing import Any
 from uuid import uuid4
 
@@ -37,6 +35,11 @@ from assistant_core.ports.event_log import EventLogPort
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.ports.model_router import ModelRouterPort
 from assistant_core.ports.tools import ToolGatewayPort
+from assistant_core.runtime.direct_tools import (
+    DirectToolPlan,
+    direct_tool_arguments,
+    direct_tool_plan_from_metadata,
+)
 from assistant_core.runtime.loops.tool_approval import ApprovalWaiter
 from assistant_core.runtime.loops.tool_proposal_executor import ToolProposalExecutor
 from assistant_core.runtime.request_streaming import public_stream_data
@@ -53,20 +56,6 @@ TOOL_PROPOSAL_SCHEMA = {
     "required": ["action"],
     "additionalProperties": False,
 }
-
-_DIRECT_PATTERN_SHELL_SYNTAX_MARKERS = (
-    "|",
-    ";",
-    "&&",
-    "||",
-    ">",
-    "<",
-    "`",
-    "$(",
-    "\n",
-    "\r",
-)
-
 
 class ToolReactLoop:
     strategy_name = LoopStrategyName.TOOL_REACT_LOOP
@@ -138,11 +127,11 @@ class ToolReactLoop:
         loop_deadline = asyncio.get_running_loop().time() + float(
             request.budget.max_wall_time_seconds,
         )
-        direct_tool_names = _direct_tool_names(request)
-        if direct_tool_names:
+        direct_tool_plan = direct_tool_plan_from_metadata(request.metadata)
+        if direct_tool_plan is not None:
             return await self._run_direct_tools(
                 request,
-                tool_names=direct_tool_names,
+                plan=direct_tool_plan,
                 loop_started=loop_started,
                 loop_deadline=loop_deadline,
             )
@@ -293,7 +282,7 @@ class ToolReactLoop:
         self,
         request: LoopExecutionRequest,
         *,
-        tool_names: tuple[str, ...],
+        plan: DirectToolPlan,
         loop_started: EventEnvelope,
         loop_deadline: float,
     ) -> LoopExecutionResult:
@@ -315,13 +304,17 @@ class ToolReactLoop:
         context_manifest_refs: tuple[str, ...] = ()
         tool_observation_refs: tuple[ToolObservationRef, ...] = ()
         try:
-            for tool_name in tool_names:
+            for tool_name in plan.tool_names:
                 observation_ref = await self._proposal_executor.execute(
                     request,
                     ToolProposal(
                         action="tool_call",
                         tool_name=tool_name,
-                        arguments=_direct_tool_arguments(tool_name, request),
+                        arguments=direct_tool_arguments(
+                            plan,
+                            tool_name,
+                            working_directory=request.working_directory,
+                        ),
                     ),
                     step_id=step_id,
                     causation_event_id=step_started.event_id,
@@ -399,7 +392,7 @@ class ToolReactLoop:
                 request,
                 ToolProposal(
                     action="final_answer",
-                    final_answer=_direct_tools_answer(tool_names, tool_observation_refs, request),
+                    final_answer=_direct_tools_answer(plan, tool_observation_refs),
                 ),
                 step_started=step_started,
                 used_model_calls=used_model_calls,
@@ -708,34 +701,6 @@ def _wall_time_expired(deadline: float) -> bool:
     return asyncio.get_running_loop().time() >= deadline
 
 
-def _direct_tool_names(request: LoopExecutionRequest) -> tuple[str, ...]:
-    tool_names = request.metadata.get("loop_selection_direct_tool_names")
-    if isinstance(tool_names, list):
-        accepted = tuple(tool_name for tool_name in tool_names if _is_direct_tool_name(tool_name))
-        return accepted if len(accepted) == len(tool_names) else ()
-    tool_name = request.metadata.get("loop_selection_direct_tool_name")
-    if _is_direct_tool_name(tool_name):
-        if (
-            tool_name == "tool.system.read.process"
-            and request.metadata.get("loop_selection_direct_scenario") == "process_name_search"
-            and _process_search_pattern(request.user_input) is None
-        ):
-            return ()
-        return (tool_name,)
-    return ()
-
-
-def _is_direct_tool_name(tool_name: object) -> bool:
-    return tool_name in {
-        "datetime.now",
-        "tool.system.read.hardware",
-        "tool.system.read.network",
-        "tool.system.read.process",
-        "tool.system.read.resources",
-        "tool.system.read.sensors",
-    }
-
-
 def _max_sensitivity(first: Sensitivity, second: Sensitivity) -> Sensitivity:
     return first if SENSITIVITY_ORDER[first] >= SENSITIVITY_ORDER[second] else second
 
@@ -750,179 +715,29 @@ def _max_ref_sensitivity(
     return result
 
 
-def _direct_tool_arguments(tool_name: str, request: LoopExecutionRequest) -> dict[str, Any]:
-    if tool_name == "datetime.now":
-        return {}
-    if tool_name == "tool.system.read.hardware":
-        return {
-            "argv": _hardware_snapshot_argv(request),
-            "cwd": request.working_directory or ".",
-        }
-    if tool_name == "tool.system.read.sensors":
-        return {
-            "argv": _sensor_snapshot_argv(),
-            "cwd": request.working_directory or ".",
-        }
-    if tool_name == "tool.system.read.process":
-        return {
-            "argv": _process_name_search_argv(request),
-            "cwd": request.working_directory or ".",
-        }
-    if tool_name == "tool.system.read.resources":
-        return {
-            "argv": _resource_snapshot_argv(request),
-            "cwd": request.working_directory or ".",
-        }
-    if tool_name == "tool.system.read.network":
-        return {
-            "argv": _network_snapshot_argv(request),
-            "cwd": request.working_directory or ".",
-        }
-    return {}
-
-
-def _hardware_snapshot_argv(request: LoopExecutionRequest) -> list[str]:
-    if request.metadata.get("loop_selection_direct_scenario") == "os_version":
-        return _os_version_argv()
-    if request.metadata.get("loop_selection_direct_scenario") == "battery_charge":
-        return _battery_snapshot_argv()
-    if sys.platform == "darwin":
-        return ["sysctl", "-n", "hw.logicalcpu"]
-    if sys.platform.startswith("linux"):
-        return ["lscpu"]
-    return ["lscpu"]
-
-
-def _os_version_argv() -> list[str]:
-    if sys.platform == "darwin":
-        return ["sw_vers"]
-    if sys.platform.startswith("linux"):
-        return ["uname", "-a"]
-    return ["uname", "-a"]
-
-
-def _battery_snapshot_argv() -> list[str]:
-    if sys.platform == "darwin":
-        return ["pmset", "-g", "batt"]
-    return ["upower", "-i", "/org/freedesktop/UPower/devices/DisplayDevice"]
-
-
-def _sensor_snapshot_argv() -> list[str]:
-    if sys.platform == "darwin":
-        return ["powermetrics", "--samplers", "thermal", "-n", "1"]
-    if sys.platform.startswith("linux"):
-        return ["thermal-sysfs"]
-    return ["sensors"]
-
-
-def _resource_snapshot_argv(request: LoopExecutionRequest) -> list[str]:
-    if request.metadata.get("loop_selection_direct_scenario") == "disk_free":
-        return ["df", "-h"]
-    if sys.platform == "darwin":
-        if "tool.system.read.hardware" in _direct_tool_names(request):
-            return ["top", "-l", "1", "-n", "0"]
-        return ["vm_stat"]
-    if sys.platform.startswith("linux"):
-        if "tool.system.read.hardware" in _direct_tool_names(request):
-            return ["top", "-b", "-n", "1"]
-        return ["free", "-m"]
-    return ["uptime"]
-
-
-def _network_snapshot_argv(request: LoopExecutionRequest) -> list[str]:
-    if request.metadata.get("loop_selection_direct_scenario") == "vpn_status":
-        if sys.platform == "darwin":
-            return ["scutil", "--nc", "list"]
-        if sys.platform.startswith("linux"):
-            return ["ip", "addr"]
-    if sys.platform == "darwin":
-        return ["ifconfig"]
-    return ["ip", "addr"]
-
-
-def _process_name_search_argv(request: LoopExecutionRequest) -> list[str]:
-    pattern = _process_search_pattern(request.user_input)
-    if pattern is None:
-        pattern = "__jarvis_missing_process_name__"
-    return ["pgrep", "-l", re.escape(pattern)]
-
-
-def _process_search_pattern(text: str) -> str | None:
-    return _quoted_process_pattern(text) or _unquoted_process_pattern(text)
-
-
-def _quoted_process_pattern(text: str) -> str | None:
-    for pattern in (
-        r'"([^"]+)"',
-        r"'([^']+)'",
-        r"«([^»]+)»",
-    ):
-        match = re.search(pattern, text)
-        if match is None:
-            continue
-        value = match.group(1).strip()
-        if _safe_direct_pattern(value):
-            return value
-    return None
-
-
-def _unquoted_process_pattern(text: str) -> str | None:
-    for pattern in (
-        r"(?:process|процесс(?:а|е|ом)?)(?:\s+(?:named|called|с именем|имени|под названием))?\s+(?P<value>[A-Za-z0-9_.:-]{1,128})",
-        r"(?P<value>[A-Za-z0-9_.:-]{1,128})\s+(?:process|процесс(?:а|е|ом)?)",
-    ):
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match is None:
-            continue
-        value = match.group("value").strip()
-        if value.casefold() in {"process", "процесс", "now", "сейчас"}:
-            continue
-        if _safe_direct_pattern(value):
-            return value
-    return None
-
-
-def _safe_direct_pattern(value: str) -> bool:
-    return 0 < len(value) <= 128 and not any(
-        marker in value for marker in _DIRECT_PATTERN_SHELL_SYNTAX_MARKERS
-    )
-
-
 def _direct_tools_answer(
-    tool_names: tuple[str, ...],
+    plan: DirectToolPlan,
     observation_refs: tuple[ToolObservationRef, ...],
-    request: LoopExecutionRequest,
 ) -> str:
     refs_by_name = {ref.tool_name: ref for ref in observation_refs}
-    if (
-        request.metadata.get("loop_selection_direct_scenario") == "christmas_countdown"
-        and tool_names == ("datetime.now",)
-    ):
+    tool_names = plan.tool_names
+    if plan.scenario == "christmas_countdown" and tool_names == ("datetime.now",):
         return _christmas_countdown_answer(refs_by_name["datetime.now"])
-    if (
-        request.metadata.get("loop_selection_direct_scenario") == "battery_charge"
-        and tool_names == ("tool.system.read.hardware",)
-    ):
+    if plan.scenario == "battery_charge" and tool_names == ("tool.system.read.hardware",):
         return _battery_charge_answer(refs_by_name["tool.system.read.hardware"])
-    if (
-        request.metadata.get("loop_selection_direct_scenario") == "disk_free"
-        and tool_names == ("tool.system.read.resources",)
-    ):
+    if plan.scenario == "disk_free" and tool_names == ("tool.system.read.resources",):
         return _disk_free_answer(refs_by_name["tool.system.read.resources"])
-    if (
-        request.metadata.get("loop_selection_direct_scenario") == "os_version"
-        and tool_names == ("tool.system.read.hardware",)
-    ):
+    if plan.scenario == "os_version" and tool_names == ("tool.system.read.hardware",):
         return _os_version_answer(refs_by_name["tool.system.read.hardware"])
-    if tool_names == ("tool.system.read.hardware", "tool.system.read.resources"):
+    if plan.scenario == "cpu_overview" and tool_names == (
+        "tool.system.read.hardware",
+        "tool.system.read.resources",
+    ):
         return _cpu_overview_answer(
             refs_by_name["tool.system.read.hardware"],
             refs_by_name["tool.system.read.resources"],
         )
-    if (
-        request.metadata.get("loop_selection_direct_scenario") == "vpn_status"
-        and tool_names == ("tool.system.read.network",)
-    ):
+    if plan.scenario == "vpn_status" and tool_names == ("tool.system.read.network",):
         return _vpn_status_answer(refs_by_name["tool.system.read.network"])
     return _direct_tool_answer(tool_names[-1], observation_refs[-1])
 

@@ -25,6 +25,32 @@ from assistant_core.runtime.request_metadata import LoopSelectionError, runtime_
 pytestmark = pytest.mark.unit
 
 
+def _assert_direct_plan(
+    metadata: dict,
+    *,
+    scenario: str,
+    tool_names: list[str],
+    capabilities: list[str],
+    scope_hint: str | None = None,
+    classification_source: str = "deterministic",
+    required_arguments: dict[str, str] | None = None,
+    provenance_contains: tuple[str, ...] = (),
+) -> None:
+    plan = metadata["loop_selection_direct_tool_plan"]
+    assert plan["version"] == 1
+    assert plan["scenario"] == scenario
+    assert plan["tool_names"] == tool_names
+    assert plan["capabilities"] == capabilities
+    assert plan["scope_hint"] == scope_hint
+    assert plan["classification_source"] == classification_source
+    assert plan["required_arguments"] == (required_arguments or {})
+    for evidence_code in provenance_contains:
+        assert evidence_code in plan["provenance"]
+    assert "loop_selection_direct_tool_name" not in metadata
+    assert "loop_selection_direct_tool_names" not in metadata
+    assert "loop_selection_direct_scenario" not in metadata
+
+
 def test_request_metadata_rejects_tool_loop_when_budget_disallows_tool_calls() -> None:
     settings = ConfigLoader(Path("config")).load("test")
     budget = replace(
@@ -94,7 +120,13 @@ def test_request_metadata_records_direct_safe_builtin_tool_hint() -> None:
 
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert resolution.metadata["loop_selection_tool_names"] == ["datetime.now"]
-    assert resolution.metadata["loop_selection_direct_tool_name"] == "datetime.now"
+    _assert_direct_plan(
+        resolution.metadata,
+        scenario="current_time",
+        tool_names=["datetime.now"],
+        capabilities=["tool.safe"],
+        provenance_contains=("safe_builtin_request",),
+    )
 
 
 def test_request_metadata_records_direct_christmas_countdown_scenario() -> None:
@@ -121,8 +153,13 @@ def test_request_metadata_records_direct_christmas_countdown_scenario() -> None:
 
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert resolution.metadata["loop_selection_tool_names"] == ["datetime.now"]
-    assert resolution.metadata["loop_selection_direct_tool_name"] == "datetime.now"
-    assert resolution.metadata["loop_selection_direct_scenario"] == "christmas_countdown"
+    _assert_direct_plan(
+        resolution.metadata,
+        scenario="christmas_countdown",
+        tool_names=["datetime.now"],
+        capabilities=["tool.safe"],
+        scope_hint="christmas_countdown",
+    )
 
 
 def test_request_metadata_records_direct_system_sensors_tool_hint() -> None:
@@ -149,7 +186,12 @@ def test_request_metadata_records_direct_system_sensors_tool_hint() -> None:
 
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.sensors"]
-    assert resolution.metadata["loop_selection_direct_tool_name"] == "tool.system.read.sensors"
+    _assert_direct_plan(
+        resolution.metadata,
+        scenario="sensor_temperature",
+        tool_names=["tool.system.read.sensors"],
+        capabilities=["tool.system.read.sensors"],
+    )
 
 
 def test_request_metadata_records_direct_system_resources_tool_hint_for_free_memory() -> None:
@@ -176,7 +218,12 @@ def test_request_metadata_records_direct_system_resources_tool_hint_for_free_mem
 
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.resources"]
-    assert resolution.metadata["loop_selection_direct_tool_name"] == "tool.system.read.resources"
+    _assert_direct_plan(
+        resolution.metadata,
+        scenario="memory_overview",
+        tool_names=["tool.system.read.resources"],
+        capabilities=["tool.system.read.resources"],
+    )
 
 
 def test_request_metadata_records_direct_disk_free_scenario() -> None:
@@ -203,8 +250,13 @@ def test_request_metadata_records_direct_disk_free_scenario() -> None:
 
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.resources"]
-    assert resolution.metadata["loop_selection_direct_tool_name"] == "tool.system.read.resources"
-    assert resolution.metadata["loop_selection_direct_scenario"] == "disk_free"
+    _assert_direct_plan(
+        resolution.metadata,
+        scenario="disk_free",
+        tool_names=["tool.system.read.resources"],
+        capabilities=["tool.system.read.resources"],
+        scope_hint="disk_free",
+    )
 
 
 def test_request_metadata_records_direct_battery_charge_scenario() -> None:
@@ -231,8 +283,13 @@ def test_request_metadata_records_direct_battery_charge_scenario() -> None:
 
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.hardware"]
-    assert resolution.metadata["loop_selection_direct_tool_name"] == "tool.system.read.hardware"
-    assert resolution.metadata["loop_selection_direct_scenario"] == "battery_charge"
+    _assert_direct_plan(
+        resolution.metadata,
+        scenario="battery_charge",
+        tool_names=["tool.system.read.hardware"],
+        capabilities=["tool.system.read.hardware"],
+        scope_hint="battery_charge",
+    )
 
 
 def test_request_metadata_records_direct_cpu_overview_tool_plan() -> None:
@@ -262,11 +319,13 @@ def test_request_metadata_records_direct_cpu_overview_tool_plan() -> None:
         "tool.system.read.hardware",
         "tool.system.read.resources",
     ]
-    assert resolution.metadata["loop_selection_direct_tool_names"] == [
-        "tool.system.read.hardware",
-        "tool.system.read.resources",
-    ]
-    assert "loop_selection_direct_tool_name" not in resolution.metadata
+    _assert_direct_plan(
+        resolution.metadata,
+        scenario="cpu_overview",
+        tool_names=["tool.system.read.hardware", "tool.system.read.resources"],
+        capabilities=["tool.system.read.hardware", "tool.system.read.resources"],
+        scope_hint="cpu_overview",
+    )
 
 
 def test_request_metadata_records_direct_os_version_scenario() -> None:
@@ -293,8 +352,13 @@ def test_request_metadata_records_direct_os_version_scenario() -> None:
 
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.hardware"]
-    assert resolution.metadata["loop_selection_direct_tool_name"] == "tool.system.read.hardware"
-    assert resolution.metadata["loop_selection_direct_scenario"] == "os_version"
+    _assert_direct_plan(
+        resolution.metadata,
+        scenario="os_version",
+        tool_names=["tool.system.read.hardware"],
+        capabilities=["tool.system.read.hardware"],
+        scope_hint="os_version",
+    )
 
 
 def test_request_metadata_records_direct_process_name_search_scenario() -> None:
@@ -321,8 +385,15 @@ def test_request_metadata_records_direct_process_name_search_scenario() -> None:
 
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.process"]
-    assert resolution.metadata["loop_selection_direct_tool_name"] == "tool.system.read.process"
-    assert resolution.metadata["loop_selection_direct_scenario"] == "process_name_search"
+    _assert_direct_plan(
+        resolution.metadata,
+        scenario="process_name_search",
+        tool_names=["tool.system.read.process"],
+        capabilities=["tool.system.read.process"],
+        scope_hint="process_name_search",
+        required_arguments={"process_pattern": "HFT"},
+        provenance_contains=("process_name_search_pattern",),
+    )
 
 
 def test_request_metadata_records_direct_vpn_status_scenario() -> None:
@@ -349,8 +420,13 @@ def test_request_metadata_records_direct_vpn_status_scenario() -> None:
 
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.network"]
-    assert resolution.metadata["loop_selection_direct_tool_name"] == "tool.system.read.network"
-    assert resolution.metadata["loop_selection_direct_scenario"] == "vpn_status"
+    _assert_direct_plan(
+        resolution.metadata,
+        scenario="vpn_status",
+        tool_names=["tool.system.read.network"],
+        capabilities=["tool.system.read.network"],
+        scope_hint="vpn_status",
+    )
 
 
 def test_request_metadata_accepts_injected_intent_classifier() -> None:
@@ -405,7 +481,13 @@ def test_request_metadata_accepts_injected_intent_classifier() -> None:
     assert classifier.calls == 1
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.hardware"]
-    assert resolution.metadata["loop_selection_direct_scenario"] == "os_version"
+    _assert_direct_plan(
+        resolution.metadata,
+        scenario="os_version",
+        tool_names=["tool.system.read.hardware"],
+        capabilities=["tool.system.read.hardware"],
+        scope_hint="os_version",
+    )
 
 
 def test_request_metadata_does_not_direct_execute_model_source_tool_hints() -> None:
@@ -460,8 +542,7 @@ def test_request_metadata_does_not_direct_execute_model_source_tool_hints() -> N
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert resolution.metadata["loop_selection_classification_source"] == "model"
     assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.resources"]
-    assert "loop_selection_direct_scenario" not in resolution.metadata
-    assert "loop_selection_direct_tool_name" not in resolution.metadata
+    assert "loop_selection_direct_tool_plan" not in resolution.metadata
 
 
 def test_request_metadata_rejects_mismatched_direct_tool_hint() -> None:
@@ -514,8 +595,7 @@ def test_request_metadata_rejects_mismatched_direct_tool_hint() -> None:
 
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert "loop_selection_tool_names" not in resolution.metadata
-    assert "loop_selection_direct_scenario" not in resolution.metadata
-    assert "loop_selection_direct_tool_name" not in resolution.metadata
+    assert "loop_selection_direct_tool_plan" not in resolution.metadata
 
 
 def test_request_metadata_provides_tool_routing_summary_to_classifier() -> None:

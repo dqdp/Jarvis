@@ -119,6 +119,25 @@ async def _create_conversation(app):
     return payload
 
 
+def _assert_direct_plan(
+    metadata: dict,
+    *,
+    scenario: str,
+    tool_names: list[str],
+    capabilities: list[str],
+    scope_hint: str | None = None,
+) -> None:
+    plan = metadata["loop_selection_direct_tool_plan"]
+    assert plan["version"] == 1
+    assert plan["scenario"] == scenario
+    assert plan["tool_names"] == tool_names
+    assert plan["capabilities"] == capabilities
+    assert plan["scope_hint"] == scope_hint
+    assert "loop_selection_direct_tool_name" not in metadata
+    assert "loop_selection_direct_tool_names" not in metadata
+    assert "loop_selection_direct_scenario" not in metadata
+
+
 def test_post_conversation(app_parts) -> None:
     status, payload = asyncio.run(
         _request(
@@ -628,7 +647,12 @@ def test_auto_mode_routes_russian_cpu_temperature_to_system_sensors(app_parts) -
     assert metadata["selected_model_profile"] == "local_structured"
     assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
     assert metadata["loop_selection_tool_names"] == ["tool.system.read.sensors"]
-    assert metadata["loop_selection_direct_tool_name"] == "tool.system.read.sensors"
+    _assert_direct_plan(
+        metadata,
+        scenario="sensor_temperature",
+        tool_names=["tool.system.read.sensors"],
+        capabilities=["tool.system.read.sensors"],
+    )
 
 
 def test_auto_mode_routes_russian_free_memory_to_system_resources(app_parts) -> None:
@@ -657,7 +681,12 @@ def test_auto_mode_routes_russian_free_memory_to_system_resources(app_parts) -> 
     assert metadata["selected_model_profile"] == "local_structured"
     assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
     assert metadata["loop_selection_tool_names"] == ["tool.system.read.resources"]
-    assert metadata["loop_selection_direct_tool_name"] == "tool.system.read.resources"
+    _assert_direct_plan(
+        metadata,
+        scenario="memory_overview",
+        tool_names=["tool.system.read.resources"],
+        capabilities=["tool.system.read.resources"],
+    )
 
 
 def test_auto_mode_routes_russian_cpu_cores_and_load_to_cpu_overview_plan(app_parts) -> None:
@@ -689,10 +718,19 @@ def test_auto_mode_routes_russian_cpu_cores_and_load_to_cpu_overview_plan(app_pa
         "tool.system.read.hardware",
         "tool.system.read.resources",
     ]
-    assert metadata["loop_selection_direct_tool_names"] == [
-        "tool.system.read.hardware",
-        "tool.system.read.resources",
-    ]
+    _assert_direct_plan(
+        metadata,
+        scenario="cpu_overview",
+        tool_names=[
+            "tool.system.read.hardware",
+            "tool.system.read.resources",
+        ],
+        capabilities=[
+            "tool.system.read.hardware",
+            "tool.system.read.resources",
+        ],
+        scope_hint="cpu_overview",
+    )
 
 
 def test_auto_mode_routes_russian_os_version_to_hardware_tool(app_parts) -> None:
@@ -721,8 +759,13 @@ def test_auto_mode_routes_russian_os_version_to_hardware_tool(app_parts) -> None
     assert metadata["selected_model_profile"] == "local_structured"
     assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
     assert metadata["loop_selection_tool_names"] == ["tool.system.read.hardware"]
-    assert metadata["loop_selection_direct_tool_name"] == "tool.system.read.hardware"
-    assert metadata["loop_selection_direct_scenario"] == "os_version"
+    _assert_direct_plan(
+        metadata,
+        scenario="os_version",
+        tool_names=["tool.system.read.hardware"],
+        capabilities=["tool.system.read.hardware"],
+        scope_hint="os_version",
+    )
 
 
 def test_auto_mode_emits_loop_selection_event(app_parts) -> None:

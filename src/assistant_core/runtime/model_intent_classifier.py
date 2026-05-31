@@ -15,6 +15,7 @@ from assistant_core.domain.models import StructuredModelRequest
 from assistant_core.domain.policy import Capability, RiskClass
 from assistant_core.ports.intent_classifier import IntentClassifierPort
 from assistant_core.ports.model_router import ModelRouterPort
+from assistant_core.runtime.routing import classification_has_registry_direct_scope
 
 
 INTENT_CLASSIFICATION_SCHEMA: dict[str, Any] = {
@@ -103,7 +104,7 @@ class ModelBackedIntentClassifier:
         fallback_classification = await self._fallback_classification(request)
         if (
             fallback_classification is not None
-            and _fallback_is_allowlisted_direct_tool_intent(fallback_classification)
+            and _fallback_is_allowlisted_direct_tool_intent(fallback_classification, request)
         ):
             return fallback_classification
         try:
@@ -142,11 +143,11 @@ class ModelBackedIntentClassifier:
             fallback_classification = await self._fallback_classification(request)
         if fallback_classification is None:
             return guardrailed
-        if _fallback_overrides_model_tool_hint(guardrailed, fallback_classification):
+        if _fallback_overrides_model_tool_hint(guardrailed, fallback_classification, request):
             return fallback_classification
         if guardrailed.intent_family is not IntentFamily.ORDINARY_CHAT:
             return guardrailed
-        if _fallback_is_allowlisted_direct_tool_intent(fallback_classification):
+        if _fallback_is_allowlisted_direct_tool_intent(fallback_classification, request):
             return fallback_classification
         return guardrailed
 
@@ -260,7 +261,6 @@ def _local_system_state_guardrail(
         candidate = _candidate_if_available(
             request,
             capability=Capability.TOOL_SYSTEM_READ_HARDWARE,
-            tool_name="tool.system.read.hardware",
             scope_hint="os_version",
             evidence_code="local_system_state_guardrail",
         )
@@ -350,11 +350,13 @@ def _candidate_if_available(
     request: LoopSelectionRequest,
     *,
     capability: Capability,
-    tool_name: str,
     scope_hint: str,
     evidence_code: str,
 ) -> CapabilityCandidate | None:
     if capability not in request.available_capabilities:
+        return None
+    tool_name = _first_available_tool_name(request, capability)
+    if tool_name is None:
         return None
     return CapabilityCandidate(
         capability=capability,
@@ -395,6 +397,7 @@ def _fallback_overrides_ordinary_chat(classification: IntentClassification) -> b
 def _fallback_overrides_model_tool_hint(
     model_classification: IntentClassification,
     fallback_classification: IntentClassification,
+    request: LoopSelectionRequest,
 ) -> bool:
     if model_classification.classification_source != "model":
         return False
@@ -403,13 +406,19 @@ def _fallback_overrides_model_tool_hint(
         IntentFamily.SYSTEM_DIAGNOSTICS,
     }:
         return False
-    return _fallback_is_allowlisted_direct_tool_intent(fallback_classification)
+    return _fallback_is_allowlisted_direct_tool_intent(fallback_classification, request)
 
 
-def _fallback_is_allowlisted_direct_tool_intent(classification: IntentClassification) -> bool:
+def _fallback_is_allowlisted_direct_tool_intent(
+    classification: IntentClassification,
+    request: LoopSelectionRequest,
+) -> bool:
     if not _fallback_overrides_ordinary_chat(classification):
         return False
-    return _classification_has_direct_scope(classification)
+    return classification_has_registry_direct_scope(
+        classification,
+        request.available_tools_summary,
+    )
 
 
 def _mark_model_origin(classification: IntentClassification) -> IntentClassification:
@@ -418,97 +427,13 @@ def _mark_model_origin(classification: IntentClassification) -> IntentClassifica
     return replace(classification, classification_source="model")
 
 
-_DIRECT_SINGLE_CANDIDATES = {
-    (
-        IntentFamily.SAFE_BUILTIN_TOOL,
-        Capability.TOOL_SAFE,
-        "datetime.now",
-        None,
-    ),
-    (
-        IntentFamily.SAFE_BUILTIN_TOOL,
-        Capability.TOOL_SAFE,
-        "datetime.now",
-        "christmas_countdown",
-    ),
-    (
-        IntentFamily.SYSTEM_DIAGNOSTICS,
-        Capability.TOOL_SYSTEM_READ_SENSORS,
-        "tool.system.read.sensors",
-        None,
-    ),
-    (
-        IntentFamily.SYSTEM_DIAGNOSTICS,
-        Capability.TOOL_SYSTEM_READ_RESOURCES,
-        "tool.system.read.resources",
-        None,
-    ),
-    (
-        IntentFamily.SYSTEM_DIAGNOSTICS,
-        Capability.TOOL_SYSTEM_READ_RESOURCES,
-        "tool.system.read.resources",
-        "disk_free",
-    ),
-    (
-        IntentFamily.SYSTEM_DIAGNOSTICS,
-        Capability.TOOL_SYSTEM_READ_HARDWARE,
-        "tool.system.read.hardware",
-        "battery_charge",
-    ),
-    (
-        IntentFamily.SYSTEM_DIAGNOSTICS,
-        Capability.TOOL_SYSTEM_READ_HARDWARE,
-        "tool.system.read.hardware",
-        "os_version",
-    ),
-    (
-        IntentFamily.SYSTEM_DIAGNOSTICS,
-        Capability.TOOL_SYSTEM_READ_PROCESS,
-        "tool.system.read.process",
-        "process_name_search",
-    ),
-    (
-        IntentFamily.SYSTEM_DIAGNOSTICS,
-        Capability.TOOL_SYSTEM_READ_NETWORK,
-        "tool.system.read.network",
-        "vpn_status",
-    ),
-}
-
-_DIRECT_CPU_CANDIDATES = {
-    (
-        IntentFamily.SYSTEM_DIAGNOSTICS,
-        Capability.TOOL_SYSTEM_READ_HARDWARE,
-        "tool.system.read.hardware",
-        "cpu_overview",
-    ),
-    (
-        IntentFamily.SYSTEM_DIAGNOSTICS,
-        Capability.TOOL_SYSTEM_READ_RESOURCES,
-        "tool.system.read.resources",
-        "cpu_overview",
-    ),
-}
-
-
-def _classification_has_direct_scope(classification: IntentClassification) -> bool:
-    keys = {_direct_candidate_key(candidate) for candidate in classification.candidate_capabilities}
-    if not keys or None in keys:
-        return False
-    return keys.issubset(_DIRECT_SINGLE_CANDIDATES) or keys == _DIRECT_CPU_CANDIDATES
-
-
-def _direct_candidate_key(
-    candidate: CapabilityCandidate,
-) -> tuple[IntentFamily, Capability, str, str | None] | None:
-    if len(candidate.tool_names) != 1:
-        return None
-    return (
-        candidate.intent_family,
-        candidate.capability,
-        candidate.tool_names[0],
-        candidate.scope_hint,
-    )
+def _first_available_tool_name(request: LoopSelectionRequest, capability: Capability) -> str | None:
+    for item in request.available_tools_summary:
+        if not isinstance(item, dict):
+            continue
+        if item.get("capability") == capability.value and isinstance(item.get("tool_name"), str):
+            return item["tool_name"]
+    return None
 
 
 def _candidate_from_payload(payload: dict[str, Any]) -> CapabilityCandidate:

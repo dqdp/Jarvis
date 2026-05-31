@@ -382,6 +382,47 @@ def test_request_metadata_does_not_call_tool_adapters() -> None:
     )
 
 
+def test_request_metadata_does_not_define_tool_registry_literals() -> None:
+    source = (SRC_ROOT / "runtime" / "request_metadata.py").read_text(encoding="utf-8")
+
+    assert "_CAPABILITY_TOOL_NAMES" not in source
+    assert "tool.system.read.hardware" not in source
+    assert "loop_selection_direct_tool_name" not in source
+
+
+def test_loop_selector_does_not_import_direct_tool_planner() -> None:
+    imported = _imported_modules(SRC_ROOT / "runtime" / "loop_selection.py")
+
+    assert "assistant_core.runtime.direct_tools" not in imported
+
+
+def test_direct_tool_planner_does_not_execute_tools() -> None:
+    planner_path = SRC_ROOT / "runtime" / "direct_tools.py"
+    imported = _imported_modules(planner_path)
+    source = planner_path.read_text(encoding="utf-8")
+
+    assert "assistant_core.tools.gateway" not in imported
+    assert "assistant_core.ports.tools" not in imported
+    assert ".invoke(" not in source
+
+
+def test_model_intent_classifier_does_not_own_direct_execution_allowlist() -> None:
+    source = (SRC_ROOT / "runtime" / "model_intent_classifier.py").read_text(encoding="utf-8")
+
+    assert "_DIRECT_SINGLE_CANDIDATES" not in source
+    assert "_DIRECT_CPU_CANDIDATES" not in source
+    assert "tool.system.read.hardware" not in source
+
+
+def test_tool_react_loop_consumes_direct_tool_plan_not_loose_tool_name_metadata() -> None:
+    source = (SRC_ROOT / "runtime" / "loops" / "tool_react.py").read_text(encoding="utf-8")
+
+    assert "direct_tool_plan_from_metadata" in source
+    assert "loop_selection_direct_tool_name" not in source
+    assert "loop_selection_direct_tool_names" not in source
+    assert "loop_selection_direct_scenario" not in source
+
+
 def test_loop_selection_events_do_not_include_raw_prompt() -> None:
     source = (SRC_ROOT / "runtime" / "request_metadata.py").read_text(encoding="utf-8")
 

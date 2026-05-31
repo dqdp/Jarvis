@@ -8,12 +8,14 @@ from typing import Any
 
 import pytest
 
+from assistant_core.config.settings import ConfigLoader
 from assistant_core.domain.loop_selection import IntentFamily, LoopSelectionMode, LoopSelectionRequest
 from assistant_core.domain.models import StructuredModelRequest, StructuredModelResponse
 from assistant_core.domain.policy import Capability, PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.runtime.loop_selection import DeterministicIntentClassifier
 from assistant_core.runtime.model_intent_classifier import ModelBackedIntentClassifier
+from assistant_core.runtime.request_metadata import available_tools_summary
 
 
 pytestmark = pytest.mark.unit
@@ -184,7 +186,7 @@ def _request(text: str) -> LoopSelectionRequest:
         working_directory="/tmp/project",
         permission_mode=PermissionMode.DEVELOPER_LOCAL,
         available_capabilities=frozenset(Capability),
-        available_tools_summary=(),
+        available_tools_summary=available_tools_summary(ConfigLoader(Path("config")).load("test")),
         runtime_budget_summary={},
         metadata={"source": "intent_routing_corpus"},
     )

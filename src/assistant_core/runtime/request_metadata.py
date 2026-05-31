@@ -8,8 +8,6 @@ from uuid import uuid4
 from assistant_core.config.settings import Settings
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
 from assistant_core.domain.loop_selection import (
-    CapabilityCandidate,
-    IntentFamily,
     LoopSelectionDecision,
     LoopSelectionMode,
     LoopSelectionRequest,
@@ -20,7 +18,9 @@ from assistant_core.domain.policy import Capability, PolicyDecisionOutcome
 from assistant_core.ports.event_log import EventLogPort
 from assistant_core.ports.intent_classifier import IntentClassifierPort
 from assistant_core.ports.policy import PolicyPort
+from assistant_core.runtime.direct_tools import DirectToolPlanner
 from assistant_core.runtime.loop_selection import DeterministicIntentClassifier, LoopStrategySelector
+from assistant_core.runtime.routing import CapabilityRoutingRegistry
 
 
 @dataclass(frozen=True)
@@ -43,17 +43,6 @@ class LoopSelectionError(ValueError):
         self.decision = decision
 
 
-_CAPABILITY_TOOL_NAMES: dict[Capability, frozenset[str]] = {
-    Capability.TOOL_SAFE: frozenset({"datetime.now", "calculator.evaluate", "daemon.status"}),
-    Capability.TOOL_SHELL_READ: frozenset({"tool.shell.read.project"}),
-    Capability.TOOL_SYSTEM_READ_PROCESS: frozenset({"tool.system.read.process"}),
-    Capability.TOOL_SYSTEM_READ_RESOURCES: frozenset({"tool.system.read.resources"}),
-    Capability.TOOL_SYSTEM_READ_HARDWARE: frozenset({"tool.system.read.hardware"}),
-    Capability.TOOL_SYSTEM_READ_NETWORK: frozenset({"tool.system.read.network"}),
-    Capability.TOOL_SYSTEM_READ_SENSORS: frozenset({"tool.system.read.sensors"}),
-}
-
-
 async def runtime_request_metadata(
     body: Any,
     settings: Settings,
@@ -68,6 +57,7 @@ async def runtime_request_metadata(
     intent_classifier: IntentClassifierPort | None = None,
 ) -> RuntimeRequestMetadataResolution:
     del event_log
+    routing_registry = CapabilityRoutingRegistry.from_settings(settings)
     try:
         requested_mode = resolve_loop_selection_mode(body.loop_strategy)
     except ValueError as exc:
@@ -80,6 +70,7 @@ async def runtime_request_metadata(
             active_project_namespace=active_project_namespace,
             working_directory=working_directory,
             requested_mode=LoopSelectionMode.INVALID_OVERRIDE,
+            routing_registry=routing_registry,
         )
         raise LoopSelectionError(
             str(exc),
@@ -95,6 +86,7 @@ async def runtime_request_metadata(
         active_project_namespace=active_project_namespace,
         working_directory=working_directory,
         requested_mode=requested_mode,
+        routing_registry=routing_registry,
     )
     selector = LoopStrategySelector(
         intent_classifier=intent_classifier or DeterministicIntentClassifier(),
@@ -131,7 +123,12 @@ async def runtime_request_metadata(
 
     decision = replace(decision, selected_model_profile=model_profile)
     return RuntimeRequestMetadataResolution(
-        metadata=metadata_from_decision(decision, body=body, model_profile=model_profile),
+        metadata=metadata_from_decision(
+            decision,
+            body=body,
+            model_profile=model_profile,
+            routing_registry=routing_registry,
+        ),
         selection_request=selection_request,
         decision=decision,
     )
@@ -184,6 +181,7 @@ def metadata_from_decision(
     *,
     body: Any,
     model_profile: str,
+    routing_registry: CapabilityRoutingRegistry,
 ) -> dict[str, Any]:
     selected_loop_strategy = _loop_strategy_value(decision.selected_loop_strategy)
     metadata = {
@@ -202,17 +200,12 @@ def metadata_from_decision(
         "loop_selection_policy_outcome": _policy_outcome_value(decision.policy_outcome),
         "loop_selection_approval_possible": decision.approval_possible,
     }
-    tool_names = _decision_tool_names(decision)
+    tool_names = _decision_tool_names(decision, routing_registry)
     if tool_names:
         metadata["loop_selection_tool_names"] = tool_names
-    direct_scenario = _direct_scenario_from_decision(decision, tool_names)
-    if direct_scenario is not None:
-        metadata["loop_selection_direct_scenario"] = direct_scenario
-    direct_tool_names = _direct_tool_names_from_decision(decision, tool_names, direct_scenario)
-    if len(direct_tool_names) == 1:
-        metadata["loop_selection_direct_tool_name"] = direct_tool_names[0]
-    elif len(direct_tool_names) > 1:
-        metadata["loop_selection_direct_tool_names"] = direct_tool_names
+    direct_plan = DirectToolPlanner(routing_registry).plan(decision, user_input=body.content)
+    if direct_plan is not None:
+        metadata["loop_selection_direct_tool_plan"] = direct_plan.redacted_metadata()
     metadata.update(static_request_metadata(body))
     return metadata
 
@@ -235,6 +228,7 @@ def _selection_request(
     active_project_namespace: str | None,
     working_directory: str | None,
     requested_mode: LoopSelectionMode,
+    routing_registry: CapabilityRoutingRegistry,
 ) -> LoopSelectionRequest:
     return LoopSelectionRequest(
         request_id=request_id,
@@ -246,8 +240,8 @@ def _selection_request(
         active_project_namespace=active_project_namespace,
         working_directory=working_directory,
         permission_mode=settings.permissions.mode,
-        available_capabilities=available_capabilities(settings),
-        available_tools_summary=available_tools_summary(settings),
+        available_capabilities=routing_registry.available_capabilities(),
+        available_tools_summary=routing_registry.available_tools_summary(),
         runtime_budget_summary=runtime_budget_summary(settings),
         model_profile_override=body.model_profile,
         metadata=static_request_metadata(body),
@@ -368,115 +362,11 @@ def required_model_profile_purpose(loop_strategy: LoopStrategyName) -> str:
 
 
 def available_capabilities(settings: Settings) -> frozenset[Capability]:
-    capabilities = {Capability.TOOL_SAFE}
-    if "tool.shell.read" in settings.capabilities:
-        capabilities.add(Capability.TOOL_SHELL_READ)
-    system_read = settings.capabilities.get("tool.system.read", {})
-    enabled_families = set(system_read.get("enabled_families", ()))
-    if "process" in enabled_families:
-        capabilities.add(Capability.TOOL_SYSTEM_READ_PROCESS)
-    if "resources" in enabled_families:
-        capabilities.add(Capability.TOOL_SYSTEM_READ_RESOURCES)
-    if "hardware" in enabled_families:
-        capabilities.add(Capability.TOOL_SYSTEM_READ_HARDWARE)
-    if "network" in enabled_families:
-        capabilities.add(Capability.TOOL_SYSTEM_READ_NETWORK)
-    if "sensors" in enabled_families:
-        capabilities.add(Capability.TOOL_SYSTEM_READ_SENSORS)
-    return frozenset(capabilities)
+    return CapabilityRoutingRegistry.from_settings(settings).available_capabilities()
 
 
 def available_tools_summary(settings: Settings) -> tuple[dict[str, Any], ...]:
-    summaries = [
-        {
-            "tool_name": "datetime.now",
-            "capability": Capability.TOOL_SAFE.value,
-            "intent_families": ["safe_builtin_tool"],
-            "description": "current local date and time",
-            "requires_live_state": True,
-            "requires_execution": True,
-            "requires_write": False,
-            "risk_classes": ["safe"],
-        },
-        {
-            "tool_name": "calculator.evaluate",
-            "capability": Capability.TOOL_SAFE.value,
-            "intent_families": ["safe_builtin_tool"],
-            "description": "deterministic arithmetic evaluation",
-            "requires_live_state": False,
-            "requires_execution": True,
-            "requires_write": False,
-            "risk_classes": ["safe"],
-        },
-        {
-            "tool_name": "daemon.status",
-            "capability": Capability.TOOL_SAFE.value,
-            "intent_families": ["safe_builtin_tool", "system_diagnostics"],
-            "description": "assistant daemon runtime status",
-            "requires_live_state": True,
-            "requires_execution": True,
-            "requires_write": False,
-            "risk_classes": ["safe"],
-        },
-    ]
-    if "tool.shell.read" in settings.capabilities:
-        summaries.append(
-            {
-                "tool_name": "tool.shell.read.project",
-                "capability": Capability.TOOL_SHELL_READ.value,
-                "intent_families": ["project_inspection"],
-                "description": "allowlisted read-only project inspection commands",
-                "requires_live_state": True,
-                "requires_execution": True,
-                "requires_write": False,
-                "risk_classes": ["read_only"],
-            }
-        )
-    system_read = settings.capabilities.get("tool.system.read", {})
-    enabled_families = set(system_read.get("enabled_families", ()))
-    diagnostics = {
-        "process": (
-            "tool.system.read.process",
-            Capability.TOOL_SYSTEM_READ_PROCESS,
-            "read process list and process status",
-        ),
-        "resources": (
-            "tool.system.read.resources",
-            Capability.TOOL_SYSTEM_READ_RESOURCES,
-            "read CPU, memory and resource usage",
-        ),
-        "hardware": (
-            "tool.system.read.hardware",
-            Capability.TOOL_SYSTEM_READ_HARDWARE,
-            "read hardware and operating system metadata",
-        ),
-        "network": (
-            "tool.system.read.network",
-            Capability.TOOL_SYSTEM_READ_NETWORK,
-            "read local network sockets and interfaces",
-        ),
-        "sensors": (
-            "tool.system.read.sensors",
-            Capability.TOOL_SYSTEM_READ_SENSORS,
-            "read temperature and thermal sensor state",
-        ),
-    }
-    for family, (tool_name, capability, description) in diagnostics.items():
-        if family not in enabled_families:
-            continue
-        summaries.append(
-            {
-                "tool_name": tool_name,
-                "capability": capability.value,
-                "intent_families": ["system_diagnostics"],
-                "description": description,
-                "requires_live_state": True,
-                "requires_execution": True,
-                "requires_write": False,
-                "risk_classes": ["read_only"],
-            }
-        )
-    return tuple(summaries)
+    return CapabilityRoutingRegistry.from_settings(settings).available_tools_summary()
 
 
 def runtime_budget_summary(settings: Settings) -> dict[str, Any]:
@@ -604,151 +494,13 @@ def _policy_outcome_value(outcome: PolicyDecisionOutcome | str | None) -> str | 
     return outcome.value if isinstance(outcome, PolicyDecisionOutcome) else str(outcome)
 
 
-def _decision_tool_names(decision: LoopSelectionDecision) -> list[str]:
+def _decision_tool_names(
+    decision: LoopSelectionDecision,
+    routing_registry: CapabilityRoutingRegistry,
+) -> list[str]:
     names: list[str] = []
     for candidate in decision.candidate_capabilities:
-        for tool_name in _valid_candidate_tool_names(candidate):
+        for tool_name in routing_registry.valid_tool_names(candidate.capability, candidate.tool_names):
             if tool_name not in names:
                 names.append(tool_name)
     return names
-
-
-def _direct_tool_names_from_decision(
-    decision: LoopSelectionDecision,
-    tool_names: list[str],
-    direct_scenario: str | None,
-) -> list[str]:
-    if not _direct_metadata_allowed(decision):
-        return []
-    if decision.selected_loop_strategy is not LoopStrategyName.TOOL_REACT_LOOP:
-        return []
-    if decision.intent_family is not IntentFamily.SAFE_BUILTIN_TOOL:
-        if decision.intent_family is IntentFamily.SYSTEM_DIAGNOSTICS:
-            if direct_scenario == "os_version" and tool_names == ["tool.system.read.hardware"]:
-                return ["tool.system.read.hardware"]
-            if (
-                direct_scenario == "battery_charge"
-                and tool_names == ["tool.system.read.hardware"]
-            ):
-                return ["tool.system.read.hardware"]
-            if direct_scenario == "disk_free" and tool_names == ["tool.system.read.resources"]:
-                return ["tool.system.read.resources"]
-            if direct_scenario == "vpn_status" and tool_names == ["tool.system.read.network"]:
-                return ["tool.system.read.network"]
-            if (
-                direct_scenario == "process_name_search"
-                and tool_names == ["tool.system.read.process"]
-            ):
-                return ["tool.system.read.process"]
-            if tool_names == ["tool.system.read.sensors"]:
-                return ["tool.system.read.sensors"]
-            if tool_names == ["tool.system.read.resources"]:
-                return ["tool.system.read.resources"]
-            if tool_names == [
-                "tool.system.read.hardware",
-                "tool.system.read.resources",
-            ]:
-                return ["tool.system.read.hardware", "tool.system.read.resources"]
-        return []
-    if tool_names == ["datetime.now"]:
-        return ["datetime.now"]
-    return []
-
-
-def _direct_scenario_from_decision(
-    decision: LoopSelectionDecision,
-    tool_names: list[str],
-) -> str | None:
-    if not _direct_metadata_allowed(decision):
-        return None
-    if decision.selected_loop_strategy is not LoopStrategyName.TOOL_REACT_LOOP:
-        return None
-    if decision.intent_family is IntentFamily.SAFE_BUILTIN_TOOL:
-        if _has_valid_direct_candidate(
-            decision,
-            capability=Capability.TOOL_SAFE,
-            tool_name="datetime.now",
-            scope_hint="christmas_countdown",
-        ):
-            return "christmas_countdown"
-        return None
-    if decision.intent_family is not IntentFamily.SYSTEM_DIAGNOSTICS:
-        return None
-    if _has_valid_direct_candidate(
-        decision,
-        capability=Capability.TOOL_SYSTEM_READ_HARDWARE,
-        tool_name="tool.system.read.hardware",
-        scope_hint="battery_charge",
-    ):
-        return "battery_charge"
-    if _has_valid_direct_candidate(
-        decision,
-        capability=Capability.TOOL_SYSTEM_READ_RESOURCES,
-        tool_name="tool.system.read.resources",
-        scope_hint="disk_free",
-    ):
-        return "disk_free"
-    if _has_valid_direct_candidate(
-        decision,
-        capability=Capability.TOOL_SYSTEM_READ_HARDWARE,
-        tool_name="tool.system.read.hardware",
-        scope_hint="os_version",
-    ):
-        return "os_version"
-    if _has_valid_direct_candidate(
-        decision,
-        capability=Capability.TOOL_SYSTEM_READ_PROCESS,
-        tool_name="tool.system.read.process",
-        scope_hint="process_name_search",
-    ):
-        return "process_name_search"
-    if _has_valid_direct_candidate(
-        decision,
-        capability=Capability.TOOL_SYSTEM_READ_NETWORK,
-        tool_name="tool.system.read.network",
-        scope_hint="vpn_status",
-    ):
-        return "vpn_status"
-    if tool_names == ["tool.system.read.hardware", "tool.system.read.resources"] and (
-        _has_valid_direct_candidate(
-            decision,
-            capability=Capability.TOOL_SYSTEM_READ_HARDWARE,
-            tool_name="tool.system.read.hardware",
-            scope_hint="cpu_overview",
-        )
-        and _has_valid_direct_candidate(
-            decision,
-            capability=Capability.TOOL_SYSTEM_READ_RESOURCES,
-            tool_name="tool.system.read.resources",
-            scope_hint="cpu_overview",
-        )
-    ):
-        return "cpu_overview"
-    return None
-
-
-def _direct_metadata_allowed(decision: LoopSelectionDecision) -> bool:
-    return decision.classification_source in {"deterministic", "guardrail", "fake", "override"}
-
-
-def _valid_candidate_tool_names(candidate: CapabilityCandidate) -> list[str]:
-    allowed = _CAPABILITY_TOOL_NAMES.get(candidate.capability)
-    if allowed is None:
-        return []
-    return [tool_name for tool_name in candidate.tool_names if tool_name in allowed]
-
-
-def _has_valid_direct_candidate(
-    decision: LoopSelectionDecision,
-    *,
-    capability: Capability,
-    tool_name: str,
-    scope_hint: str,
-) -> bool:
-    return any(
-        candidate.intent_family is decision.intent_family
-        and candidate.capability is capability
-        and candidate.scope_hint == scope_hint
-        and tool_name in _valid_candidate_tool_names(candidate)
-        for candidate in decision.candidate_capabilities
-    )

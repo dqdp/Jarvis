@@ -95,6 +95,28 @@ def _untyped_json_result(content: dict) -> ToolInvocationResult:
     )
 
 
+def _direct_plan_metadata(
+    *,
+    scenario: str,
+    tool_names: list[str],
+    capabilities: list[str],
+    scope_hint: str | None = None,
+    required_arguments: dict[str, str] | None = None,
+) -> dict:
+    return {
+        "loop_selection_direct_tool_plan": {
+            "version": 1,
+            "scenario": scenario,
+            "tool_names": tool_names,
+            "capabilities": capabilities,
+            "scope_hint": scope_hint,
+            "classification_source": "deterministic",
+            "provenance": ["contract_fixture"],
+            "required_arguments": required_arguments or {},
+        }
+    }
+
+
 def _typed_sensor_result(response: dict | ToolInvocationResult) -> ToolInvocationResult:
     if isinstance(response, ToolInvocationResult):
         return response
@@ -630,7 +652,11 @@ def test_tool_react_loop_executes_direct_datetime_hint_without_model_call() -> N
         result = await loop.run_turn(
             _request(
                 user_input="Сколько время?",
-                metadata={"loop_selection_direct_tool_name": "datetime.now"},
+                metadata=_direct_plan_metadata(
+                    scenario="current_time",
+                    tool_names=["datetime.now"],
+                    capabilities=["tool.safe"],
+                ),
             )
         )
         events = await event_log.query(EventFilter(request_id="request-tool-react"))
@@ -654,10 +680,12 @@ def test_tool_react_loop_executes_direct_christmas_countdown_without_model_call(
         result = await loop.run_turn(
             _request(
                 user_input="через сколько дней Рождество?",
-                metadata={
-                    "loop_selection_direct_tool_name": "datetime.now",
-                    "loop_selection_direct_scenario": "christmas_countdown",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="christmas_countdown",
+                    tool_names=["datetime.now"],
+                    capabilities=["tool.safe"],
+                    scope_hint="christmas_countdown",
+                ),
             )
         )
         events = await event_log.query(EventFilter(request_id="request-tool-react"))
@@ -683,7 +711,11 @@ def test_tool_react_loop_executes_direct_sensors_hint_without_model_call() -> No
         result = await loop.run_turn(
             _request(
                 user_input="Текущая температура процессора.",
-                metadata={"loop_selection_direct_tool_name": "tool.system.read.sensors"},
+                metadata=_direct_plan_metadata(
+                    scenario="sensor_temperature",
+                    tool_names=["tool.system.read.sensors"],
+                    capabilities=["tool.system.read.sensors"],
+                ),
                 working_directory="/tmp",
             )
         )
@@ -713,7 +745,11 @@ def test_tool_react_loop_executes_direct_resources_hint_without_model_call() -> 
         result = await loop.run_turn(
             _request(
                 user_input="Сколько памяти сейчас свободно в системе?",
-                metadata={"loop_selection_direct_tool_name": "tool.system.read.resources"},
+                metadata=_direct_plan_metadata(
+                    scenario="memory_overview",
+                    tool_names=["tool.system.read.resources"],
+                    capabilities=["tool.system.read.resources"],
+                ),
                 working_directory="/tmp",
             )
         )
@@ -769,10 +805,12 @@ def test_tool_react_loop_executes_direct_disk_free_without_model_call() -> None:
         result = await loop.run_turn(
             _request(
                 user_input="Сколько свободного места на диске?",
-                metadata={
-                    "loop_selection_direct_tool_name": "tool.system.read.resources",
-                    "loop_selection_direct_scenario": "disk_free",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="disk_free",
+                    tool_names=["tool.system.read.resources"],
+                    capabilities=["tool.system.read.resources"],
+                    scope_hint="disk_free",
+                ),
                 working_directory="/tmp",
             )
         )
@@ -810,12 +848,18 @@ def test_tool_react_loop_executes_direct_cpu_overview_plan_without_model_call(
         result = await loop.run_turn(
             _request(
                 user_input="Сколько ядер у центрального процессора и на сколько они загружены?",
-                metadata={
-                    "loop_selection_direct_tool_names": [
+                metadata=_direct_plan_metadata(
+                    scenario="cpu_overview",
+                    tool_names=[
                         "tool.system.read.hardware",
                         "tool.system.read.resources",
                     ],
-                },
+                    capabilities=[
+                        "tool.system.read.hardware",
+                        "tool.system.read.resources",
+                    ],
+                    scope_hint="cpu_overview",
+                ),
                 working_directory="/tmp",
             )
         )
@@ -870,10 +914,12 @@ def test_tool_react_loop_executes_direct_os_version_without_model_call(
         result = await loop.run_turn(
             _request(
                 user_input="Какая версия операционной системы?",
-                metadata={
-                    "loop_selection_direct_tool_name": "tool.system.read.hardware",
-                    "loop_selection_direct_scenario": "os_version",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="os_version",
+                    tool_names=["tool.system.read.hardware"],
+                    capabilities=["tool.system.read.hardware"],
+                    scope_hint="os_version",
+                ),
                 working_directory="/tmp",
             )
         )
@@ -919,10 +965,12 @@ def test_tool_react_loop_direct_os_answer_uses_typed_payload_not_raw_stdout() ->
         result = await loop.run_turn(
             _request(
                 user_input="Какая версия операционной системы?",
-                metadata={
-                    "loop_selection_direct_tool_name": "tool.system.read.hardware",
-                    "loop_selection_direct_scenario": "os_version",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="os_version",
+                    tool_names=["tool.system.read.hardware"],
+                    capabilities=["tool.system.read.hardware"],
+                    scope_hint="os_version",
+                ),
                 working_directory="/tmp",
             )
         )
@@ -957,10 +1005,12 @@ def test_tool_react_loop_direct_os_answer_falls_back_to_model_for_unparsed_paylo
         result = await loop.run_turn(
             _request(
                 user_input="Какая версия операционной системы?",
-                metadata={
-                    "loop_selection_direct_tool_name": "tool.system.read.hardware",
-                    "loop_selection_direct_scenario": "os_version",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="os_version",
+                    tool_names=["tool.system.read.hardware"],
+                    capabilities=["tool.system.read.hardware"],
+                    scope_hint="os_version",
+                ),
                 working_directory="/tmp",
             )
         )
@@ -1001,10 +1051,12 @@ def test_tool_react_loop_executes_direct_battery_charge_without_model_call(
         result = await loop.run_turn(
             _request(
                 user_input="Сколько процентов заряда аккумулятора осталось на макбуке?",
-                metadata={
-                    "loop_selection_direct_tool_name": "tool.system.read.hardware",
-                    "loop_selection_direct_scenario": "battery_charge",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="battery_charge",
+                    tool_names=["tool.system.read.hardware"],
+                    capabilities=["tool.system.read.hardware"],
+                    scope_hint="battery_charge",
+                ),
                 working_directory="/tmp",
             )
         )
@@ -1034,10 +1086,13 @@ def test_tool_react_loop_executes_direct_process_name_search_without_model_call(
         result = await loop.run_turn(
             _request(
                 user_input='Запущен ли сейчас процесс, в имени которого есть "HFT"?',
-                metadata={
-                    "loop_selection_direct_tool_name": "tool.system.read.process",
-                    "loop_selection_direct_scenario": "process_name_search",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="process_name_search",
+                    tool_names=["tool.system.read.process"],
+                    capabilities=["tool.system.read.process"],
+                    scope_hint="process_name_search",
+                    required_arguments={"process_pattern": "HFT"},
+                ),
                 working_directory="/tmp",
             )
         )
@@ -1075,10 +1130,13 @@ def test_tool_react_loop_direct_process_search_does_not_report_not_found_on_tool
         result = await loop.run_turn(
             _request(
                 user_input='Запущен ли сейчас процесс, в имени которого есть "HFT"?',
-                metadata={
-                    "loop_selection_direct_tool_name": "tool.system.read.process",
-                    "loop_selection_direct_scenario": "process_name_search",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="process_name_search",
+                    tool_names=["tool.system.read.process"],
+                    capabilities=["tool.system.read.process"],
+                    scope_hint="process_name_search",
+                    required_arguments={"process_pattern": "HFT"},
+                ),
                 working_directory="/tmp",
             )
         )
@@ -1101,10 +1159,13 @@ def test_tool_react_loop_executes_direct_unquoted_process_name_search_without_ps
         result = await loop.run_turn(
             _request(
                 user_input="Запущен ли процесс HFT сейчас?",
-                metadata={
-                    "loop_selection_direct_tool_name": "tool.system.read.process",
-                    "loop_selection_direct_scenario": "process_name_search",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="process_name_search",
+                    tool_names=["tool.system.read.process"],
+                    capabilities=["tool.system.read.process"],
+                    scope_hint="process_name_search",
+                    required_arguments={"process_pattern": "HFT"},
+                ),
                 working_directory="/tmp",
             )
         )
@@ -1129,10 +1190,13 @@ def test_tool_react_loop_escapes_direct_process_search_pattern_for_pgrep() -> No
         result = await loop.run_turn(
             _request(
                 user_input='Запущен ли сейчас процесс, в имени которого есть "H.FT"?',
-                metadata={
-                    "loop_selection_direct_tool_name": "tool.system.read.process",
-                    "loop_selection_direct_scenario": "process_name_search",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="process_name_search",
+                    tool_names=["tool.system.read.process"],
+                    capabilities=["tool.system.read.process"],
+                    scope_hint="process_name_search",
+                    required_arguments={"process_pattern": "H.FT"},
+                ),
                 working_directory="/tmp",
             )
         )
@@ -1158,10 +1222,12 @@ def test_tool_react_loop_does_not_direct_execute_process_search_without_pattern(
         result = await loop.run_turn(
             _request(
                 user_input="Запущен ли сейчас процесс?",
-                metadata={
-                    "loop_selection_direct_tool_name": "tool.system.read.process",
-                    "loop_selection_direct_scenario": "process_name_search",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="process_name_search",
+                    tool_names=["tool.system.read.process"],
+                    capabilities=["tool.system.read.process"],
+                    scope_hint="process_name_search",
+                ),
                 working_directory="/tmp",
             )
         )
@@ -1189,10 +1255,12 @@ def test_tool_react_loop_executes_direct_vpn_status_without_model_call(
         result = await loop.run_turn(
             _request(
                 user_input="Включен ли VPN сейчас?",
-                metadata={
-                    "loop_selection_direct_tool_name": "tool.system.read.network",
-                    "loop_selection_direct_scenario": "vpn_status",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="vpn_status",
+                    tool_names=["tool.system.read.network"],
+                    capabilities=["tool.system.read.network"],
+                    scope_hint="vpn_status",
+                ),
                 working_directory="/tmp",
             )
         )
@@ -1250,10 +1318,12 @@ def test_tool_react_loop_does_not_mark_down_linux_vpn_interface_as_connected(
         result = await loop.run_turn(
             _request(
                 user_input="Включен ли VPN сейчас?",
-                metadata={
-                    "loop_selection_direct_tool_name": "tool.system.read.network",
-                    "loop_selection_direct_scenario": "vpn_status",
-                },
+                metadata=_direct_plan_metadata(
+                    scenario="vpn_status",
+                    tool_names=["tool.system.read.network"],
+                    capabilities=["tool.system.read.network"],
+                    scope_hint="vpn_status",
+                ),
                 working_directory="/tmp",
             )
         )

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
+from assistant_core.config.settings import ConfigLoader
 from assistant_core.domain.loop_selection import (
     CapabilityCandidate,
     IntentClassification,
@@ -17,9 +19,15 @@ from assistant_core.domain.policy import Capability, PermissionMode, RiskClass
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.runtime.loop_selection import DeterministicIntentClassifier
 from assistant_core.runtime.model_intent_classifier import ModelBackedIntentClassifier
+from assistant_core.runtime.routing import CapabilityRoutingRegistry
 
 
 pytestmark = pytest.mark.unit
+
+
+def _default_available_tools_summary() -> tuple[dict, ...]:
+    settings = ConfigLoader(Path("config")).load("test")
+    return CapabilityRoutingRegistry.from_settings(settings).available_tools_summary()
 
 
 def test_model_backed_classifier_maps_structured_payload_to_intent_classification() -> None:
@@ -506,7 +514,7 @@ class StaticClassifier:
 def _request(
     *,
     user_input: str = "Какая версия операционной системы?",
-    available_tools_summary: tuple[dict, ...] = (),
+    available_tools_summary: tuple[dict, ...] | None = None,
 ) -> LoopSelectionRequest:
     return LoopSelectionRequest(
         request_id="request-1",
@@ -519,7 +527,11 @@ def _request(
         working_directory="/tmp/project",
         permission_mode=PermissionMode.DEVELOPER_LOCAL,
         available_capabilities=frozenset(Capability),
-        available_tools_summary=available_tools_summary,
+        available_tools_summary=(
+            _default_available_tools_summary()
+            if available_tools_summary is None
+            else available_tools_summary
+        ),
         runtime_budget_summary={},
         metadata={"source": "test"},
     )
