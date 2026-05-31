@@ -453,6 +453,64 @@ def test_model_intent_classifier_does_not_own_direct_execution_allowlist() -> No
     assert "tool.system.read.hardware" not in source
 
 
+def test_model_facing_route_schema_does_not_expose_policy_or_tool_execution_fields() -> None:
+    source = (SRC_ROOT / "runtime" / "request_resolver.py").read_text(encoding="utf-8")
+    schema_block = source.split("MODEL_ROUTE_SCHEMA", 1)[1].split("@dataclass", 1)[0]
+
+    forbidden_fields = {
+        "capability",
+        "tool_names",
+        "risk_classes",
+        "fallback_preference",
+        "approval_possible",
+        "direct_tool_plan",
+        "provider_request",
+    }
+
+    assert sorted(field for field in forbidden_fields if field in schema_block) == []
+
+
+def test_route_registry_depends_on_capability_metadata_not_tool_adapters() -> None:
+    imported = _imported_modules(SRC_ROOT / "runtime" / "request_resolver.py")
+
+    assert "assistant_core.tools" not in imported
+    assert "assistant_core.ports.tools" not in imported
+    assert "assistant_core.tools.gateway" not in imported
+
+
+def test_model_route_classifier_depends_on_model_router_port_not_provider_adapters() -> None:
+    _assert_no_import_prefixes(
+        [SRC_ROOT / "runtime" / "request_resolver.py"],
+        {
+            "assistant_core.models.local_openai",
+            "assistant_core.models.ollama",
+            "assistant_core.models.fake_provider",
+            "openai",
+            "ollama",
+            "vllm",
+            "httpx",
+        },
+    )
+
+
+def test_cli_does_not_import_route_registry_or_classifier_implementation() -> None:
+    _assert_no_import_prefixes(
+        _python_files("cli_app") + [SRC_ROOT / "cli.py"],
+        {
+            "assistant_core.runtime.request_resolver",
+            "assistant_core.runtime.model_intent_classifier",
+        },
+    )
+
+
+def test_request_resolver_complexity_is_recorded_for_follow_up() -> None:
+    source = (PROJECT_ROOT / "docs" / "37_post_mvp_tdd_slices_plan.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "request_resolver.py module split follow-up" in source
+
+
 def test_tool_react_loop_consumes_direct_tool_plan_not_loose_tool_name_metadata() -> None:
     source = (SRC_ROOT / "runtime" / "loops" / "tool_react.py").read_text(encoding="utf-8")
 

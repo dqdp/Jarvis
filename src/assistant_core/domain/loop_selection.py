@@ -42,6 +42,7 @@ class IntentFamily(StrEnum):
 class SelectionDecisionStatus(StrEnum):
     SELECTED = "selected"
     FALLBACK_CHAT = "fallback_chat"
+    CLARIFICATION_REQUIRED = "clarification_required"
     REJECTED_BY_POLICY = "rejected_by_policy"
     TOOLS_UNAVAILABLE = "tools_unavailable"
     INVALID_OVERRIDE = "invalid_override"

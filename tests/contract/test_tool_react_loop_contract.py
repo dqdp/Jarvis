@@ -1544,6 +1544,8 @@ def test_tool_react_loop_streams_failed_terminal_after_denied_approval() -> None
 
     assert store.request.status == RequestStatus.FAILED
     assert [event.event_type for event in emitted] == [
+        EventType.REQUEST_PROCESSING_STARTED.value,
+        EventType.CONTEXT_ASSEMBLY_STARTED.value,
         EventType.APPROVAL_REQUIRED.value,
         EventType.APPROVAL_DENIED.value,
         EventType.REQUEST_PROCESSING_FAILED.value,

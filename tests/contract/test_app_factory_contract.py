@@ -758,3 +758,75 @@ def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
     assert stream_payloads[-1][1]["event_id"]
     assert EventType.TOOL_CALL_COMPLETED in event_types
     assert structured_calls == 2
+
+
+def test_runtime_app_factory_api_uses_direct_plan_for_request_resolver_safe_route() -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        structured_provider = FakeModelProvider()
+        runtime_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            providers={
+                "local_structured": structured_provider,
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        try:
+            app = runtime_app.app
+            _, conversation_raw = await _request(
+                app,
+                "POST",
+                "/v1/conversations",
+                {"title": "factory api direct", "active_project_namespace": "project.personal_assistant"},
+            )
+            conversation = json.loads(conversation_raw)
+            status_code, message_raw = await _request(
+                app,
+                "POST",
+                f"/v1/conversations/{conversation['conversation_id']}/messages",
+                {
+                    "client_message_id": "client-factory-api-direct-time",
+                    "content": "Сколько время?",
+                    "sensitivity": "project",
+                },
+            )
+            submitted = json.loads(message_raw)
+            _, stream_raw = await _request(
+                app,
+                "GET",
+                f"/v1/requests/{submitted['request_id']}/stream",
+            )
+            _, request_raw = await _request(
+                app,
+                "GET",
+                f"/v1/requests/{submitted['request_id']}",
+            )
+            event_log = PostgresEventLog(runtime_app.engine)
+            events = await event_log.query(EventFilter(request_id=submitted["request_id"]))
+            return (
+                status_code,
+                _sse_events(stream_raw),
+                json.loads(request_raw),
+                [event.event_type for event in events],
+                structured_provider.structured_calls,
+            )
+        finally:
+            await runtime_app.dispose()
+
+    status_code, stream_events, request_payload, event_types, structured_calls = asyncio.run(
+        scenario(),
+    )
+
+    assert status_code == 202
+    assert stream_events[-1] == "request.processing.completed"
+    assert request_payload["status"] == "completed"
+    assert EventType.TOOL_CALL_COMPLETED in event_types
+    assert structured_calls == 0

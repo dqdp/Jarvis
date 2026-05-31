@@ -34,10 +34,12 @@ from assistant_core.models.router import ModelRouter
 from assistant_core.ports.model_provider import ModelProviderPort
 from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.runtime.agent_runtime import AgentRuntime
-from assistant_core.runtime.loop_selection import DeterministicIntentClassifier
 from assistant_core.runtime.loops import LoopStrategyRegistry, MemoryAugmentedAnswerLoop
 from assistant_core.runtime.loops.tool_react import ToolReactLoop
-from assistant_core.runtime.model_intent_classifier import ModelBackedIntentClassifier
+from assistant_core.runtime.request_resolver import (
+    HybridRequestResolver,
+    RequestResolverIntentClassifier,
+)
 from assistant_core.storage.conversation_store import PostgresConversationStore
 from assistant_core.storage.approval_store import PostgresApprovalStore
 from assistant_core.storage.content_store import PostgresContentStore
@@ -195,13 +197,14 @@ def create_runtime_app(
     return runtime_app
 
 
-def build_intent_classifier(*, settings: Settings, router: ModelRouter) -> ModelBackedIntentClassifier:
-    return ModelBackedIntentClassifier(
-        router=router,
-        fallback=DeterministicIntentClassifier(),
-        deterministic_fast_path_threshold=(
-            settings.loop_selection.deterministic_fast_path_threshold
-        ),
+def build_intent_classifier(
+    *,
+    settings: Settings,
+    router: ModelRouter,
+) -> RequestResolverIntentClassifier:
+    del settings, router
+    return RequestResolverIntentClassifier(
+        resolver=HybridRequestResolver(),
     )
 
 

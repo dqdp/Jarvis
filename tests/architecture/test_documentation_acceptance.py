@@ -319,7 +319,7 @@ def test_runtime_substrate_adr_matches_custom_deterministic_mvp() -> None:
     assert "LangGraph is deferred" in adr
 
 
-def test_pm09_docs_gate_on_full_pm08_sequence_through_pm08j() -> None:
+def test_pm09_docs_gate_on_full_pm08_sequence_through_pm08k() -> None:
     docs_text = "\n".join(
         (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
         for relative_path in [
@@ -338,17 +338,79 @@ def test_pm09_docs_gate_on_full_pm08_sequence_through_pm08j() -> None:
         "PM-08h",
         "PM-08i",
         "PM-08j",
+        "PM-08k",
     ]:
         assert slice_name in docs_text
 
     assert "PM-08d, PM-08f, PM-08g, PM-08h\nand PM-08i" not in docs_text
     assert "PM-08h and PM-08i are complete" not in docs_text
     assert "after PM-08i and must use" not in docs_text
+    assert "after PM-08j and must use" not in docs_text
     assert "after PM-08d CLI tool/RAG/approval readiness, PM-08f" not in docs_text
     assert "canonical jarvis runtime startup" in docs_text.lower()
+    assert "request routing architecture review" in docs_text.lower()
     assert "jarvis-up" in docs_text
     assert "dogfood-up" not in docs_text
     assert "PM-08j complete" in docs_text
+    assert "PM-08k complete" in docs_text
 
     assert "ADR-036 Graph runtime adapter" not in docs_text
     assert "ADR-046 Graph runtime adapter" in docs_text
+
+
+def test_pm08k_docs_start_with_industry_research_gate() -> None:
+    pm08k = (DOCS_ROOT / "38_pm08k_classifier_contract_simplification.md").read_text(
+        encoding="utf-8",
+    )
+
+    assert "PM-08k.0" in pm08k
+    assert "industry research gate" in pm08k.lower()
+    assert "OpenAI" in pm08k
+    assert "Anthropic" in pm08k
+    assert "Rasa" in pm08k
+    assert "Semantic Kernel" in pm08k
+    assert "Haystack" in pm08k
+    assert "LlamaIndex" in pm08k
+    assert "mandatory front-gate LLM classifier" in pm08k
+    assert "abstain" in pm08k
+
+
+def test_pm08k_research_gate_records_architecture_decision() -> None:
+    pm08k = (DOCS_ROOT / "38_pm08k_classifier_contract_simplification.md").read_text(
+        encoding="utf-8",
+    )
+
+    assert "PM-08k.0 Research Outcome" in pm08k
+    assert "Decision Matrix" in pm08k
+    assert "mandatory front-gate LLM classifier is rejected as the default" in pm08k
+    assert "Hybrid Request Resolver" in pm08k
+    assert "main-model tool calling is deferred" in pm08k
+    assert "PM-08k.1" in pm08k
+    assert "PM-08k.2" in pm08k
+    assert "PM-08k.3" in pm08k
+
+
+def test_pm08k_plan_records_agreed_resolver_design_choices() -> None:
+    pm08k = (DOCS_ROOT / "38_pm08k_classifier_contract_simplification.md").read_text(
+        encoding="utf-8",
+    )
+
+    for phrase in [
+        "RequestResolver",
+        "RouteDecision",
+        "Abstain",
+        "Clarify",
+        "Unavailable",
+        "medium-grained route taxonomy",
+        "current_time",
+        "system_memory",
+        "ordinary chat bypass",
+        "obvious chat must not call the classifier",
+        "non-LLM semantic layer starts as evaluation/calibration only",
+        "LLM adjudicator is optional and late-stage",
+        "PM-08k.4",
+        "false live-state positives",
+        "direct_plan correctness",
+        "model-call avoidance",
+    ]:
+        assert phrase in pm08k

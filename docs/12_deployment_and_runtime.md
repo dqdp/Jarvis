@@ -128,6 +128,10 @@ structured-model candidates, including `qwen3.5:0.8b`, must be compared through
 the local intent-routing evaluation before becoming the default. The threshold
 can be tuned without a code change through
 `JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD`.
+PM-08k is planned to simplify this classifier path further: the model-facing
+structured output should become a small route classification, while runtime code
+maps accepted routes into capabilities, tool names, risk classes and policy
+semantics.
 The Ollama adapter sends anti-repeat generation options and terminates obvious
 repeated-line loops before they exhaust the configured output-token budget.
 `GET /v1/health` also performs cheap provider readiness probes: Ollama uses

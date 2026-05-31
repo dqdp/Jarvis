@@ -279,6 +279,19 @@ class LoopStrategySelector:
                 classification_source="unavailable",
             )
 
+        if (
+            classification.intent_family is IntentFamily.UNKNOWN
+            and classification.fallback_preference
+            is SelectionFallbackPreference.ASK_CLARIFICATION
+        ):
+            return _clarification_decision(request=request, classification=classification)
+        if (
+            classification.intent_family is IntentFamily.UNKNOWN
+            and classification.fallback_preference
+            is SelectionFallbackPreference.FAIL_UNAVAILABLE
+        ):
+            return _unknown_unavailable_decision(request=request, classification=classification)
+
         if classification.confidence < self._medium_confidence:
             return _chat_decision(
                 request=request,
@@ -414,6 +427,52 @@ class LoopStrategySelector:
                 policy_outcome = PolicyDecisionOutcome.APPROVAL_REQUIRED
                 approval_possible = True
         return policy_outcome, approval_possible
+
+
+def _clarification_decision(
+    *,
+    request: LoopSelectionRequest,
+    classification: IntentClassification,
+) -> LoopSelectionDecision:
+    return LoopSelectionDecision(
+        requested_mode=request.requested_mode,
+        selected_loop_strategy=None,
+        selected_model_profile=None,
+        intent_family=classification.intent_family,
+        reason_code=classification.reason_code,
+        confidence=classification.confidence,
+        candidate_capabilities=(),
+        requires_tools=False,
+        requires_live_state=False,
+        policy_outcome=None,
+        approval_possible=False,
+        fallback_behavior=SelectionFallbackPreference.ASK_CLARIFICATION,
+        decision_status=SelectionDecisionStatus.CLARIFICATION_REQUIRED,
+        classification_source=classification.classification_source,
+    )
+
+
+def _unknown_unavailable_decision(
+    *,
+    request: LoopSelectionRequest,
+    classification: IntentClassification,
+) -> LoopSelectionDecision:
+    return LoopSelectionDecision(
+        requested_mode=request.requested_mode,
+        selected_loop_strategy=None,
+        selected_model_profile=None,
+        intent_family=classification.intent_family,
+        reason_code=classification.reason_code,
+        confidence=classification.confidence,
+        candidate_capabilities=(),
+        requires_tools=False,
+        requires_live_state=False,
+        policy_outcome=PolicyDecisionOutcome.DENY,
+        approval_possible=False,
+        fallback_behavior=SelectionFallbackPreference.FAIL_UNAVAILABLE,
+        decision_status=SelectionDecisionStatus.TOOLS_UNAVAILABLE,
+        classification_source=classification.classification_source,
+    )
 
 
 def _chat_decision(

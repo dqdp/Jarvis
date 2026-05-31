@@ -16,7 +16,13 @@ from assistant_core.runtime.routing import CapabilityRoutingRegistry, DirectScen
 
 _DIRECT_PLAN_METADATA_KEY = "loop_selection_direct_tool_plan"
 _DIRECT_PLAN_VERSION = 1
-_DIRECT_AUTHORITY_SOURCES = {"deterministic", "guardrail", "fake", "override"}
+_DIRECT_AUTHORITY_SOURCES = {
+    "deterministic",
+    "guardrail",
+    "fake",
+    "override",
+    "request_resolver",
+}
 _DIRECT_PATTERN_SHELL_SYNTAX_MARKERS = (
     "|",
     ";",

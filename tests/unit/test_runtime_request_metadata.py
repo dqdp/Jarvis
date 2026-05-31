@@ -18,8 +18,13 @@ from assistant_core.domain.loop_selection import (
 from assistant_core.domain.loops import LoopStrategyName
 from assistant_core.domain.policy import Capability, RiskClass
 from assistant_core.domain.sensitivity import Sensitivity
+from assistant_core.app_factory import build_intent_classifier
 from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.runtime.request_metadata import LoopSelectionError, runtime_request_metadata
+from assistant_core.runtime.request_resolver import (
+    RequestResolverIntentClassifier,
+    Unavailable,
+)
 
 
 pytestmark = pytest.mark.unit
@@ -127,6 +132,106 @@ def test_request_metadata_records_direct_safe_builtin_tool_hint() -> None:
         capabilities=["tool.safe"],
         provenance_contains=("safe_builtin_request",),
     )
+
+
+def test_request_metadata_records_direct_plan_with_runtime_default_request_resolver() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+
+    resolution = asyncio.run(
+        runtime_request_metadata(
+            SimpleNamespace(
+                content="Сколько время?",
+                sensitivity=Sensitivity.PROJECT,
+                loop_strategy=None,
+                model_profile=None,
+                working_directory=str(Path.cwd()),
+            ),
+            settings,
+            request_id="request-1",
+            conversation_id="conversation-1",
+            user_id="user-1",
+            active_project_namespace="project.personal_assistant",
+            working_directory=str(Path.cwd()),
+            policy=ConfigPolicyEngine(settings),
+            intent_classifier=build_intent_classifier(settings=settings, router=object()),
+        )
+    )
+
+    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
+    assert resolution.metadata["loop_selection_tool_names"] == ["datetime.now"]
+    _assert_direct_plan(
+        resolution.metadata,
+        scenario="current_time",
+        tool_names=["datetime.now"],
+        capabilities=["tool.safe"],
+        classification_source="request_resolver",
+        provenance_contains=("safe_builtin_request",),
+    )
+
+
+def test_request_metadata_surfaces_request_resolver_clarification() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+
+    with pytest.raises(LoopSelectionError) as exc_info:
+        asyncio.run(
+            runtime_request_metadata(
+                SimpleNamespace(
+                    content="память?",
+                    sensitivity=Sensitivity.PROJECT,
+                    loop_strategy=None,
+                    model_profile=None,
+                    working_directory=str(Path.cwd()),
+                ),
+                settings,
+                request_id="request-1",
+                conversation_id="conversation-1",
+                user_id="user-1",
+                active_project_namespace="project.personal_assistant",
+                working_directory=str(Path.cwd()),
+                policy=ConfigPolicyEngine(settings),
+                intent_classifier=build_intent_classifier(settings=settings, router=object()),
+            )
+        )
+
+    assert str(exc_info.value) == "request needs clarification"
+    assert exc_info.value.decision is not None
+    assert exc_info.value.decision.selected_loop_strategy is None
+    assert exc_info.value.decision.decision_status is (
+        SelectionDecisionStatus.CLARIFICATION_REQUIRED
+    )
+
+
+def test_request_metadata_surfaces_request_resolver_unavailable() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+
+    with pytest.raises(LoopSelectionError) as exc_info:
+        asyncio.run(
+            runtime_request_metadata(
+                SimpleNamespace(
+                    content="проверь недоступный маршрут",
+                    sensitivity=Sensitivity.PROJECT,
+                    loop_strategy=None,
+                    model_profile=None,
+                    working_directory=str(Path.cwd()),
+                ),
+                settings,
+                request_id="request-1",
+                conversation_id="conversation-1",
+                user_id="user-1",
+                active_project_namespace="project.personal_assistant",
+                working_directory=str(Path.cwd()),
+                policy=ConfigPolicyEngine(settings),
+                intent_classifier=RequestResolverIntentClassifier(
+                    resolver=StaticResolver(Unavailable(reason_code="route_unavailable"))
+                ),
+            )
+        )
+
+    assert str(exc_info.value) == "tool loop is unavailable for request"
+    assert exc_info.value.decision is not None
+    assert exc_info.value.decision.selected_loop_strategy is None
+    assert exc_info.value.decision.decision_status is SelectionDecisionStatus.TOOLS_UNAVAILABLE
+    assert exc_info.value.decision.reason_code == "route_unavailable"
 
 
 def test_request_metadata_records_direct_christmas_countdown_scenario() -> None:
@@ -677,3 +782,11 @@ class RecordingIntentClassifier(StaticIntentClassifier):
     async def classify(self, request):
         self.requests.append(request)
         return await super().classify(request)
+
+
+class StaticResolver:
+    def __init__(self, result) -> None:
+        self._result = result
+
+    async def resolve(self, request):
+        return self._result

@@ -19,6 +19,7 @@ from assistant_core.domain.policy import Capability, PermissionMode, RiskClass
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.runtime.loop_selection import DeterministicIntentClassifier
 from assistant_core.runtime.model_intent_classifier import ModelBackedIntentClassifier
+from assistant_core.runtime.request_resolver import RequestResolverIntentClassifier
 from assistant_core.runtime.routing import CapabilityRoutingRegistry
 
 
@@ -507,7 +508,7 @@ def test_model_backed_classifier_does_not_short_circuit_at_fast_path_threshold()
     assert classification.intent_family is IntentFamily.PROJECT_INSPECTION
 
 
-def test_app_factory_wires_configured_fast_path_threshold(monkeypatch) -> None:
+def test_app_factory_uses_request_resolver_as_runtime_default(monkeypatch) -> None:
     monkeypatch.setenv(
         "JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD",
         "0.91",
@@ -520,7 +521,13 @@ def test_app_factory_wires_configured_fast_path_threshold(monkeypatch) -> None:
         router=FakeStructuredRouter(RuntimeError("model should not be called")),
     )
 
-    assert classifier._deterministic_fast_path_threshold == 0.91
+    classification = asyncio.run(
+        classifier.classify(_request(user_input="Расскажи, как решаются кубические уравнения."))
+    )
+
+    assert isinstance(classifier, RequestResolverIntentClassifier)
+    assert classification.intent_family is IntentFamily.ORDINARY_CHAT
+    assert classification.classification_source == "request_resolver"
 
 
 def test_model_backed_classifier_does_not_short_circuit_generic_fallback_tool_hint() -> None:

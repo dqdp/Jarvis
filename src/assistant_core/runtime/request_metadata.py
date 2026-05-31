@@ -477,6 +477,8 @@ def _selection_error_message(decision: LoopSelectionDecision) -> str:
         return "tool loop is disabled by policy"
     if decision.decision_status is SelectionDecisionStatus.CLASSIFIER_UNAVAILABLE:
         return "loop selector is unavailable"
+    if decision.decision_status is SelectionDecisionStatus.CLARIFICATION_REQUIRED:
+        return "request needs clarification"
     if decision.decision_status is SelectionDecisionStatus.REJECTED_BY_POLICY:
         return "tool loop is rejected by policy"
     return "tool loop is unavailable for request"

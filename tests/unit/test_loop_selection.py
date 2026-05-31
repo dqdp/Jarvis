@@ -326,6 +326,36 @@ def test_classifier_low_confidence_falls_back_to_chat() -> None:
     assert decision.reason_code == "classifier_low_confidence"
 
 
+def test_classifier_clarification_preference_does_not_fallback_to_chat() -> None:
+    decision = _select(
+        _classification(
+            IntentFamily.UNKNOWN,
+            confidence=0.0,
+            fallback_preference=SelectionFallbackPreference.ASK_CLARIFICATION,
+        )
+    )
+
+    assert decision.decision_status is SelectionDecisionStatus.CLARIFICATION_REQUIRED
+    assert decision.selected_loop_strategy is None
+    assert decision.fallback_behavior is SelectionFallbackPreference.ASK_CLARIFICATION
+    assert decision.reason_code == "unknown"
+
+
+def test_classifier_unavailable_preference_does_not_fallback_to_chat() -> None:
+    decision = _select(
+        _classification(
+            IntentFamily.UNKNOWN,
+            confidence=0.0,
+            fallback_preference=SelectionFallbackPreference.FAIL_UNAVAILABLE,
+        )
+    )
+
+    assert decision.decision_status is SelectionDecisionStatus.TOOLS_UNAVAILABLE
+    assert decision.selected_loop_strategy is None
+    assert decision.fallback_behavior is SelectionFallbackPreference.FAIL_UNAVAILABLE
+    assert decision.reason_code == "unknown"
+
+
 def test_non_tool_intent_drops_tool_candidate_metadata_before_chat_fallback() -> None:
     decision = _select(
         _classification(
@@ -985,6 +1015,7 @@ def _classification(
     requires_live_state: bool = False,
     requires_execution: bool = False,
     answer_without_tools_would_be_misleading: bool = False,
+    fallback_preference: SelectionFallbackPreference = SelectionFallbackPreference.CHAT,
 ) -> IntentClassification:
     return IntentClassification(
         intent_family=intent_family,
@@ -994,7 +1025,7 @@ def _classification(
         requires_execution=requires_execution,
         answer_without_tools_would_be_misleading=answer_without_tools_would_be_misleading,
         reason_code=intent_family.value,
-        fallback_preference=SelectionFallbackPreference.CHAT,
+        fallback_preference=fallback_preference,
     )
 
 

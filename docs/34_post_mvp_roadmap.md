@@ -358,6 +358,7 @@ PM-08g Direct planner and capability routing registry cleanup
 PM-08h Tool-intent corpus hardening and pre-voice routing gate
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
+PM-08k Request routing architecture review and classifier calibration
 ```
 
 PM-08a:
@@ -496,6 +497,35 @@ PM-08j:
 - keep dependency installation and model pulling in an explicit bootstrap step,
   not in normal startup.
 
+PM-08k:
+
+- start with an industry-informed request-routing architecture review before
+  changing production routing code;
+- reject a mandatory front-gate LLM classifier as the default and move to a
+  deterministic-first Hybrid Request Resolver direction;
+- defer main-model tool calling to a later ADR/PM rather than moving tool
+  choice into the answer model during PM-08k;
+- introduce a `RequestResolver` boundary that can return `RouteDecision`,
+  `Abstain`, `Clarify` or `Unavailable` before route-to-domain mapping;
+- make obvious ordinary chat bypass classifier/model calls;
+- keep the non-LLM semantic layer evaluation/calibration-only until its false
+  live-state positive rate and abstain threshold are proven safe;
+- keep the LLM adjudicator optional and late-stage, called only after cheaper
+  resolvers abstain;
+- if a model-backed route adjudicator remains in scope, replace the current
+  model-facing classifier schema with a thin route contract;
+- keep `IntentClassification`, `CapabilityCandidate`, tool names, capabilities,
+  risk classes, fallback behavior, policy outcome and direct execution metadata
+  as runtime-owned fields, not model output;
+- add a deterministic route registry that maps accepted route labels into the
+  existing selector domain and capability routing metadata;
+- evaluate deterministic, non-LLM and local LLM classifier layers through one
+  comparable calibration report;
+- tune or reject thresholds such as `0.87` from precision/coverage/latency
+  evidence rather than by intuition;
+- require invalid model output to abstain or fall back instead of inventing
+  tool/capability metadata.
+
 Acceptance:
 
 - a plain CLI chat request can automatically use RAG or safe tools when needed;
@@ -516,6 +546,12 @@ Acceptance:
 - one canonical Jarvis command path can bring up DB, migrations, daemon and
   health checks, and can report status/logs or shut the daemon down without
   manual Terminal orchestration.
+- the model-facing classifier no longer asks the model to emit capabilities,
+  tool names, risk classes or policy/fallback decisions; route mapping and
+  calibration are documented and tested before PM-09 starts.
+- PM-08k reports false live-state positives, direct_plan correctness, ordinary
+  chat model-call avoidance, abstain rate, p95 resolver latency and
+  Clarify/Unavailable behavior before PM-09 starts.
 
 ### Phase J — Voice gateway foundation
 
@@ -528,7 +564,9 @@ approvals and cancellation, PM-08e proves model-backed classifier behavior,
 PM-08f hardens direct tool answers around typed observations, PM-08g/PM-08h
 stabilize direct planning and corpus-gated routing quality, PM-08i hardens the
 interactive CLI shell as the pre-voice dogfood surface, and PM-08j makes that
-surface operationally repeatable through canonical startup commands.
+surface operationally repeatable through canonical startup commands. PM-08k then
+reviews and calibrates request routing so voice does not inherit an over-broad
+model-facing schema or an unnecessary mandatory classifier call.
 ```
 
 Work:
@@ -540,7 +578,7 @@ Work:
   gateway can later use local engines, local libraries or external API adapters;
 - add fake STT/TTS adapters for CI;
 - submit transcripts through the same API/runtime path as typed input;
-- use PM-08 `auto` loop selection for spoken turns after PM-08j readiness;
+- use PM-08 `auto` loop selection for spoken turns after PM-08k readiness;
 - stream assistant text through existing runtime events before TTS output;
 - disable raw audio storage by default;
 - keep external speech API and cloud realtime providers disabled until explicit
@@ -740,6 +778,7 @@ PM-08g Direct planner and capability routing registry cleanup
 PM-08h Tool-intent corpus hardening and pre-voice routing gate
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
+PM-08k Request routing architecture review and classifier calibration
 Voice gateway foundation
 ```
 

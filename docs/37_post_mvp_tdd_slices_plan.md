@@ -35,6 +35,7 @@ PM-08g Direct planner and capability routing registry cleanup
 PM-08h Tool-intent corpus hardening and pre-voice routing gate
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
+PM-08k Request routing architecture review and classifier calibration
 PM-09 Voice gateway foundation
 ```
 
@@ -2349,7 +2350,7 @@ Examples:
 
 ### Delivery breakdown
 
-PM-08 is delivered as ten ordered sub-slices:
+PM-08 is delivered as eleven ordered sub-slices:
 
 ```text
 PM-08a Loop selection domain and selector contract
@@ -2362,16 +2363,19 @@ PM-08g Direct planner and capability routing registry cleanup
 PM-08h Tool-intent corpus hardening and pre-voice routing gate
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
+PM-08k Request routing architecture review and classifier calibration
 ```
 
 Do not start PM-09 voice implementation until PM-08d, PM-08e, PM-08f, PM-08g,
-PM-08h, PM-08i and PM-08j are complete. Voice depends on the same user-turn
-surface being usable from text first, on local model-backed classification, on
-direct answers not inheriting fragile stdout parsing, on registry-backed direct
-planning, on a corpus-gated routing baseline that covers typed and
-spoken-transcript-like requests, on a Codex-like interactive CLI shell that is
-usable enough to dogfood before voice, and on a canonical local startup path
-that does not rely on manual DB/migration/daemon orchestration.
+PM-08h, PM-08i, PM-08j and PM-08k are complete. Voice depends on the same
+user-turn surface being usable from text first, on local model-backed
+classification, on direct answers not inheriting fragile stdout parsing, on
+registry-backed direct planning, on a corpus-gated routing baseline that covers
+typed and spoken-transcript-like requests, on a Codex-like interactive CLI shell
+that is usable enough to dogfood before voice, on a canonical local startup path
+that does not rely on manual DB/migration/daemon orchestration, and on a
+simplified/calibrated classifier contract that does not ask a small model to
+emit internal tool, policy or execution metadata.
 
 ### PM-08a — Loop selection domain and selector contract
 
@@ -3754,6 +3758,212 @@ automatic model downloads in jarvis-up
 voice implementation
 ```
 
+### PM-08k — Request routing architecture review and classifier calibration
+
+Goal:
+
+```text
+Use the PM-08k.0 research outcome to replace the mandatory front-gate LLM
+classifier assumption with a Hybrid Request Resolver direction. Then, if a
+model-backed route adjudicator remains in scope for ambiguous cases, simplify
+its model-facing output and calibrate deterministic/non-LLM/local-LLM routing
+layers against the pre-voice corpus instead of tuning thresholds by intuition.
+```
+
+Inputs:
+
+```text
+docs/38_pm08k_classifier_contract_simplification.md
+docs/adr/ADR-035_automatic_loop_strategy_selection.md
+docs/34_post_mvp_roadmap.md
+docs/37_post_mvp_tdd_slices_plan.md
+tests/fixtures/intent_routing/tool_intent_corpus.json
+tests/fixtures/intent_routing/pm08i_classifier_model_comparison.json
+```
+
+Rationale:
+
+```text
+PM-08e/PM-08h proved the classifier boundary and corpus gate, but local
+evaluation showed that the current model-facing schema exposes too much runtime
+domain detail to small local models. A model can return syntactically valid JSON
+while inventing labels for intent_family, capability, tool_names or risk_classes.
+Voice should not inherit that broad schema because spoken turns make routing
+latency and false live-state positives more visible.
+```
+
+PM-08k.0 research gate:
+
+```text
+review industry patterns for tool use, routers, planners, fallback and
+abstention;
+compare mandatory LLM classifier, deterministic-first router, non-LLM semantic
+router, main-model tool-calling and hybrid request-resolver architectures;
+record a decision matrix covering latency, safety, local-first operation,
+schema adherence, false live-state positives and implementation complexity;
+reject mandatory front-gate LLM classifier as the default;
+accept Hybrid Request Resolver as the target direction;
+defer main-model tool calling to a later ADR/PM.
+```
+
+Tests first:
+
+```text
+test_pm08k_docs_start_with_industry_research_gate
+test_pm08k_research_gate_compares_mandatory_classifier_and_hybrid_router
+test_pm08k_research_gate_records_source_links_and_architecture_decision
+test_request_resolver_returns_route_decision_abstain_clarify_or_unavailable
+test_request_resolver_bypasses_classifier_for_obvious_ordinary_chat
+test_request_resolver_uses_deterministic_guards_for_obvious_safe_routes
+test_request_resolver_clarifies_risky_live_state_ambiguity
+test_request_resolver_keeps_non_llm_semantic_layer_evaluation_only_by_default
+test_request_resolver_calls_llm_adjudicator_only_after_abstain
+test_model_route_schema_contains_only_route_confidence_flags_and_abstain
+test_model_route_schema_uses_closed_route_enum
+test_model_route_parser_rejects_unknown_route
+test_model_route_parser_rejects_non_boolean_flags
+test_model_route_output_cannot_supply_tool_names_or_capabilities
+test_route_registry_maps_current_time_to_safe_datetime_candidate
+test_route_registry_maps_system_memory_to_read_resources_candidate
+test_route_registry_keeps_project_docs_as_chat_with_rag_context
+test_route_registry_maps_unknown_or_abstain_to_safe_fallback
+test_conceptual_live_state_near_miss_does_not_map_to_tool_route
+test_classifier_calibration_report_records_route_accuracy_and_latency
+test_classifier_calibration_report_compares_deterministic_embedding_and_llm
+test_classifier_calibration_report_records_threshold_precision_coverage
+test_classifier_calibration_report_blocks_default_model_change_on_regression
+```
+
+Architecture tests:
+
+```text
+test_model_facing_route_schema_does_not_expose_policy_or_tool_execution_fields
+test_route_registry_depends_on_capability_metadata_not_tool_adapters
+test_model_route_classifier_depends_on_model_router_port_not_provider_adapters
+test_cli_does_not_import_route_registry_or_classifier_implementation
+```
+
+Expected red phase:
+
+```text
+PM-08k.0 industry research gate does not exist;
+RequestResolver does not exist;
+RouteDecision, Abstain, Clarify and Unavailable result types do not exist;
+model-facing route schema does not exist;
+route registry does not exist;
+current model-backed classifier still asks the model for capability candidates;
+calibration report does not compare route-level classifiers;
+PM-09 dependency chain does not mention PM-08k.
+```
+
+Implementation:
+
+```text
+research:
+  maintain PM-08k.0 research note and architecture decision matrix
+  keep ADR-035 and this slice plan aligned with the rejected mandatory-classifier
+    default and accepted Hybrid Request Resolver direction
+
+PM-08k.1 Hybrid request resolver contract:
+  add RequestResolver before route-to-domain mapping
+  add RouteDecision, Abstain, Clarify and Unavailable result types
+  define ordinary chat bypass; obvious chat must not call the classifier
+  define resolver order:
+    explicit mode or slash command
+    deterministic route guards
+    ordinary chat bypass
+    optional semantic resolver
+    optional LLM adjudicator
+    Clarify or Unavailable
+
+PM-08k.2 Deterministic route guards and route registry:
+  use a medium-grained route taxonomy
+  add deterministic route guards for:
+    current_time
+    date_countdown
+    calculator
+    daemon_status
+    explicit ordinary-chat hints
+    strong project-docs markers
+    clear live-state diagnostics with current/local wording
+  add a deterministic route registry that maps accepted routes into the existing
+    IntentClassification and CapabilityCandidate domain objects
+  keep process, network, temperature and project inspection conservative because
+    their near-miss surface is larger
+
+PM-08k.3 Optional semantic/model adjudication and calibration:
+  keep non-LLM semantic layer as evaluation/calibration only by default
+  add a model-facing route classification schema with a closed route enum,
+    confidence, requires_live_state, is_conceptual_question and abstain
+  add a route parser that rejects unknown labels and malformed booleans
+  call LLM adjudicator only after deterministic and non-LLM resolvers abstain
+  keep LoopStrategySelector, PolicyPort, ToolGatewayPort and direct-plan checks
+    authoritative after route mapping
+  remove model ownership of capabilities, stable tool names, risk classes,
+    fallback behavior, policy outcome and direct execution metadata
+
+PM-08k.4 Runtime default selection and acceptance gate:
+  enable only resolver layers that pass calibration
+  keep ambiguous semantic and LLM layers disabled or opt-in until they prove
+    lower latency without increasing false live-state positives
+
+calibration:
+  compare deterministic, non-LLM and local LLM route classifiers through one
+    report format
+  record route accuracy, mapped-domain accuracy, precision/coverage by
+    threshold, false live-state positives, abstain rate and latency
+  include thresholds such as 0.87 as candidates, not as predetermined answers
+```
+
+Acceptance:
+
+```text
+PM-08k.0 research gate is complete;
+mandatory front-gate LLM classifier is rejected as the default;
+Hybrid Request Resolver is accepted as the target direction;
+main-model tool calling is deferred to a later architecture decision;
+RequestResolver is the orchestration boundary before route-to-domain mapping;
+RouteDecision, Abstain, Clarify and Unavailable are explicit result types;
+obvious ordinary chat bypasses classifier/model calls;
+deterministic route guards cover obvious safe routes;
+medium-grained route taxonomy is used;
+non-LLM semantic layer remains evaluation/calibration only until proven safe;
+LLM adjudicator is optional, late-stage and called only after abstention;
+model-facing classifier output is smaller than the internal IntentClassification
+domain object if a model route adjudicator remains in scope;
+model output cannot directly specify tool names, capabilities, risk classes,
+policy outcome or direct execution;
+route-to-domain mapping is deterministic and registry-backed;
+invalid model output abstains or falls back instead of inventing tool metadata;
+deterministic, non-LLM and local LLM classifiers are comparable in one report;
+threshold choices are justified by precision/coverage/latency evidence;
+false live-state positives, direct_plan correctness, model-call avoidance,
+abstain rate, p95 resolver latency and Clarify/Unavailable behavior are reported;
+PM-09 cannot start until PM-08k is implemented or explicitly rejected by an
+updated architecture decision.
+```
+
+Follow-up:
+
+```text
+request_resolver.py module split follow-up:
+  split route/result contracts, route registry, model route parser and
+    calibration report into focused runtime modules before adding another
+    PM-08/PM-09 routing layer.
+```
+
+Out of scope:
+
+```text
+voice audio handling
+cloud classifier calls
+fine tuning or training pipelines
+broad benchmark infrastructure
+new tools
+direct execution bypasses
+CLI-owned routing logic
+```
+
 ### Intent resolution pipeline
 
 Initial pipeline:
@@ -4119,6 +4329,8 @@ PM-08h red phase failed for missing pre-voice corpus gate behavior;
 PM-08i red phase failed for missing prompt_toolkit shell/status/completion
   behavior;
 PM-08j red phase failed for missing canonical Jarvis runtime startup behavior;
+PM-08k red phase failed for missing route-level classifier contract and
+  calibration report behavior;
 missing loop_strategy means auto, not direct memory loop;
 ordinary chat still uses memory_augmented_answer;
 project-docs questions use RAG without tool_react_loop;
@@ -4135,6 +4347,10 @@ interactive CLI has a Codex-like status line, phase-based activity indicator,
 dynamic slash command palette and deterministic --plain/non-TTY fallback;
 canonical Jarvis runtime startup can bring up DB, migrations, daemon, health
 check and CLI entrypoint without relying on manual Terminal orchestration;
+model-facing classifier output no longer includes capabilities, tool names,
+policy outcomes, risk classes or direct execution metadata;
+classifier threshold/default changes are supported by precision/coverage/latency
+calibration evidence;
 loop-selection events are redacted;
 architecture guardrails pass;
 no real LLM, real shell or host diagnostics calls are required for CI.
@@ -4167,6 +4383,8 @@ PM-08g/PM-08h make routing metadata and corpus quality stable enough for spoken
 turns, and after PM-08i makes the interactive CLI shell usable enough to dogfood
 the same surface before voice. PM-08j must then make that Jarvis surface
 operationally repeatable through canonical startup/status/log/shutdown commands.
+PM-08k must then simplify and calibrate the classifier contract before spoken
+turns rely on the same routing path.
 
 Voice is a client/channel over the existing runtime, not a separate agent
 runtime. A spoken turn must become the same kind of user turn that CLI/API uses:
@@ -4228,13 +4446,14 @@ PM-08g complete
 PM-08h complete
 PM-08i complete
 PM-08j complete
+PM-08k complete
 ```
 
 In practice this means the text CLI already has a working normal chat surface
 for automatic chat/RAG/tools routing, approval control, cancellation, typed
 direct answers, registry-backed direct planning, corpus-gated routing and
-Codex-like interactive shell UX, plus a canonical local Jarvis startup path,
-before voice is layered on top.
+Codex-like interactive shell UX, plus a canonical local Jarvis startup path and
+a simplified/calibrated classifier contract, before voice is layered on top.
 
 Voice must use PM-08 default routing:
 

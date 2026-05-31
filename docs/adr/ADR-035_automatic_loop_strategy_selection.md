@@ -516,6 +516,57 @@ Routing quality is tracked with a multilingual tool-intent corpus. CI validates
 the corpus schema and a deterministic/guardrail baseline. Real local model
 coverage is an opt-in evaluation test and must not be required for CI.
 
+### PM-08k amendment: request routing review and model-facing route contract
+
+PM-08e originally made the local structured classifier return the same broad
+domain shape consumed by the selector. PM-08h/PM-08i local dogfood evaluation
+showed a practical weakness in that contract: small local models can return
+syntactically valid JSON while inventing internal labels such as intent families,
+capabilities, tool names or risk classes.
+
+PM-08k starts with an industry-informed request routing review. The PM-08k.0
+research outcome rejects a mandatory front-gate LLM classifier as the default
+architecture and accepts a Hybrid Request Resolver direction: deterministic
+first, ordinary chat direct when no route is needed, optional calibrated
+non-LLM/semantic routing, optional local LLM route adjudication for ambiguous
+cases, and clarification or explicit unavailable results for risky ambiguity.
+Main-model tool calling remains deferred to a later ADR/PM.
+
+PM-08k should introduce `RequestResolver` as the orchestration boundary before
+route-to-domain mapping. The resolver can return `RouteDecision`, `Abstain`,
+`Clarify` or `Unavailable`. Obvious ordinary chat must bypass classifier/model
+calls, while risky ambiguity must clarify or return unavailable instead of
+guessing a tool route.
+
+If a model-backed route adjudicator remains in scope, PM-08k should narrow the
+model-facing output further. The model should classify into a small closed route
+vocabulary with confidence and abstention flags. It must not output
+capabilities, stable tool names, risk classes, policy outcome, fallback behavior,
+approval state, direct execution metadata, raw shell commands or tool arguments.
+
+The runtime then maps accepted routes into the existing domain shape:
+
+```text
+RouteDecision
+  -> deterministic route registry
+  -> IntentClassification
+  -> CapabilityCandidate
+  -> LoopStrategySelector
+  -> PolicyPort / ToolGatewayPort / direct-plan checks
+```
+
+This amendment does not weaken the `IntentClassifierPort` boundary. It narrows
+the model-facing adapter contract behind that port. Fake classifiers and tests
+may still inject full `IntentClassification` objects when exercising selector
+behavior, but the local model-backed adapter should not ask a small model to
+construct those internal objects directly.
+
+Threshold changes such as lowering the deterministic fast-path threshold to
+`0.87` are not architecture decisions by themselves. They must be justified by a
+calibration report that includes route accuracy, mapped-domain accuracy,
+precision/coverage by threshold, false live-state positives, abstention rate and
+latency. Speed alone is not enough to change the default classifier path.
+
 ## Direct tool execution and typed observations
 
 Automatic routing may choose a fast direct-tool path for known, low-risk,

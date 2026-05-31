@@ -200,13 +200,14 @@ Decision:
 - Phase 1 selected loop: deterministic memory-augmented workflow.
 - Current post-MVP Alpha adds bounded `tool_react_loop` after ToolGatewayPort
   and the loop-strategy boundary were introduced.
-- Near-term priority is PM-08a through PM-08j: automatic loop selection, API
+- Near-term priority is PM-08a through PM-08k: automatic loop selection, API
   lifecycle wiring, CLI mode controls, CLI tool/RAG/approval readiness,
   direct-answer hardening, routing quality gates and Codex-like interactive CLI
-  shell UX, followed by canonical Jarvis runtime startup. PM-09 voice gateway
-  foundation follows only after the text CLI/API surface is usable and
-  operationally repeatable. LangGraph remains a follow-up for later durable
-  workflows.
+  shell UX, followed by canonical Jarvis runtime startup and PM-08k request
+  routing architecture review/classifier calibration. PM-09 voice gateway
+  foundation follows only after the text CLI/API surface is usable,
+  operationally repeatable and routing-safe. LangGraph remains a follow-up for
+  later durable workflows.
 - All future loop strategies must define budgets, stopping conditions, policy hooks and emitted events.
 
 ## 9. Extension Points

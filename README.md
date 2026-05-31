@@ -72,6 +72,7 @@ docs/
   35_post_mvp_adr_backlog.md
   36_post_mvp_plan_review.md
   37_post_mvp_tdd_slices_plan.md
+  38_pm08k_classifier_contract_simplification.md
 ```
 
 ## ADR Index
@@ -174,12 +175,14 @@ docs/adr/
 - Phase 1 loop = deterministic `memory_augmented_answer`; LangGraph is deferred.
 - Original MVP shipped with only `memory_augmented_answer`; current post-MVP
   Alpha adds bounded `tool_react_loop` behind the loop-strategy boundary.
-- Near-term priority is PM-08a through PM-08j: backend auto-selection, API
+- Near-term priority is PM-08a through PM-08k: backend auto-selection, API
   lifecycle wiring, CLI mode controls, CLI tool/RAG/approval readiness,
   direct-answer hardening, routing quality gates and Codex-like interactive CLI
-  shell UX, followed by canonical Jarvis runtime startup. PM-09 voice gateway
-  foundation starts only after that text surface is usable and operationally
-  repeatable. LangGraph stays a follow-up for later durable workflows.
+  shell UX, followed by canonical Jarvis runtime startup and PM-08k request
+  routing architecture review/classifier calibration. PM-09 voice gateway
+  foundation starts only after that text surface is usable, operationally
+  repeatable and routing-safe.
+  LangGraph stays a follow-up for later durable workflows.
 - Planner-executor and unbounded autonomous ReAct behavior remain future scope.
 - Future loop strategies must declare budgets, capabilities, policy hooks, failure semantics and emitted events.
 
@@ -259,13 +262,16 @@ wave:
 - event/data hardening, append-only event protection and no-secret storage
   constraints.
 
-PM-08a through PM-08j are documented as the next implementation sequence. They
+PM-08a through PM-08k are documented as the next implementation sequence. They
 make `auto` the user-facing default, harden routing/direct-answer behavior and
 turn the interactive CLI into the pre-voice dogfood shell so normal chat can
 route to ordinary answer, Project Docs RAG or safe/read-only tools without
 requiring the user to choose internal loop strategies. PM-08j then makes that
 Jarvis surface startable through one canonical local runtime path instead of
-manual DB/migration/daemon orchestration.
+manual DB/migration/daemon orchestration. PM-08k then reviews the request
+routing architecture, rejects a mandatory front-gate LLM classifier as the
+default, and calibrates any retained classifier/adjudicator path before voice
+relies on the same routing path.
 
 Implementation notes:
 
@@ -289,6 +295,15 @@ Implementation notes:
   `0.9`. Lower-confidence tool, project and live-state hints still go through
   the structured model and fallback guardrails. The threshold is operationally
   tunable through `JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD`.
+- PM-08k starts from a request-routing architecture review that rejects a
+  mandatory front-gate LLM classifier as the default and accepts a Hybrid Request
+  Resolver direction. `RequestResolver` can return `RouteDecision`, `Abstain`,
+  `Clarify` or `Unavailable`; obvious ordinary chat bypasses classifier/model
+  calls. If a model-backed route adjudicator remains in scope, its model-facing
+  schema should become a thinner route classification contract. The model should
+  not emit tool names, capabilities, risk classes, policy outcomes or direct
+  execution metadata; runtime registry code maps accepted routes into those
+  internal fields.
 - A thin local CLI is available through `make cli ARGS='...'` or the `jarvis`
   console entrypoint. Running `make cli` without `ARGS` opens an interactive
   chat shell with slash commands.
@@ -303,7 +318,8 @@ Post-MVP planning is tracked in:
 - `docs/34_post_mvp_roadmap.md`;
 - `docs/35_post_mvp_adr_backlog.md`;
 - `docs/36_post_mvp_plan_review.md`;
-- `docs/37_post_mvp_tdd_slices_plan.md`.
+- `docs/37_post_mvp_tdd_slices_plan.md`;
+- `docs/38_pm08k_classifier_contract_simplification.md`.
 
 ## Final hardening additions in v16
 
@@ -340,6 +356,8 @@ Post-MVP planning is tracked in:
   enough if schema-following or routing quality regresses.
 - PM-08i comparison evidence is recorded in
   `tests/fixtures/intent_routing/pm08i_classifier_model_comparison.json`.
+- PM-08k planning is documented in
+  `docs/38_pm08k_classifier_contract_simplification.md`.
 - `embeddinggemma:latest` is the initial local embedding model.
 - The Ollama adapter passes anti-repeat generation options and cuts off
   repeated-line loops before they run to the full token cap.
