@@ -30,6 +30,16 @@ def test_allows_pgrep(tmp_path: Path) -> None:
     assert decision.family == SystemDiagnosticsFamily.PROCESS
 
 
+def test_denies_pipeline_style_ps_grep(tmp_path: Path) -> None:
+    decision = _classifier(tmp_path).classify(
+        ["ps", "-Ao", "pid,comm,command", "|", "grep", "HFT"],
+        cwd=tmp_path,
+    )
+
+    assert decision.allowed is False
+    assert decision.code == "shell_syntax_denied"
+
+
 def test_allows_uptime(tmp_path: Path) -> None:
     decision = _classifier(tmp_path).classify(["uptime"], cwd=tmp_path)
 
@@ -42,6 +52,26 @@ def test_allows_df(tmp_path: Path) -> None:
 
     assert decision.allowed is True
     assert decision.family == SystemDiagnosticsFamily.RESOURCES
+
+
+def test_allows_macos_battery_snapshot(tmp_path: Path) -> None:
+    decision = _classifier(tmp_path, platform="darwin").classify(
+        ["pmset", "-g", "batt"],
+        cwd=tmp_path,
+    )
+
+    assert decision.allowed is True
+    assert decision.family == SystemDiagnosticsFamily.HARDWARE
+
+
+def test_allows_macos_vpn_status_snapshot(tmp_path: Path) -> None:
+    decision = _classifier(tmp_path, platform="darwin").classify(
+        ["scutil", "--nc", "list"],
+        cwd=tmp_path,
+    )
+
+    assert decision.allowed is True
+    assert decision.family == SystemDiagnosticsFamily.NETWORK
 
 
 def test_allows_du_inside_workspace(tmp_path: Path) -> None:
@@ -94,6 +124,16 @@ def test_allows_macos_top_snapshot(tmp_path: Path) -> None:
     assert decision.family == SystemDiagnosticsFamily.RESOURCES
 
 
+def test_allows_macos_top_summary_without_process_rows(tmp_path: Path) -> None:
+    decision = _classifier(tmp_path, platform="darwin").classify(
+        ["top", "-l", "1", "-n", "0"],
+        cwd=tmp_path,
+    )
+
+    assert decision.allowed is True
+    assert decision.family == SystemDiagnosticsFamily.RESOURCES
+
+
 def test_allows_macos_vm_stat(tmp_path: Path) -> None:
     decision = _classifier(tmp_path, platform="darwin").classify(["vm_stat"], cwd=tmp_path)
 
@@ -106,6 +146,13 @@ def test_allows_macos_sysctl_selected_keys(tmp_path: Path) -> None:
         ["sysctl", "-n", "hw.memsize"],
         cwd=tmp_path,
     )
+
+    assert decision.allowed is True
+    assert decision.family == SystemDiagnosticsFamily.HARDWARE
+
+
+def test_allows_macos_sw_vers_snapshot(tmp_path: Path) -> None:
+    decision = _classifier(tmp_path, platform="darwin").classify(["sw_vers"], cwd=tmp_path)
 
     assert decision.allowed is True
     assert decision.family == SystemDiagnosticsFamily.HARDWARE
@@ -130,6 +177,23 @@ def test_allows_linux_free(tmp_path: Path) -> None:
 
 def test_allows_linux_lscpu(tmp_path: Path) -> None:
     decision = _classifier(tmp_path, platform="linux").classify(["lscpu"], cwd=tmp_path)
+
+    assert decision.allowed is True
+    assert decision.family == SystemDiagnosticsFamily.HARDWARE
+
+
+def test_allows_linux_uname_os_snapshot(tmp_path: Path) -> None:
+    decision = _classifier(tmp_path, platform="linux").classify(["uname", "-a"], cwd=tmp_path)
+
+    assert decision.allowed is True
+    assert decision.family == SystemDiagnosticsFamily.HARDWARE
+
+
+def test_allows_linux_upower_battery_snapshot(tmp_path: Path) -> None:
+    decision = _classifier(tmp_path, platform="linux").classify(
+        ["upower", "-i", "/org/freedesktop/UPower/devices/DisplayDevice"],
+        cwd=tmp_path,
+    )
 
     assert decision.allowed is True
     assert decision.family == SystemDiagnosticsFamily.HARDWARE
@@ -212,6 +276,7 @@ def test_denies_network_clients(tmp_path: Path, argv: list[str]) -> None:
     ("platform", "argv"),
     [
         ("darwin", ["powermetrics", "--samplers", "smc", "-n", "1"]),
+        ("darwin", ["powermetrics", "--samplers", "thermal", "-n", "1"]),
         ("linux", ["sensors"]),
         ("linux", ["thermal-sysfs"]),
     ],
@@ -253,6 +318,16 @@ def test_denies_sudo_powermetrics(tmp_path: Path) -> None:
 
     assert decision.allowed is False
     assert decision.code == "mutating_command_denied"
+
+
+def test_denies_unsupported_powermetrics_sampler_as_arguments_on_macos(tmp_path: Path) -> None:
+    decision = _classifier(tmp_path, platform="darwin").classify(
+        ["powermetrics", "--samplers", "cpu_power", "-n", "1"],
+        cwd=tmp_path,
+    )
+
+    assert decision.allowed is False
+    assert decision.code == "unsupported_arguments"
 
 
 @pytest.mark.parametrize(

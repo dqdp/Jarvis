@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from assistant_core.domain.policy import Capability, RiskClass
@@ -25,7 +25,7 @@ def datetime_now_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
         spec=ToolSpec(
             name="datetime.now",
             display_name="Current Time",
-            description="Returns the current UTC time.",
+            description="Returns the current local date and time.",
             capability=Capability.TOOL_SAFE,
             risk_classes=frozenset({RiskClass.SAFE}),
             input_schema={
@@ -35,10 +35,10 @@ def datetime_now_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
                 "additionalProperties": False,
             },
             adapter_name="builtin.datetime.now",
-            sensitivity_ceiling=Sensitivity.PUBLIC,
+            sensitivity_ceiling=Sensitivity.PROJECT,
             enabled=enabled,
         ),
-        handler=lambda _arguments: {"iso": datetime.now(UTC).isoformat()},
+        handler=lambda _arguments: {"iso": datetime.now().astimezone().isoformat()},
     )
 
 

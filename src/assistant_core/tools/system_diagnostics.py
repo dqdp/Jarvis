@@ -62,17 +62,22 @@ _KNOWN_COMMANDS = {
     "netstat",
     "nvidia-smi",
     "pgrep",
+    "pmset",
     "powermetrics",
     "ps",
     "renice",
     "sensors",
+    "scutil",
     "ss",
     "sudo",
+    "sw_vers",
     "sysctl",
     "systemctl",
     "thermal-sysfs",
     "top",
+    "uname",
     "uptime",
+    "upower",
     "vim",
     "vm_stat",
     "watch",
@@ -80,7 +85,7 @@ _KNOWN_COMMANDS = {
 _INTERACTIVE_COMMANDS = {"htop", "less", "vim", "watch"}
 _MUTATING_COMMANDS = {"sudo", "kill", "killall", "renice", "launchctl", "systemctl"}
 _NETWORK_CLIENTS = {"curl", "wget", "nc", "ssh", "scp", "telnet", "ftp"}
-_SENSOR_MUTATION_COMMANDS = {"tee", "echo", "fanctl", "pmset"}
+_SENSOR_MUTATION_COMMANDS = {"tee", "echo", "fanctl"}
 _DARWIN_SYSCTL_KEYS = {
     "hw.memsize",
     "hw.ncpu",
@@ -164,7 +169,11 @@ class SystemDiagnosticsClassifier:
                 normalized,
                 resolved_cwd,
             )
-        if command in _SENSOR_MUTATION_COMMANDS or any("/sys/class/thermal" in arg for arg in normalized):
+        if (
+            command in _SENSOR_MUTATION_COMMANDS
+            or _is_pmset_mutation(normalized)
+            or any("/sys/class/thermal" in arg for arg in normalized)
+        ):
             return _deny(
                 "sensor_mutation_denied",
                 "sensor write or fan/power mutation commands are denied",
@@ -184,11 +193,16 @@ class SystemDiagnosticsClassifier:
             "sysctl": self._classify_sysctl,
             "lscpu": self._classify_lscpu,
             "lshw": self._classify_lshw,
+            "uname": self._classify_uname,
+            "upower": self._classify_upower,
             "netstat": self._classify_netstat,
             "ifconfig": self._classify_ifconfig,
             "lsof": self._classify_lsof,
             "ss": self._classify_ss,
             "ip": self._classify_ip,
+            "sw_vers": self._classify_sw_vers,
+            "pmset": self._classify_pmset,
+            "scutil": self._classify_scutil,
             "powermetrics": self._classify_powermetrics,
             "sensors": self._classify_sensors,
             "thermal-sysfs": self._classify_thermal_sysfs,
@@ -269,7 +283,10 @@ class SystemDiagnosticsClassifier:
         return _allow(SystemDiagnosticsFamily.RESOURCES, argv, cwd, self._platform)
 
     def _classify_top(self, argv: tuple[str, ...], cwd: Path) -> SystemDiagnosticsDecision:
-        if self._platform == "darwin" and argv == ("top", "-l", "1"):
+        if self._platform == "darwin" and argv in {
+            ("top", "-l", "1"),
+            ("top", "-l", "1", "-n", "0"),
+        }:
             return _allow(SystemDiagnosticsFamily.RESOURCES, argv, cwd, self._platform)
         if self._platform == "linux" and argv == ("top", "-b", "-n", "1"):
             return _allow(SystemDiagnosticsFamily.RESOURCES, argv, cwd, self._platform)
@@ -295,6 +312,11 @@ class SystemDiagnosticsClassifier:
             return _allow(SystemDiagnosticsFamily.HARDWARE, argv, cwd, self._platform)
         return _deny("unsupported_arguments", "sysctl key is not allowlisted", argv, cwd)
 
+    def _classify_sw_vers(self, argv: tuple[str, ...], cwd: Path) -> SystemDiagnosticsDecision:
+        if self._platform == "darwin" and len(argv) == 1:
+            return _allow(SystemDiagnosticsFamily.HARDWARE, argv, cwd, self._platform)
+        return _deny("unsupported_platform_command", "sw_vers is allowed only on macOS", argv, cwd)
+
     def _classify_lscpu(self, argv: tuple[str, ...], cwd: Path) -> SystemDiagnosticsDecision:
         if self._platform == "linux" and len(argv) == 1:
             return _allow(SystemDiagnosticsFamily.HARDWARE, argv, cwd, self._platform)
@@ -305,10 +327,39 @@ class SystemDiagnosticsClassifier:
             return _allow(SystemDiagnosticsFamily.HARDWARE, argv, cwd, self._platform)
         return _deny("unsupported_platform_command", "lshw is allowed only on Linux", argv, cwd)
 
+    def _classify_uname(self, argv: tuple[str, ...], cwd: Path) -> SystemDiagnosticsDecision:
+        if self._platform == "linux" and argv == ("uname", "-a"):
+            return _allow(SystemDiagnosticsFamily.HARDWARE, argv, cwd, self._platform)
+        return _deny("unsupported_platform_command", "uname -a is allowed only on Linux", argv, cwd)
+
+    def _classify_upower(self, argv: tuple[str, ...], cwd: Path) -> SystemDiagnosticsDecision:
+        if self._platform == "linux" and argv == (
+            "upower",
+            "-i",
+            "/org/freedesktop/UPower/devices/DisplayDevice",
+        ):
+            return _allow(SystemDiagnosticsFamily.HARDWARE, argv, cwd, self._platform)
+        return _deny(
+            "unsupported_arguments",
+            "upower is limited to the DisplayDevice battery snapshot",
+            argv,
+            cwd,
+        )
+
+    def _classify_pmset(self, argv: tuple[str, ...], cwd: Path) -> SystemDiagnosticsDecision:
+        if self._platform == "darwin" and argv == ("pmset", "-g", "batt"):
+            return _allow(SystemDiagnosticsFamily.HARDWARE, argv, cwd, self._platform)
+        return _deny("unsupported_platform_command", "pmset battery snapshots are allowed only on macOS", argv, cwd)
+
     def _classify_netstat(self, argv: tuple[str, ...], cwd: Path) -> SystemDiagnosticsDecision:
         if argv in {("netstat", "-an"), ("netstat", "-ant"), ("netstat", "-anv")}:
             return _allow(SystemDiagnosticsFamily.NETWORK, argv, cwd, self._platform)
         return _deny("unsupported_arguments", "netstat flags are not allowlisted", argv, cwd)
+
+    def _classify_scutil(self, argv: tuple[str, ...], cwd: Path) -> SystemDiagnosticsDecision:
+        if self._platform == "darwin" and argv == ("scutil", "--nc", "list"):
+            return _allow(SystemDiagnosticsFamily.NETWORK, argv, cwd, self._platform)
+        return _deny("unsupported_platform_command", "scutil VPN snapshots are allowed only on macOS", argv, cwd)
 
     def _classify_ifconfig(self, argv: tuple[str, ...], cwd: Path) -> SystemDiagnosticsDecision:
         if self._platform == "darwin" and len(argv) == 1:
@@ -333,9 +384,24 @@ class SystemDiagnosticsClassifier:
     def _classify_powermetrics(self, argv: tuple[str, ...], cwd: Path) -> SystemDiagnosticsDecision:
         if "-i" in argv or ("-n" in argv and _option_value(argv, "-n") != "1"):
             return _deny("sensor_polling_denied", "sensor diagnostics must be one-shot", argv, cwd)
-        if self._platform == "darwin" and argv == ("powermetrics", "--samplers", "smc", "-n", "1"):
+        if self._platform != "darwin":
+            return _deny(
+                "unsupported_platform_command",
+                "powermetrics sensor snapshot is allowed only on macOS",
+                argv,
+                cwd,
+            )
+        if argv in {
+            ("powermetrics", "--samplers", "smc", "-n", "1"),
+            ("powermetrics", "--samplers", "thermal", "-n", "1"),
+        }:
             return _allow(SystemDiagnosticsFamily.SENSORS, argv, cwd, self._platform)
-        return _deny("unsupported_platform_command", "powermetrics SMC snapshot is allowed only on macOS", argv, cwd)
+        return _deny(
+            "unsupported_arguments",
+            "powermetrics supports only one-shot smc or thermal sampler snapshots",
+            argv,
+            cwd,
+        )
 
     def _classify_sensors(self, argv: tuple[str, ...], cwd: Path) -> SystemDiagnosticsDecision:
         if self._platform == "linux" and len(argv) == 1:
@@ -652,7 +718,16 @@ def _sensor_snapshot_result(
 
 def _permission_required(stderr: str) -> bool:
     lowered = stderr.lower()
-    return any(marker in lowered for marker in ("permission", "must be run as root", "requires root", "sudo"))
+    return any(
+        marker in lowered
+        for marker in (
+            "permission",
+            "must be run as root",
+            "requires root",
+            "superuser",
+            "sudo",
+        )
+    )
 
 
 def _parse_text_temperatures(source: str, stdout: str) -> SensorSnapshot:
@@ -766,6 +841,12 @@ def _command_is_path(command: str) -> bool:
 
 def _safe_pattern(pattern: str) -> bool:
     return 0 < len(pattern) <= 128 and not any(marker in pattern for marker in _SHELL_SYNTAX_MARKERS)
+
+
+def _is_pmset_mutation(argv: tuple[str, ...]) -> bool:
+    if not argv or argv[0] != "pmset":
+        return False
+    return argv != ("pmset", "-g", "batt")
 
 
 def _option_value(argv: tuple[str, ...], option: str) -> str | None:

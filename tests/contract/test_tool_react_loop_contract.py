@@ -17,10 +17,10 @@ from assistant_core.domain.events import EventType
 from assistant_core.domain.loops import LoopBudget, LoopExecutionRequest, LoopStrategyName
 from assistant_core.domain.messages import ChatMessage, MessageRole, TextPart
 from assistant_core.domain.models import StructuredModelResponse
-from assistant_core.domain.policy import PolicyDecision, PolicyDecisionOutcome
+from assistant_core.domain.policy import Capability, PolicyDecision, PolicyDecisionOutcome, RiskClass
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolObservationStatus
+from assistant_core.domain.tools import ToolObservationStatus, ToolSpec
 from assistant_core.events.in_memory import InMemoryEventLog
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.runtime.loops.tool_react import ToolReactLoop
@@ -58,6 +58,189 @@ class ScriptedRouter:
     async def structured(self, request):
         self.calls += 1
         return StructuredModelResponse(value=self.responses[self.calls - 1])
+
+
+class FakeSensorsTool:
+    content_type = "application/json"
+
+    def __init__(self, response: dict | None = None) -> None:
+        self.calls: list[dict] = []
+        self.response = response or {
+            "source": "fake-sensors",
+            "available": True,
+            "reason": None,
+            "readings": [
+                {
+                    "label": "cpu",
+                    "value": 54.0,
+                    "unit": "C",
+                    "source": "fake",
+                    "metadata": {},
+                },
+            ],
+        }
+        self.spec = ToolSpec(
+            name="tool.system.read.sensors",
+            display_name="System Sensors Diagnostics",
+            description="Fake read-only sensor diagnostics.",
+            capability=Capability.TOOL_SYSTEM_READ_SENSORS,
+            risk_classes=frozenset({RiskClass.READ_ONLY}),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "argv": {"type": "array", "items": {"type": "string"}},
+                    "cwd": {"type": "string"},
+                },
+                "required": ["argv", "cwd"],
+                "additionalProperties": False,
+            },
+            adapter_name="fake.system.sensors",
+            sensitivity_ceiling=Sensitivity.INFRA,
+        )
+
+    async def invoke(self, arguments):
+        self.calls.append(arguments)
+        return self.response
+
+
+class FakeResourcesTool:
+    content_type = "application/json"
+
+    def __init__(self, response: dict | None = None) -> None:
+        self.calls: list[dict] = []
+        self.response = response or {
+            "exit_code": 0,
+            "stdout": "              total        used        free      shared  buff/cache   available\nMem:          32768       12000        1024         128       19744       18000\n",
+            "stderr": "",
+            "truncated": {"stdout": False, "stderr": False},
+        }
+        self.spec = ToolSpec(
+            name="tool.system.read.resources",
+            display_name="System Resources Diagnostics",
+            description="Fake read-only resource diagnostics.",
+            capability=Capability.TOOL_SYSTEM_READ_RESOURCES,
+            risk_classes=frozenset({RiskClass.READ_ONLY}),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "argv": {"type": "array", "items": {"type": "string"}},
+                    "cwd": {"type": "string"},
+                },
+                "required": ["argv", "cwd"],
+                "additionalProperties": False,
+            },
+            adapter_name="fake.system.resources",
+            sensitivity_ceiling=Sensitivity.INFRA,
+        )
+
+    async def invoke(self, arguments):
+        self.calls.append(arguments)
+        return self.response
+
+
+class FakeHardwareTool:
+    content_type = "application/json"
+
+    def __init__(self, response: dict | None = None) -> None:
+        self.calls: list[dict] = []
+        self.response = response or {
+            "exit_code": 0,
+            "stdout": "10\n",
+            "stderr": "",
+            "truncated": {"stdout": False, "stderr": False},
+        }
+        self.spec = ToolSpec(
+            name="tool.system.read.hardware",
+            display_name="System Hardware Diagnostics",
+            description="Fake read-only hardware diagnostics.",
+            capability=Capability.TOOL_SYSTEM_READ_HARDWARE,
+            risk_classes=frozenset({RiskClass.READ_ONLY}),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "argv": {"type": "array", "items": {"type": "string"}},
+                    "cwd": {"type": "string"},
+                },
+                "required": ["argv", "cwd"],
+                "additionalProperties": False,
+            },
+            adapter_name="fake.system.hardware",
+            sensitivity_ceiling=Sensitivity.INFRA,
+        )
+
+    async def invoke(self, arguments):
+        self.calls.append(arguments)
+        return self.response
+
+
+class FakeProcessTool:
+    content_type = "application/json"
+
+    def __init__(self, response: dict | None = None) -> None:
+        self.calls: list[dict] = []
+        self.response = response or {
+            "exit_code": 0,
+            "stdout": "12345 HFT-strategy-runner\n",
+            "stderr": "",
+            "truncated": {"stdout": False, "stderr": False},
+        }
+        self.spec = ToolSpec(
+            name="tool.system.read.process",
+            display_name="System Process Diagnostics",
+            description="Fake read-only process diagnostics.",
+            capability=Capability.TOOL_SYSTEM_READ_PROCESS,
+            risk_classes=frozenset({RiskClass.READ_ONLY}),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "argv": {"type": "array", "items": {"type": "string"}},
+                    "cwd": {"type": "string"},
+                },
+                "required": ["argv", "cwd"],
+                "additionalProperties": False,
+            },
+            adapter_name="fake.system.process",
+            sensitivity_ceiling=Sensitivity.INFRA,
+        )
+
+    async def invoke(self, arguments):
+        self.calls.append(arguments)
+        return self.response
+
+
+class FakeNetworkTool:
+    content_type = "application/json"
+
+    def __init__(self, response: dict | None = None) -> None:
+        self.calls: list[dict] = []
+        self.response = response or {
+            "exit_code": 0,
+            "stdout": "* (Connected)   JarvisVPN               [VPN]\n",
+            "stderr": "",
+            "truncated": {"stdout": False, "stderr": False},
+        }
+        self.spec = ToolSpec(
+            name="tool.system.read.network",
+            display_name="System Network Diagnostics",
+            description="Fake read-only network diagnostics.",
+            capability=Capability.TOOL_SYSTEM_READ_NETWORK,
+            risk_classes=frozenset({RiskClass.READ_ONLY}),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "argv": {"type": "array", "items": {"type": "string"}},
+                    "cwd": {"type": "string"},
+                },
+                "required": ["argv", "cwd"],
+                "additionalProperties": False,
+            },
+            adapter_name="fake.system.network",
+            sensitivity_ceiling=Sensitivity.INFRA,
+        )
+
+    async def invoke(self, arguments):
+        self.calls.append(arguments)
+        return self.response
 
 
 class RecordingContextAssembler:
@@ -159,18 +342,26 @@ def _budget() -> LoopBudget:
     )
 
 
-def _request(*, sensitivity: Sensitivity = Sensitivity.PROJECT) -> LoopExecutionRequest:
+def _request(
+    *,
+    sensitivity: Sensitivity = Sensitivity.PROJECT,
+    user_input: str = "use a safe tool",
+    metadata: dict | None = None,
+    working_directory: str | None = None,
+) -> LoopExecutionRequest:
     return LoopExecutionRequest(
         request_id="request-tool-react",
         conversation_id="conversation-tool-react",
         user_message_id="message-user",
         user_id="user-1",
-        user_input="use a safe tool",
+        user_input=user_input,
         active_project_namespace="project.personal_assistant",
         current_message_sensitivity=sensitivity,
         model_profile="local_structured",
         strategy_name=LoopStrategyName.TOOL_REACT_LOOP,
         budget=_budget(),
+        metadata=metadata or {},
+        working_directory=working_directory,
     )
 
 
@@ -179,12 +370,13 @@ def _loop(
     router: ScriptedRouter,
     policy: AllowPolicy | None = None,
     approval_store: InMemoryApprovalStore | None = None,
+    extra_tools: list | None = None,
 ):
     store = RecordingConversationStore()
     assembler = RecordingContextAssembler()
     event_log = InMemoryEventLog()
     gateway = ToolGateway(
-        registry=ToolRegistry([fake_echo_tool(), datetime_now_tool()]),
+        registry=ToolRegistry([fake_echo_tool(), datetime_now_tool(), *(extra_tools or [])]),
         policy=policy or AllowPolicy(),
         event_log=event_log,
         approval_store=approval_store,
@@ -251,6 +443,486 @@ def test_tool_react_loop_executes_datetime_tool_then_final_answer() -> None:
 
     assert result.response_text == "time checked"
     assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_executes_direct_datetime_hint_without_model_call() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        loop, _store, assembler, event_log = _loop(router=router)
+        result = await loop.run_turn(
+            _request(
+                user_input="Сколько время?",
+                metadata={"loop_selection_direct_tool_name": "datetime.now"},
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, router, assembler, events
+
+    result, router, assembler, events = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 1
+    assert "Текущее локальное время:" in result.response_text
+    assert not result.response_text.endswith(" UTC.")
+    assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_executes_direct_christmas_countdown_without_model_call() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        loop, _store, assembler, event_log = _loop(router=router)
+        result = await loop.run_turn(
+            _request(
+                user_input="через сколько дней Рождество?",
+                metadata={
+                    "loop_selection_direct_tool_name": "datetime.now",
+                    "loop_selection_direct_scenario": "christmas_countdown",
+                },
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, router, assembler, events
+
+    result, router, assembler, events = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 1
+    assert "25 декабря" in result.response_text
+    assert "7 января" in result.response_text
+    assert "дней" in result.response_text
+    assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_executes_direct_sensors_hint_without_model_call() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        sensors = FakeSensorsTool()
+        loop, _store, assembler, event_log = _loop(router=router, extra_tools=[sensors])
+        result = await loop.run_turn(
+            _request(
+                user_input="Текущая температура процессора.",
+                metadata={"loop_selection_direct_tool_name": "tool.system.read.sensors"},
+                working_directory="/tmp",
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, router, assembler, sensors, events
+
+    result, router, assembler, sensors, events = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert sensors.calls
+    assert sensors.calls[0]["cwd"] == "/tmp"
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 1
+    assert "54" in result.response_text
+    assert "CPU" in result.response_text
+    assert result.assistant_message is not None
+    assert result.assistant_message.sensitivity is Sensitivity.INFRA
+    assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_executes_direct_resources_hint_without_model_call() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        resources = FakeResourcesTool()
+        loop, _store, assembler, event_log = _loop(router=router, extra_tools=[resources])
+        result = await loop.run_turn(
+            _request(
+                user_input="Сколько памяти сейчас свободно в системе?",
+                metadata={"loop_selection_direct_tool_name": "tool.system.read.resources"},
+                working_directory="/tmp",
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, router, assembler, resources, events
+
+    result, router, assembler, resources, events = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert resources.calls
+    assert resources.calls[0]["cwd"] == "/tmp"
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 1
+    assert "1024 MiB" in result.response_text
+    assert "18000 MiB" in result.response_text
+    assert result.assistant_message is not None
+    assert result.assistant_message.sensitivity is Sensitivity.INFRA
+    assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_executes_direct_disk_free_without_model_call() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        resources = FakeResourcesTool(
+            {
+                "exit_code": 0,
+                "stdout": (
+                    "Filesystem      Size  Used Avail Use% Mounted on\n"
+                    "/dev/disk3s1s1  460Gi  380Gi   80Gi  83% /\n"
+                ),
+                "stderr": "",
+                "truncated": {"stdout": False, "stderr": False},
+            },
+        )
+        loop, _store, assembler, event_log = _loop(router=router, extra_tools=[resources])
+        result = await loop.run_turn(
+            _request(
+                user_input="Сколько свободного места на диске?",
+                metadata={
+                    "loop_selection_direct_tool_name": "tool.system.read.resources",
+                    "loop_selection_direct_scenario": "disk_free",
+                },
+                working_directory="/tmp",
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, router, assembler, resources, events
+
+    result, router, assembler, resources, events = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert resources.calls
+    assert resources.calls[0]["argv"] == ["df", "-h"]
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 1
+    assert "Диск /" in result.response_text
+    assert "80Gi" in result.response_text
+    assert result.assistant_message is not None
+    assert result.assistant_message.sensitivity is Sensitivity.INFRA
+    assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_executes_direct_cpu_overview_plan_without_model_call() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        hardware = FakeHardwareTool()
+        resources = FakeResourcesTool(
+            {
+                "exit_code": 0,
+                "stdout": "Processes: 637 total\nCPU usage: 40.92% user, 28.16% sys, 30.90% idle\n",
+                "stderr": "",
+                "truncated": {"stdout": False, "stderr": False},
+            },
+        )
+        loop, _store, assembler, event_log = _loop(
+            router=router,
+            extra_tools=[hardware, resources],
+        )
+        result = await loop.run_turn(
+            _request(
+                user_input="Сколько ядер у центрального процессора и на сколько они загружены?",
+                metadata={
+                    "loop_selection_direct_tool_names": [
+                        "tool.system.read.hardware",
+                        "tool.system.read.resources",
+                    ],
+                },
+                working_directory="/tmp",
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, router, assembler, hardware, resources, events
+
+    result, router, assembler, hardware, resources, events = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert hardware.calls
+    assert resources.calls
+    assert hardware.calls[0]["argv"] == ["sysctl", "-n", "hw.logicalcpu"]
+    assert resources.calls[0]["argv"] == ["top", "-l", "1", "-n", "0"]
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 2
+    assert "10" in result.response_text
+    assert "40.92%" in result.response_text
+    assert "30.90%" in result.response_text
+    assert result.assistant_message is not None
+    assert result.assistant_message.sensitivity is Sensitivity.INFRA
+    assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_executes_direct_os_version_without_model_call() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        hardware = FakeHardwareTool(
+            {
+                "exit_code": 0,
+                "stdout": "ProductName:\t\tmacOS\nProductVersion:\t\t15.6\nBuildVersion:\t\t24G84\n",
+                "stderr": "",
+                "truncated": {"stdout": False, "stderr": False},
+            },
+        )
+        loop, _store, assembler, event_log = _loop(router=router, extra_tools=[hardware])
+        result = await loop.run_turn(
+            _request(
+                user_input="Какая версия операционной системы?",
+                metadata={
+                    "loop_selection_direct_tool_name": "tool.system.read.hardware",
+                    "loop_selection_direct_scenario": "os_version",
+                },
+                working_directory="/tmp",
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, router, assembler, hardware, events
+
+    result, router, assembler, hardware, events = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert hardware.calls
+    assert hardware.calls[0]["argv"] == ["sw_vers"]
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 1
+    assert "macOS 15.6" in result.response_text
+    assert "24G84" in result.response_text
+    assert "Windows" not in result.response_text
+    assert result.assistant_message is not None
+    assert result.assistant_message.sensitivity is Sensitivity.INFRA
+    assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_executes_direct_battery_charge_without_model_call() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        hardware = FakeHardwareTool(
+            {
+                "exit_code": 0,
+                "stdout": (
+                    "Now drawing from 'Battery Power'\n"
+                    " -InternalBattery-0 (id=1234567)\t82%; discharging; 4:12 remaining present: true\n"
+                ),
+                "stderr": "",
+                "truncated": {"stdout": False, "stderr": False},
+            },
+        )
+        loop, _store, assembler, event_log = _loop(router=router, extra_tools=[hardware])
+        result = await loop.run_turn(
+            _request(
+                user_input="Сколько процентов заряда аккумулятора осталось на макбуке?",
+                metadata={
+                    "loop_selection_direct_tool_name": "tool.system.read.hardware",
+                    "loop_selection_direct_scenario": "battery_charge",
+                },
+                working_directory="/tmp",
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, router, assembler, hardware, events
+
+    result, router, assembler, hardware, events = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert hardware.calls
+    assert hardware.calls[0]["argv"] == ["pmset", "-g", "batt"]
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 1
+    assert "82%" in result.response_text
+    assert "аккумулятор" in result.response_text.lower()
+    assert result.assistant_message is not None
+    assert result.assistant_message.sensitivity is Sensitivity.INFRA
+    assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_executes_direct_process_name_search_without_model_call() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        process = FakeProcessTool()
+        loop, _store, assembler, event_log = _loop(router=router, extra_tools=[process])
+        result = await loop.run_turn(
+            _request(
+                user_input='Запущен ли сейчас процесс, в имени которого есть "HFT"?',
+                metadata={
+                    "loop_selection_direct_tool_name": "tool.system.read.process",
+                    "loop_selection_direct_scenario": "process_name_search",
+                },
+                working_directory="/tmp",
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, router, assembler, process, events
+
+    result, router, assembler, process, events = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert process.calls
+    assert process.calls[0]["argv"] == ["pgrep", "-l", "HFT"]
+    assert process.calls[0]["cwd"] == "/tmp"
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 1
+    assert "HFT" in result.response_text
+    assert "запущен" in result.response_text.lower()
+    assert result.assistant_message is not None
+    assert result.assistant_message.sensitivity is Sensitivity.INFRA
+    assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_executes_direct_unquoted_process_name_search_without_ps_fallback() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        process = FakeProcessTool()
+        loop, _store, assembler, _event_log = _loop(router=router, extra_tools=[process])
+        result = await loop.run_turn(
+            _request(
+                user_input="Запущен ли процесс HFT сейчас?",
+                metadata={
+                    "loop_selection_direct_tool_name": "tool.system.read.process",
+                    "loop_selection_direct_scenario": "process_name_search",
+                },
+                working_directory="/tmp",
+            )
+        )
+        return result, router, assembler, process
+
+    result, router, assembler, process = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert process.calls
+    assert process.calls[0]["argv"] == ["pgrep", "-l", "HFT"]
+    assert process.calls[0]["argv"][0] != "ps"
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 1
+
+
+def test_tool_react_loop_escapes_direct_process_search_pattern_for_pgrep() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        process = FakeProcessTool()
+        loop, _store, assembler, _event_log = _loop(router=router, extra_tools=[process])
+        result = await loop.run_turn(
+            _request(
+                user_input='Запущен ли сейчас процесс, в имени которого есть "H.FT"?',
+                metadata={
+                    "loop_selection_direct_tool_name": "tool.system.read.process",
+                    "loop_selection_direct_scenario": "process_name_search",
+                },
+                working_directory="/tmp",
+            )
+        )
+        return result, router, assembler, process
+
+    result, router, assembler, process = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert process.calls
+    assert process.calls[0]["argv"] == ["pgrep", "-l", r"H\.FT"]
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 1
+
+
+def test_tool_react_loop_does_not_direct_execute_process_search_without_pattern() -> None:
+    async def scenario():
+        router = ScriptedRouter(
+            [{"action": "final_answer", "final_answer": "Уточните имя процесса."}],
+        )
+        process = FakeProcessTool()
+        loop, _store, assembler, _event_log = _loop(router=router, extra_tools=[process])
+        result = await loop.run_turn(
+            _request(
+                user_input="Запущен ли сейчас процесс?",
+                metadata={
+                    "loop_selection_direct_tool_name": "tool.system.read.process",
+                    "loop_selection_direct_scenario": "process_name_search",
+                },
+                working_directory="/tmp",
+            )
+        )
+        return result, router, assembler, process
+
+    result, router, assembler, process = asyncio.run(scenario())
+
+    assert router.calls == 1
+    assert assembler.tool_ref_counts == [0]
+    assert process.calls == []
+    assert result.used_model_calls == 1
+    assert result.used_tool_calls == 0
+    assert result.response_text == "Уточните имя процесса."
+
+
+def test_tool_react_loop_executes_direct_vpn_status_without_model_call() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        network = FakeNetworkTool()
+        loop, _store, assembler, event_log = _loop(router=router, extra_tools=[network])
+        result = await loop.run_turn(
+            _request(
+                user_input="Включен ли VPN сейчас?",
+                metadata={
+                    "loop_selection_direct_tool_name": "tool.system.read.network",
+                    "loop_selection_direct_scenario": "vpn_status",
+                },
+                working_directory="/tmp",
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, router, assembler, network, events
+
+    result, router, assembler, network, events = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert network.calls
+    assert network.calls[0]["argv"] == ["scutil", "--nc", "list"]
+    assert network.calls[0]["cwd"] == "/tmp"
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 1
+    assert "VPN" in result.response_text
+    assert "включен" in result.response_text.lower()
+    assert result.assistant_message is not None
+    assert result.assistant_message.sensitivity is Sensitivity.INFRA
+    assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_does_not_mark_down_linux_vpn_interface_as_connected() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        network = FakeNetworkTool(
+            {
+                "exit_code": 0,
+                "stdout": "\n".join(
+                    [
+                        "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 state UP group default",
+                        "    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0",
+                        "3: wg0: <POINTOPOINT,NOARP> mtu 1420 state DOWN group default",
+                        "    inet 10.0.0.2/32 scope global wg0",
+                    ]
+                ),
+                "stderr": "",
+                "truncated": {"stdout": False, "stderr": False},
+            }
+        )
+        loop, _store, assembler, _event_log = _loop(router=router, extra_tools=[network])
+        result = await loop.run_turn(
+            _request(
+                user_input="Включен ли VPN сейчас?",
+                metadata={
+                    "loop_selection_direct_tool_name": "tool.system.read.network",
+                    "loop_selection_direct_scenario": "vpn_status",
+                },
+                working_directory="/tmp",
+            )
+        )
+        return result, router, assembler, network
+
+    result, router, assembler, network = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert network.calls
+    assert "не включен" in result.response_text.lower()
+    assert "обнаружен активный" not in result.response_text.lower()
 
 
 def test_tool_react_loop_handles_denied_tool_observation() -> None:

@@ -432,7 +432,7 @@ def test_nvidia_smi_temperature_query_returns_sensor_snapshot(tmp_path: Path) ->
 
 def test_powermetrics_permission_required_returns_unavailable_snapshot(tmp_path: Path) -> None:
     executor = RecordingDiagnosticsExecutor(
-        ShellExecutionResult(exit_code=1, stdout="", stderr="powermetrics must be run as root\n"),
+        ShellExecutionResult(exit_code=1, stdout="", stderr="powermetrics must be invoked as the superuser\n"),
     )
     gateway, _policy, event_log = _gateway(
         tmp_path,
@@ -445,7 +445,7 @@ def test_powermetrics_permission_required_returns_unavailable_snapshot(tmp_path:
         gateway.invoke(
             _request(
                 tmp_path,
-                ["powermetrics", "--samplers", "smc", "-n", "1"],
+                ["powermetrics", "--samplers", "thermal", "-n", "1"],
                 tool_name="tool.system.read.sensors",
             ),
         ),
@@ -458,6 +458,7 @@ def test_powermetrics_permission_required_returns_unavailable_snapshot(tmp_path:
     assert content["available"] is False
     assert content["reason"] == "permission_required"
     assert "root" not in observation.content.lower()
+    assert "superuser" not in observation.content.lower()
     assert EventType.TOOL_SYSTEM_DIAGNOSTICS_UNAVAILABLE in [event.event_type for event in events]
 
 
