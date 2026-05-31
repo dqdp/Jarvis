@@ -9,12 +9,18 @@ from assistant_core.approvals.in_memory import InMemoryApprovalStore
 from assistant_core.domain.events import EventType
 from assistant_core.domain.policy import Capability, RiskClass
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolCallRequest, ToolObservationStatus
+from assistant_core.domain.tools import (
+    ToolCallRequest,
+    ToolInvocationResult,
+    ToolObservationStatus,
+    ToolParseStatus,
+)
 from assistant_core.events.in_memory import InMemoryEventLog
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.tools.approval_coordination import ToolApprovalCoordinator
 from assistant_core.tools.audit import ToolInvocationAuditRecorder
 from assistant_core.tools.fake import fake_echo_tool
+from assistant_core.tools.results import completed_observation
 
 
 pytestmark = pytest.mark.unit
@@ -94,3 +100,109 @@ def test_tool_audit_recorder_writes_observation_without_raw_content() -> None:
     assert events[0].event_type == EventType.TOOL_CALL_STARTED
     assert events[0].causation_id == "cause-1"
     assert events[0].payload["step_id"] == "step-1"
+
+
+def test_completed_observation_preserves_typed_tool_payload() -> None:
+    result = ToolInvocationResult(
+        content='{"stdout": "raw fallback"}',
+        content_type="application/json",
+        structured_content={
+            "schema": "system.memory_overview",
+            "available": "18000 MiB",
+        },
+        structured_schema="system.memory_overview",
+        structured_schema_version=1,
+        parse_status=ToolParseStatus.PARSED,
+        parse_warnings=("estimated_available",),
+    )
+
+    observation = completed_observation(
+        request=_request(),
+        adapter=fake_echo_tool(),
+        tool_call_id="tool-call-1",
+        started_at=datetime.now(UTC),
+        result=result,
+        max_output_bytes=20_000,
+    )
+
+    assert observation.structured_content == {
+        "schema": "system.memory_overview",
+        "available": "18000 MiB",
+    }
+    assert observation.structured_schema == "system.memory_overview"
+    assert observation.structured_schema_version == 1
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.parse_warnings == ("estimated_available",)
+
+
+def test_completed_observation_redacts_sensitive_structured_payload() -> None:
+    result = ToolInvocationResult(
+        content='{"api_key": "sk-live-secret"}',
+        content_type="application/json",
+        structured_content={
+            "api_key": "sk-live-secret",
+            "nested": {
+                "token": "plain-token-value",
+                "safe": "visible",
+            },
+        },
+        structured_schema="fake.secret_payload",
+        structured_schema_version=1,
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    observation = completed_observation(
+        request=_request(),
+        adapter=fake_echo_tool(),
+        tool_call_id="tool-call-1",
+        started_at=datetime.now(UTC),
+        result=result,
+        max_output_bytes=20_000,
+    )
+
+    assert observation.content == '{"redacted": true}'
+    assert observation.structured_content == {
+        "api_key": "<redacted>",
+        "nested": {
+            "token": "<redacted>",
+            "safe": "visible",
+        },
+    }
+
+
+def test_tool_audit_recorder_writes_typed_observation_metadata_without_payload() -> None:
+    async def scenario():
+        event_log = InMemoryEventLog()
+        recorder = ToolInvocationAuditRecorder(event_log)
+        request = _request(causation_event_id="cause-typed", step_id="step-typed")
+        observation = completed_observation(
+            request=request,
+            adapter=fake_echo_tool(),
+            tool_call_id="tool-call-typed",
+            started_at=datetime.now(UTC),
+            result=ToolInvocationResult(
+                content='{"stdout": "raw"}',
+                content_type="application/json",
+                structured_content={"free": "1024 MiB"},
+                structured_schema="system.memory_overview",
+                structured_schema_version=1,
+                parse_status=ToolParseStatus.PARTIAL,
+                parse_warnings=("total_memory_unavailable",),
+            ),
+            max_output_bytes=20_000,
+        )
+        await recorder.record_observation(
+            request,
+            observation,
+            policy_decision_id="decision-typed",
+        )
+        return await event_log.query(EventFilter(request_id="request-tool"))
+
+    events = asyncio.run(scenario())
+    payload = events[0].payload
+
+    assert payload["structured_schema"] == "system.memory_overview"
+    assert payload["structured_schema_version"] == 1
+    assert payload["parse_status"] == "partial"
+    assert payload["parse_warnings"] == ["total_memory_unavailable"]
+    assert "structured_content" not in payload

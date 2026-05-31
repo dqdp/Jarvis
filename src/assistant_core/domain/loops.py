@@ -7,7 +7,7 @@ from typing import Any
 from assistant_core.domain.conversations import ConversationMessage
 from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolObservation, ToolObservationStatus
+from assistant_core.domain.tools import ToolObservation, ToolObservationStatus, ToolParseStatus
 
 
 class LoopStrategyName(StrEnum):
@@ -164,6 +164,11 @@ class ToolObservationRef:
     sensitivity: Sensitivity
     truncated: bool = False
     error_code: str | None = None
+    structured_content: Any | None = None
+    structured_schema: str | None = None
+    structured_schema_version: int | None = None
+    parse_status: Any = None
+    parse_warnings: tuple[str, ...] = ()
 
     @classmethod
     def from_observation(cls, observation: ToolObservation) -> ToolObservationRef:
@@ -176,6 +181,11 @@ class ToolObservationRef:
             sensitivity=observation.sensitivity,
             truncated=observation.truncated,
             error_code=observation.error["code"] if observation.error else None,
+            structured_content=observation.structured_content,
+            structured_schema=observation.structured_schema,
+            structured_schema_version=observation.structured_schema_version,
+            parse_status=observation.parse_status,
+            parse_warnings=observation.parse_warnings,
         )
 
     def __post_init__(self) -> None:
@@ -187,6 +197,11 @@ class ToolObservationRef:
             object.__setattr__(self, "status", ToolObservationStatus(self.status))
         if not isinstance(self.sensitivity, Sensitivity):
             object.__setattr__(self, "sensitivity", Sensitivity(self.sensitivity))
+        if self.parse_status is None:
+            object.__setattr__(self, "parse_status", None)
+        elif not isinstance(self.parse_status, ToolParseStatus):
+            object.__setattr__(self, "parse_status", ToolParseStatus(self.parse_status))
+        object.__setattr__(self, "parse_warnings", tuple(self.parse_warnings))
 
 
 @dataclass(frozen=True)

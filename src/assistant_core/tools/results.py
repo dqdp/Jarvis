@@ -11,6 +11,7 @@ from assistant_core.domain.tools import (
     ToolInvocationResult,
     ToolObservation,
     ToolObservationStatus,
+    ToolParseStatus,
 )
 from assistant_core.tools.events import looks_sensitive, tool_output_sensitivity
 from assistant_core.tools.registry import ToolAdapter
@@ -42,6 +43,7 @@ def empty_observation(
         duration_ms=max(0, int((completed_at - started_at).total_seconds() * 1000)),
         error=error,
         metadata=metadata or {},
+        parse_status=ToolParseStatus.NOT_APPLICABLE,
     )
 
 
@@ -54,7 +56,18 @@ def completed_observation(
     result: Any,
     max_output_bytes: int,
 ) -> ToolObservation:
-    content, content_type, metadata, result_truncated, result_output_bytes = serialize_content(
+    (
+        content,
+        content_type,
+        metadata,
+        result_truncated,
+        result_output_bytes,
+        structured_content,
+        structured_schema,
+        structured_schema_version,
+        parse_status,
+        parse_warnings,
+    ) = serialize_content(
         result,
         adapter.content_type,
     )
@@ -80,6 +93,11 @@ def completed_observation(
         duration_ms=max(0, int((completed_at - started_at).total_seconds() * 1000)),
         error=None,
         metadata=metadata,
+        structured_content=redact_structured_content(structured_content),
+        structured_schema=structured_schema,
+        structured_schema_version=structured_schema_version,
+        parse_status=parse_status,
+        parse_warnings=parse_warnings,
     )
 
 
@@ -91,10 +109,38 @@ def redact_content(content: str, *, content_type: str) -> str:
     return "<redacted>"
 
 
+def redact_structured_content(value: Any, *, key_hint: str | None = None) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: redact_structured_content(child, key_hint=str(key))
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_structured_content(child, key_hint=key_hint) for child in value]
+    if isinstance(value, tuple):
+        return tuple(redact_structured_content(child, key_hint=key_hint) for child in value)
+    if isinstance(value, str) and (
+        (key_hint is not None and looks_sensitive(key_hint)) or looks_sensitive(value)
+    ):
+        return "<redacted>"
+    return value
+
+
 def serialize_content(
     result: Any,
     content_type: str,
-) -> tuple[str, str, dict[str, Any], bool, int | None]:
+) -> tuple[
+    str,
+    str,
+    dict[str, Any],
+    bool,
+    int | None,
+    Any | None,
+    str | None,
+    int | None,
+    ToolParseStatus,
+    tuple[str, ...],
+]:
     if isinstance(result, ToolInvocationResult):
         return (
             result.content,
@@ -102,10 +148,26 @@ def serialize_content(
             result.metadata,
             result.truncated,
             result.output_bytes,
+            result.structured_content,
+            result.structured_schema,
+            result.structured_schema_version,
+            result.parse_status,
+            result.parse_warnings,
         )
     if isinstance(result, str):
-        return result, content_type, {}, False, None
-    return json.dumps(result, sort_keys=True), "application/json", {}, False, None
+        return result, content_type, {}, False, None, None, None, None, ToolParseStatus.NOT_APPLICABLE, ()
+    return (
+        json.dumps(result, sort_keys=True),
+        "application/json",
+        {},
+        False,
+        None,
+        None,
+        None,
+        None,
+        ToolParseStatus.NOT_APPLICABLE,
+        (),
+    )
 
 
 def effective_timeout(request: ToolCallRequest, spec) -> float:

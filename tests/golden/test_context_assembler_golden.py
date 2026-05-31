@@ -270,6 +270,36 @@ def test_tool_observation_ref_can_enter_context_as_tool_section() -> None:
     assert "hello from tool" in context.messages[0].content[0].text
 
 
+def test_unparsed_tool_observation_context_includes_parse_metadata() -> None:
+    context = asyncio.run(
+        _assembler().assemble(
+            _request(
+                loop_strategy="tool_react_loop",
+                tool_observation_refs=(
+                    ToolObservationRef(
+                        tool_call_id="tool-call-unparsed",
+                        tool_name="tool.system.read.network",
+                        status="completed",
+                        content='{"stdout": "", "stderr": "scutil: unavailable"}',
+                        content_type="application/json",
+                        sensitivity=Sensitivity.INFRA,
+                        structured_schema="system.vpn_status",
+                        structured_schema_version=1,
+                        parse_status="unparsed",
+                        parse_warnings=("command_failed",),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    tool_section = next(section for section in context.sections if section.name == "tool_observations")
+    assert "system.vpn_status" in tool_section.content
+    assert "unparsed" in tool_section.content
+    assert "command_failed" in tool_section.content
+    assert "scutil: unavailable" in context.messages[0].content[0].text
+
+
 def test_tool_observation_context_respects_budget() -> None:
     context = asyncio.run(
         _assembler().assemble(

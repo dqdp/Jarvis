@@ -242,6 +242,23 @@ def test_no_raw_prompt_logging_by_default() -> None:
     assert settings.observability.log_raw_prompts is False
 
 
+def test_tool_react_loop_has_no_scope_specific_stdout_parsers() -> None:
+    source = (SRC_ROOT / "runtime" / "loops" / "tool_react.py").read_text(encoding="utf-8")
+
+    forbidden_fragments = {
+        "_parse_sw_vers",
+        "_parse_df_snapshot",
+        "_free_memory_answer",
+        "_vm_stat_memory_answer",
+        "_top_cpu_usage",
+        "_hardware_cpu_cores",
+        "CPU usage:",
+        "Pages free",
+    }
+
+    assert sorted(fragment for fragment in forbidden_fragments if fragment in source) == []
+
+
 def test_no_mvp_scope_creep_packages_exist() -> None:
     forbidden_packages = {"mcp", "rag", "react", "planner", "voice"}
 

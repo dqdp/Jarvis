@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -20,7 +22,7 @@ from assistant_core.domain.models import StructuredModelResponse
 from assistant_core.domain.policy import Capability, PolicyDecision, PolicyDecisionOutcome, RiskClass
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolObservationStatus, ToolSpec
+from assistant_core.domain.tools import ToolInvocationResult, ToolObservationStatus, ToolParseStatus, ToolSpec
 from assistant_core.events.in_memory import InMemoryEventLog
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.runtime.loops.tool_react import ToolReactLoop
@@ -58,6 +60,194 @@ class ScriptedRouter:
     async def structured(self, request):
         self.calls += 1
         return StructuredModelResponse(value=self.responses[self.calls - 1])
+
+
+def _typed_json_result(
+    content: dict,
+    *,
+    structured_schema: str,
+    structured_content: dict | None,
+    parse_status: ToolParseStatus = ToolParseStatus.PARSED,
+    parse_warnings: tuple[str, ...] = (),
+) -> ToolInvocationResult:
+    encoded = json.dumps(content, sort_keys=True)
+    return ToolInvocationResult(
+        content=encoded,
+        content_type="application/json",
+        truncated=False,
+        output_bytes=len(encoded.encode("utf-8")),
+        structured_content=structured_content,
+        structured_schema=structured_schema,
+        structured_schema_version=1,
+        parse_status=parse_status,
+        parse_warnings=parse_warnings,
+    )
+
+
+def _untyped_json_result(content: dict) -> ToolInvocationResult:
+    encoded = json.dumps(content, sort_keys=True)
+    return ToolInvocationResult(
+        content=encoded,
+        content_type="application/json",
+        truncated=False,
+        output_bytes=len(encoded.encode("utf-8")),
+        parse_status=ToolParseStatus.NOT_APPLICABLE,
+    )
+
+
+def _typed_sensor_result(response: dict | ToolInvocationResult) -> ToolInvocationResult:
+    if isinstance(response, ToolInvocationResult):
+        return response
+    return _typed_json_result(
+        response,
+        structured_schema="system.sensor_snapshot",
+        structured_content=response,
+    )
+
+
+def _default_resources_response(arguments: dict) -> ToolInvocationResult:
+    argv = arguments.get("argv", ())
+    if argv == ["vm_stat"]:
+        content = {
+            "exit_code": 0,
+            "stdout": (
+                "Mach Virtual Memory Statistics: (page size of 4096 bytes)\n"
+                "Pages free:                               262144.\n"
+                "Pages speculative:                        262144.\n"
+            ),
+            "stderr": "",
+            "truncated": {"stdout": False, "stderr": False},
+        }
+        return _typed_json_result(
+            content,
+            structured_schema="system.memory_overview",
+            structured_content={"free": "1.00 GiB", "available": "2.00 GiB", "source": "vm_stat"},
+            parse_status=ToolParseStatus.PARTIAL,
+            parse_warnings=("total_memory_unavailable",),
+        )
+    if argv == ["top", "-l", "1", "-n", "0"]:
+        content = {
+            "exit_code": 0,
+            "stdout": "Processes: 637 total\nCPU usage: 40.92% user, 28.16% sys, 30.90% idle\n",
+            "stderr": "",
+            "truncated": {"stdout": False, "stderr": False},
+        }
+        return _typed_json_result(
+            content,
+            structured_schema="system.cpu_overview",
+            structured_content={
+                "user_percent": 40.92,
+                "system_percent": 28.16,
+                "idle_percent": 30.9,
+                "source": "top",
+            },
+            parse_status=ToolParseStatus.PARTIAL,
+            parse_warnings=("core_count_unavailable",),
+        )
+    content = {
+        "exit_code": 0,
+        "stdout": (
+            "              total        used        free      shared  buff/cache   available\n"
+            "Mem:          32768       12000        1024         128       19744       18000\n"
+        ),
+        "stderr": "",
+        "truncated": {"stdout": False, "stderr": False},
+    }
+    return _typed_json_result(
+        content,
+        structured_schema="system.memory_overview",
+        structured_content={
+            "total": "32768 MiB",
+            "used": "12000 MiB",
+            "free": "1024 MiB",
+            "available": "18000 MiB",
+            "used_percent": 36.6,
+            "source": "free",
+        },
+    )
+
+
+def _default_hardware_response(arguments: dict) -> ToolInvocationResult:
+    argv = arguments.get("argv", ())
+    if argv == ["lscpu"]:
+        content = {
+            "exit_code": 0,
+            "stdout": "CPU(s):              10\n",
+            "stderr": "",
+            "truncated": {"stdout": False, "stderr": False},
+        }
+    else:
+        content = {
+            "exit_code": 0,
+            "stdout": "10\n",
+            "stderr": "",
+            "truncated": {"stdout": False, "stderr": False},
+        }
+    return _typed_json_result(
+        content,
+        structured_schema="system.cpu_overview",
+        structured_content={"logical_cores": 10, "source": "fake-hardware"},
+        parse_status=ToolParseStatus.PARTIAL,
+        parse_warnings=("load_unavailable",),
+    )
+
+
+def _default_network_response(arguments: dict) -> ToolInvocationResult:
+    argv = arguments.get("argv", ())
+    if argv == ["ip", "addr"]:
+        content = {
+            "exit_code": 0,
+            "stdout": "7: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 state UP group default\n",
+            "stderr": "",
+            "truncated": {"stdout": False, "stderr": False},
+        }
+        service = "wg0"
+    else:
+        content = {
+            "exit_code": 0,
+            "stdout": "* (Connected)   JarvisVPN               [VPN]\n",
+            "stderr": "",
+            "truncated": {"stdout": False, "stderr": False},
+        }
+        service = "JarvisVPN"
+    return _typed_json_result(
+        content,
+        structured_schema="system.vpn_status",
+        structured_content={
+            "connected": True,
+            "interface_or_service": service,
+            "evidence": [content["stdout"].strip()],
+            "source": "fake-network",
+        },
+    )
+
+
+def _typed_process_result(response: dict | ToolInvocationResult) -> ToolInvocationResult:
+    if isinstance(response, ToolInvocationResult):
+        return response
+    if response.get("exit_code") not in {0, 1}:
+        return _typed_json_result(
+            response,
+            structured_schema="system.process_name_search",
+            structured_content={
+                "query": "HFT",
+                "matches": [],
+                "error": response.get("stderr") or response.get("stdout") or "process search failed",
+                "source": "fake-process",
+            },
+            parse_status=ToolParseStatus.PARTIAL,
+            parse_warnings=("process_search_failed",),
+        )
+    matches = (
+        [{"pid": 12345, "name": "HFT-strategy-runner"}]
+        if "HFT-strategy-runner" in str(response.get("stdout", ""))
+        else []
+    )
+    return _typed_json_result(
+        response,
+        structured_schema="system.process_name_search",
+        structured_content={"query": "HFT", "matches": matches, "source": "fake-process"},
+    )
 
 
 class FakeSensorsTool:
@@ -100,7 +290,7 @@ class FakeSensorsTool:
 
     async def invoke(self, arguments):
         self.calls.append(arguments)
-        return self.response
+        return _typed_sensor_result(self.response)
 
 
 class FakeResourcesTool:
@@ -108,12 +298,7 @@ class FakeResourcesTool:
 
     def __init__(self, response: dict | None = None) -> None:
         self.calls: list[dict] = []
-        self.response = response or {
-            "exit_code": 0,
-            "stdout": "              total        used        free      shared  buff/cache   available\nMem:          32768       12000        1024         128       19744       18000\n",
-            "stderr": "",
-            "truncated": {"stdout": False, "stderr": False},
-        }
+        self.response = response
         self.spec = ToolSpec(
             name="tool.system.read.resources",
             display_name="System Resources Diagnostics",
@@ -135,7 +320,8 @@ class FakeResourcesTool:
 
     async def invoke(self, arguments):
         self.calls.append(arguments)
-        return self.response
+        response = self.response if self.response is not None else _default_resources_response(arguments)
+        return response if isinstance(response, ToolInvocationResult) else _untyped_json_result(response)
 
 
 class FakeHardwareTool:
@@ -143,12 +329,7 @@ class FakeHardwareTool:
 
     def __init__(self, response: dict | None = None) -> None:
         self.calls: list[dict] = []
-        self.response = response or {
-            "exit_code": 0,
-            "stdout": "10\n",
-            "stderr": "",
-            "truncated": {"stdout": False, "stderr": False},
-        }
+        self.response = response
         self.spec = ToolSpec(
             name="tool.system.read.hardware",
             display_name="System Hardware Diagnostics",
@@ -170,7 +351,8 @@ class FakeHardwareTool:
 
     async def invoke(self, arguments):
         self.calls.append(arguments)
-        return self.response
+        response = self.response if self.response is not None else _default_hardware_response(arguments)
+        return response if isinstance(response, ToolInvocationResult) else _untyped_json_result(response)
 
 
 class FakeProcessTool:
@@ -205,7 +387,7 @@ class FakeProcessTool:
 
     async def invoke(self, arguments):
         self.calls.append(arguments)
-        return self.response
+        return _typed_process_result(self.response)
 
 
 class FakeNetworkTool:
@@ -213,12 +395,7 @@ class FakeNetworkTool:
 
     def __init__(self, response: dict | None = None) -> None:
         self.calls: list[dict] = []
-        self.response = response or {
-            "exit_code": 0,
-            "stdout": "* (Connected)   JarvisVPN               [VPN]\n",
-            "stderr": "",
-            "truncated": {"stdout": False, "stderr": False},
-        }
+        self.response = response
         self.spec = ToolSpec(
             name="tool.system.read.network",
             display_name="System Network Diagnostics",
@@ -240,7 +417,8 @@ class FakeNetworkTool:
 
     async def invoke(self, arguments):
         self.calls.append(arguments)
-        return self.response
+        response = self.response if self.response is not None else _default_network_response(arguments)
+        return response if isinstance(response, ToolInvocationResult) else _untyped_json_result(response)
 
 
 class RecordingContextAssembler:
@@ -550,8 +728,8 @@ def test_tool_react_loop_executes_direct_resources_hint_without_model_call() -> 
     assert resources.calls[0]["cwd"] == "/tmp"
     assert result.used_model_calls == 0
     assert result.used_tool_calls == 1
-    assert "1024 MiB" in result.response_text
-    assert "18000 MiB" in result.response_text
+    assert "Память:" in result.response_text
+    assert "свободно" in result.response_text
     assert result.assistant_message is not None
     assert result.assistant_message.sensitivity is Sensitivity.INFRA
     assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
@@ -561,15 +739,31 @@ def test_tool_react_loop_executes_direct_disk_free_without_model_call() -> None:
     async def scenario():
         router = ScriptedRouter([])
         resources = FakeResourcesTool(
-            {
-                "exit_code": 0,
-                "stdout": (
-                    "Filesystem      Size  Used Avail Use% Mounted on\n"
-                    "/dev/disk3s1s1  460Gi  380Gi   80Gi  83% /\n"
-                ),
-                "stderr": "",
-                "truncated": {"stdout": False, "stderr": False},
-            },
+            _typed_json_result(
+                {
+                    "exit_code": 0,
+                    "stdout": (
+                        "Filesystem      Size  Used Avail Use% Mounted on\n"
+                        "/dev/disk3s1s1  460Gi  380Gi   80Gi  83% /\n"
+                    ),
+                    "stderr": "",
+                    "truncated": {"stdout": False, "stderr": False},
+                },
+                structured_schema="system.disk_free",
+                structured_content={
+                    "filesystems": [
+                        {
+                            "filesystem": "/dev/disk3s1s1",
+                            "mount": "/",
+                            "size": "460Gi",
+                            "used": "380Gi",
+                            "available": "80Gi",
+                            "used_percent": "83%",
+                        },
+                    ],
+                    "source": "df",
+                },
+            ),
         )
         loop, _store, assembler, event_log = _loop(router=router, extra_tools=[resources])
         result = await loop.run_turn(
@@ -600,18 +794,15 @@ def test_tool_react_loop_executes_direct_disk_free_without_model_call() -> None:
     assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
 
 
-def test_tool_react_loop_executes_direct_cpu_overview_plan_without_model_call() -> None:
+def test_tool_react_loop_executes_direct_cpu_overview_plan_without_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+
     async def scenario():
         router = ScriptedRouter([])
         hardware = FakeHardwareTool()
-        resources = FakeResourcesTool(
-            {
-                "exit_code": 0,
-                "stdout": "Processes: 637 total\nCPU usage: 40.92% user, 28.16% sys, 30.90% idle\n",
-                "stderr": "",
-                "truncated": {"stdout": False, "stderr": False},
-            },
-        )
+        resources = FakeResourcesTool()
         loop, _store, assembler, event_log = _loop(
             router=router,
             extra_tools=[hardware, resources],
@@ -643,22 +834,37 @@ def test_tool_react_loop_executes_direct_cpu_overview_plan_without_model_call() 
     assert result.used_tool_calls == 2
     assert "10" in result.response_text
     assert "40.92%" in result.response_text
-    assert "30.90%" in result.response_text
+    assert "30.9%" in result.response_text
+    assert "частично" in result.response_text.lower()
     assert result.assistant_message is not None
     assert result.assistant_message.sensitivity is Sensitivity.INFRA
     assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
 
 
-def test_tool_react_loop_executes_direct_os_version_without_model_call() -> None:
+def test_tool_react_loop_executes_direct_os_version_without_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+
     async def scenario():
         router = ScriptedRouter([])
         hardware = FakeHardwareTool(
-            {
-                "exit_code": 0,
-                "stdout": "ProductName:\t\tmacOS\nProductVersion:\t\t15.6\nBuildVersion:\t\t24G84\n",
-                "stderr": "",
-                "truncated": {"stdout": False, "stderr": False},
-            },
+            _typed_json_result(
+                {
+                    "exit_code": 0,
+                    "stdout": "ProductName:\t\tmacOS\nProductVersion:\t\t15.6\nBuildVersion:\t\t24G84\n",
+                    "stderr": "",
+                    "truncated": {"stdout": False, "stderr": False},
+                },
+                structured_schema="system.os_version",
+                structured_content={
+                    "product_name": "macOS",
+                    "version": "15.6",
+                    "build": "24G84",
+                    "platform": "darwin",
+                    "source": "sw_vers",
+                },
+            ),
         )
         loop, _store, assembler, event_log = _loop(router=router, extra_tools=[hardware])
         result = await loop.run_turn(
@@ -690,19 +896,106 @@ def test_tool_react_loop_executes_direct_os_version_without_model_call() -> None
     assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
 
 
-def test_tool_react_loop_executes_direct_battery_charge_without_model_call() -> None:
+def test_tool_react_loop_direct_os_answer_uses_typed_payload_not_raw_stdout() -> None:
     async def scenario():
         router = ScriptedRouter([])
         hardware = FakeHardwareTool(
-            {
-                "exit_code": 0,
-                "stdout": (
-                    "Now drawing from 'Battery Power'\n"
-                    " -InternalBattery-0 (id=1234567)\t82%; discharging; 4:12 remaining present: true\n"
-                ),
-                "stderr": "",
-                "truncated": {"stdout": False, "stderr": False},
-            },
+            ToolInvocationResult(
+                content='{"stdout": "ProductName:\\t\\tWindows\\nProductVersion:\\t\\t11\\n"}',
+                content_type="application/json",
+                structured_content={
+                    "product_name": "macOS",
+                    "version": "15.6",
+                    "build": "24G84",
+                    "platform": "darwin",
+                    "source": "sw_vers",
+                },
+                structured_schema="system.os_version",
+                structured_schema_version=1,
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        )
+        loop, _store, assembler, _event_log = _loop(router=router, extra_tools=[hardware])
+        result = await loop.run_turn(
+            _request(
+                user_input="Какая версия операционной системы?",
+                metadata={
+                    "loop_selection_direct_tool_name": "tool.system.read.hardware",
+                    "loop_selection_direct_scenario": "os_version",
+                },
+                working_directory="/tmp",
+            )
+        )
+        return result, router, assembler
+
+    result, router, assembler = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert "macOS 15.6" in result.response_text
+    assert "24G84" in result.response_text
+    assert "Windows" not in result.response_text
+
+
+def test_tool_react_loop_direct_os_answer_falls_back_to_model_for_unparsed_payload() -> None:
+    async def scenario():
+        router = ScriptedRouter(
+            [{"action": "final_answer", "final_answer": "Модель разобрала raw tool output."}],
+        )
+        hardware = FakeHardwareTool(
+            ToolInvocationResult(
+                content='{"stdout": "ProductName:\\t\\tmacOS\\nProductVersion:\\t\\t15.6\\n"}',
+                content_type="application/json",
+                structured_content=None,
+                structured_schema="system.os_version",
+                structured_schema_version=1,
+                parse_status=ToolParseStatus.UNPARSED,
+                parse_warnings=("unrecognized_output",),
+            ),
+        )
+        loop, _store, assembler, _event_log = _loop(router=router, extra_tools=[hardware])
+        result = await loop.run_turn(
+            _request(
+                user_input="Какая версия операционной системы?",
+                metadata={
+                    "loop_selection_direct_tool_name": "tool.system.read.hardware",
+                    "loop_selection_direct_scenario": "os_version",
+                },
+                working_directory="/tmp",
+            )
+        )
+        return result, router, assembler
+
+    result, router, assembler = asyncio.run(scenario())
+
+    assert router.calls == 1
+    assert assembler.tool_ref_counts == [1]
+    assert result.used_model_calls == 1
+    assert result.used_tool_calls == 1
+    assert result.response_text == "Модель разобрала raw tool output."
+
+
+def test_tool_react_loop_executes_direct_battery_charge_without_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    async def scenario():
+        router = ScriptedRouter([])
+        hardware = FakeHardwareTool(
+            _typed_json_result(
+                {
+                    "exit_code": 0,
+                    "stdout": (
+                        "Now drawing from 'Battery Power'\n"
+                        " -InternalBattery-0 (id=1234567)\t82%; discharging; 4:12 remaining present: true\n"
+                    ),
+                    "stderr": "",
+                    "truncated": {"stdout": False, "stderr": False},
+                },
+                structured_schema="system.battery_charge",
+                structured_content={"percent": 82, "state": "discharging", "source": "pmset"},
+            ),
         )
         loop, _store, assembler, event_log = _loop(router=router, extra_tools=[hardware])
         result = await loop.run_turn(
@@ -765,6 +1058,39 @@ def test_tool_react_loop_executes_direct_process_name_search_without_model_call(
     assert result.assistant_message is not None
     assert result.assistant_message.sensitivity is Sensitivity.INFRA
     assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_direct_process_search_does_not_report_not_found_on_tool_error() -> None:
+    async def scenario():
+        router = ScriptedRouter([])
+        process = FakeProcessTool(
+            {
+                "exit_code": 2,
+                "stdout": "",
+                "stderr": "pgrep: invalid option\n",
+                "truncated": {"stdout": False, "stderr": False},
+            },
+        )
+        loop, _store, assembler, _event_log = _loop(router=router, extra_tools=[process])
+        result = await loop.run_turn(
+            _request(
+                user_input='Запущен ли сейчас процесс, в имени которого есть "HFT"?',
+                metadata={
+                    "loop_selection_direct_tool_name": "tool.system.read.process",
+                    "loop_selection_direct_scenario": "process_name_search",
+                },
+                working_directory="/tmp",
+            )
+        )
+        return result, router, assembler, process
+
+    result, router, assembler, process = asyncio.run(scenario())
+
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == []
+    assert process.calls
+    assert "не удалось" in result.response_text.lower()
+    assert "не найден" not in result.response_text.lower()
 
 
 def test_tool_react_loop_executes_direct_unquoted_process_name_search_without_ps_fallback() -> None:
@@ -851,7 +1177,11 @@ def test_tool_react_loop_does_not_direct_execute_process_search_without_pattern(
     assert result.response_text == "Уточните имя процесса."
 
 
-def test_tool_react_loop_executes_direct_vpn_status_without_model_call() -> None:
+def test_tool_react_loop_executes_direct_vpn_status_without_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+
     async def scenario():
         router = ScriptedRouter([])
         network = FakeNetworkTool()
@@ -885,23 +1215,36 @@ def test_tool_react_loop_executes_direct_vpn_status_without_model_call() -> None
     assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
 
 
-def test_tool_react_loop_does_not_mark_down_linux_vpn_interface_as_connected() -> None:
+def test_tool_react_loop_does_not_mark_down_linux_vpn_interface_as_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+
     async def scenario():
         router = ScriptedRouter([])
         network = FakeNetworkTool(
-            {
-                "exit_code": 0,
-                "stdout": "\n".join(
-                    [
-                        "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 state UP group default",
-                        "    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0",
-                        "3: wg0: <POINTOPOINT,NOARP> mtu 1420 state DOWN group default",
-                        "    inet 10.0.0.2/32 scope global wg0",
-                    ]
-                ),
-                "stderr": "",
-                "truncated": {"stdout": False, "stderr": False},
-            }
+            _typed_json_result(
+                {
+                    "exit_code": 0,
+                    "stdout": "\n".join(
+                        [
+                            "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 state UP group default",
+                            "    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0",
+                            "3: wg0: <POINTOPOINT,NOARP> mtu 1420 state DOWN group default",
+                            "    inet 10.0.0.2/32 scope global wg0",
+                        ]
+                    ),
+                    "stderr": "",
+                    "truncated": {"stdout": False, "stderr": False},
+                },
+                structured_schema="system.vpn_status",
+                structured_content={
+                    "connected": False,
+                    "interface_or_service": None,
+                    "evidence": [],
+                    "source": "ip",
+                },
+            )
         )
         loop, _store, assembler, _event_log = _loop(router=router, extra_tools=[network])
         result = await loop.run_turn(
@@ -921,6 +1264,7 @@ def test_tool_react_loop_does_not_mark_down_linux_vpn_interface_as_connected() -
     assert router.calls == 0
     assert assembler.tool_ref_counts == []
     assert network.calls
+    assert network.calls[0]["argv"] == ["ip", "addr"]
     assert "не включен" in result.response_text.lower()
     assert "обнаружен активный" not in result.response_text.lower()
 

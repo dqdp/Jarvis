@@ -31,6 +31,10 @@ class ToolInvocationAuditRecorder:
                 "truncated": observation.truncated,
                 "output_bytes": observation.output_bytes,
                 "error_code": observation.error["code"] if observation.error else None,
+                "structured_schema": observation.structured_schema,
+                "structured_schema_version": observation.structured_schema_version,
+                "parse_status": observation.parse_status.value,
+                "parse_warnings": list(observation.parse_warnings),
             },
             sensitivity=observation.sensitivity,
         )

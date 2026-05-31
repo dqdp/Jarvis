@@ -75,6 +75,13 @@ def audited_tool_event_payload(
     if observation is not None:
         payload["truncated"] = observation.truncated
         payload["output_bytes"] = observation.output_bytes
+        if observation.structured_schema is not None:
+            payload["structured_schema"] = observation.structured_schema
+        if observation.structured_schema_version is not None:
+            payload["structured_schema_version"] = observation.structured_schema_version
+        payload["parse_status"] = observation.parse_status.value
+        if observation.parse_warnings:
+            payload["parse_warnings"] = list(observation.parse_warnings)
     if policy_outcome is not None:
         payload["policy_outcome"] = policy_outcome
     if duration_ms is not None:

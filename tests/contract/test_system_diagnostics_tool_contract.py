@@ -12,7 +12,7 @@ from assistant_core.domain.policy import Capability, PolicyDecision, PolicyDecis
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.domain.system_diagnostics import SensorReading, SensorSnapshot
 from assistant_core.domain.system_diagnostics import SystemDiagnosticsFamily
-from assistant_core.domain.tools import ToolCallRequest, ToolObservationStatus
+from assistant_core.domain.tools import ToolCallRequest, ToolObservationStatus, ToolParseStatus
 from assistant_core.events.in_memory import InMemoryEventLog
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.tools.gateway import ToolGateway
@@ -364,6 +364,207 @@ def test_system_diagnostics_tool_redacts_credential_urls(tmp_path: Path) -> None
         "postgres://<redacted>@127.0.0.1:55432/jarvis\n"
         "redis://<redacted>@127.0.0.1:6379/0\n"
     )
+
+
+def test_system_diagnostics_tool_returns_typed_os_version_payload(tmp_path: Path) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(
+            exit_code=0,
+            stdout="ProductName:\t\tmacOS\nProductVersion:\t\t15.6\nBuildVersion:\t\t24G84\n",
+            stderr="",
+        ),
+    )
+    gateway, _policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        family=SystemDiagnosticsFamily.HARDWARE,
+        platform="darwin",
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(tmp_path, ["sw_vers"], tool_name="tool.system.read.hardware"),
+        ),
+    )
+
+    assert observation.structured_schema == "system.os_version"
+    assert observation.structured_schema_version == 1
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.structured_content == {
+        "product_name": "macOS",
+        "version": "15.6",
+        "build": "24G84",
+        "platform": "darwin",
+        "source": "sw_vers",
+    }
+
+
+def test_system_diagnostics_tool_returns_typed_battery_payload(tmp_path: Path) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(
+            exit_code=0,
+            stdout=(
+                "Now drawing from 'Battery Power'\n"
+                " -InternalBattery-0 (id=1234567)\t82%; discharging; 4:12 remaining present: true\n"
+            ),
+            stderr="",
+        ),
+    )
+    gateway, _policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        family=SystemDiagnosticsFamily.HARDWARE,
+        platform="darwin",
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(tmp_path, ["pmset", "-g", "batt"], tool_name="tool.system.read.hardware"),
+        ),
+    )
+
+    assert observation.structured_schema == "system.battery_charge"
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.structured_content["percent"] == 82
+    assert observation.structured_content["state"] == "discharging"
+    assert observation.structured_content["source"] == "pmset"
+
+
+def test_system_diagnostics_tool_returns_typed_disk_payload(tmp_path: Path) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(
+            exit_code=0,
+            stdout=(
+                "Filesystem      Size  Used Avail Use% Mounted on\n"
+                "/dev/disk3s1s1  460G   15G  120G  12% /\n"
+            ),
+            stderr="",
+        ),
+    )
+    gateway, _policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        family=SystemDiagnosticsFamily.RESOURCES,
+        platform="darwin",
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(_request(tmp_path, ["df", "-h"], tool_name="tool.system.read.resources")),
+    )
+
+    assert observation.structured_schema == "system.disk_free"
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.structured_content["filesystems"] == [
+        {
+            "filesystem": "/dev/disk3s1s1",
+            "mount": "/",
+            "size": "460G",
+            "used": "15G",
+            "available": "120G",
+            "used_percent": "12%",
+        },
+    ]
+
+
+def test_system_diagnostics_tool_returns_typed_memory_payload(tmp_path: Path) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(
+            exit_code=0,
+            stdout=(
+                "              total        used        free      shared  buff/cache   available\n"
+                "Mem:          32768       12000        1024         128       19744       18000\n"
+                "Swap:          2048         256        1792\n"
+            ),
+            stderr="",
+        ),
+    )
+    gateway, _policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        family=SystemDiagnosticsFamily.RESOURCES,
+        platform="linux",
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(_request(tmp_path, ["free", "-m"], tool_name="tool.system.read.resources")),
+    )
+
+    assert observation.structured_schema == "system.memory_overview"
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.structured_content["total"] == "32768 MiB"
+    assert observation.structured_content["used"] == "12000 MiB"
+    assert observation.structured_content["free"] == "1024 MiB"
+    assert observation.structured_content["available"] == "18000 MiB"
+    assert observation.structured_content["swap_total"] == "2048 MiB"
+    assert observation.structured_content["swap_used"] == "256 MiB"
+
+
+def test_system_diagnostics_tool_returns_typed_vpn_payload(tmp_path: Path) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(
+            exit_code=0,
+            stdout="* (Connected)   JarvisVPN               [VPN]\n",
+            stderr="",
+        ),
+    )
+    gateway, _policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        family=SystemDiagnosticsFamily.NETWORK,
+        platform="darwin",
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(tmp_path, ["scutil", "--nc", "list"], tool_name="tool.system.read.network"),
+        ),
+    )
+
+    assert observation.structured_schema == "system.vpn_status"
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.structured_content["connected"] is True
+    assert observation.structured_content["interface_or_service"] == "JarvisVPN"
+
+
+def test_system_diagnostics_tool_marks_failed_vpn_command_unparsed(tmp_path: Path) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(exit_code=1, stdout="", stderr="scutil: unavailable"),
+    )
+    gateway, _policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        family=SystemDiagnosticsFamily.NETWORK,
+        platform="darwin",
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(tmp_path, ["scutil", "--nc", "list"], tool_name="tool.system.read.network"),
+        ),
+    )
+
+    assert observation.structured_schema == "system.vpn_status"
+    assert observation.parse_status is ToolParseStatus.UNPARSED
+    assert observation.structured_content is None
+    assert "command_failed" in observation.parse_warnings
+
+
+def test_system_diagnostics_tool_returns_typed_process_search_payload(tmp_path: Path) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(exit_code=0, stdout="12345 HFT-strategy-runner\n", stderr=""),
+    )
+    gateway, _policy, _event_log = _gateway(tmp_path, executor)
+
+    observation = asyncio.run(
+        gateway.invoke(_request(tmp_path, ["pgrep", "-l", "HFT"], tool_name="tool.system.read.process")),
+    )
+
+    assert observation.structured_schema == "system.process_name_search"
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.structured_content["query"] == "HFT"
+    assert observation.structured_content["matches"] == [
+        {"pid": 12345, "name": "HFT-strategy-runner"},
+    ]
 
 
 def test_sensor_command_stdout_returns_normalized_snapshot(tmp_path: Path) -> None:

@@ -29,7 +29,7 @@ from assistant_core.domain.loops import (
 from assistant_core.domain.models import StructuredModelRequest
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import SENSITIVITY_ORDER, ToolObservationStatus
+from assistant_core.domain.tools import SENSITIVITY_ORDER, ToolObservationStatus, ToolParseStatus
 from assistant_core.ports.approvals import ApprovalStorePort
 from assistant_core.ports.context_assembler import ContextAssemblerPort
 from assistant_core.ports.conversation_store import ConversationStorePort
@@ -311,6 +311,8 @@ class ToolReactLoop:
             causation_id=loop_started.event_id,
         )
         used_tool_calls = 0
+        used_model_calls = 0
+        context_manifest_refs: tuple[str, ...] = ()
         tool_observation_refs: tuple[ToolObservationRef, ...] = ()
         try:
             for tool_name in tool_names:
@@ -330,6 +332,69 @@ class ToolReactLoop:
                 tool_observation_refs = (*tool_observation_refs, observation_ref)
                 if observation_ref.status != ToolObservationStatus.COMPLETED:
                     raise RuntimeError(f"tool_observation_{observation_ref.status.value}")
+            if _has_unparsed_direct_observation(tool_observation_refs):
+                context = await asyncio.wait_for(
+                    self._context_assembler.assemble(
+                        ContextAssemblyRequest(
+                            request_id=request.request_id,
+                            conversation_id=request.conversation_id,
+                            user_id=request.user_id,
+                            current_user_message=request.user_input,
+                            active_project_namespace=request.active_project_namespace,
+                            loop_strategy=request.strategy_name.value,
+                            model_profile=request.model_profile,
+                            current_message_sensitivity=request.current_message_sensitivity,
+                            current_user_message_id=request.user_message_id,
+                            causation_event_id=step_started.event_id,
+                            permission_mode=request.permission_mode,
+                            tool_observation_refs=tool_observation_refs,
+                        ),
+                    ),
+                    timeout=_remaining_timeout(
+                        loop_deadline,
+                        request.budget.max_context_assembly_seconds,
+                    ),
+                )
+                context_manifest_refs = (context.manifest.context_manifest_id,)
+                if used_model_calls >= request.budget.max_model_calls:
+                    raise RuntimeError("max_model_calls_exceeded")
+                used_model_calls += 1
+                model_response = await asyncio.wait_for(
+                    self._model_router.structured(
+                        StructuredModelRequest(
+                            profile=request.model_profile,
+                            messages=context.messages,
+                            schema=TOOL_PROPOSAL_SCHEMA,
+                            sensitivity=_max_ref_sensitivity(
+                                context.manifest.max_sensitivity,
+                                tool_observation_refs,
+                            ),
+                            request_id=request.request_id,
+                            conversation_id=request.conversation_id,
+                            context_manifest_id=context.manifest.context_manifest_id,
+                        ),
+                    ),
+                    timeout=_remaining_timeout(
+                        loop_deadline,
+                        request.budget.max_model_call_seconds,
+                    ),
+                )
+                proposal = parse_tool_proposal(model_response.value)
+                if proposal.action != "final_answer":
+                    raise RuntimeError("direct_unparsed_fallback_requires_final_answer")
+                return await self._complete(
+                    request,
+                    proposal,
+                    step_started=step_started,
+                    used_model_calls=used_model_calls,
+                    used_tool_calls=used_tool_calls,
+                    context_manifest_refs=context_manifest_refs,
+                    tool_observation_refs=tool_observation_refs,
+                    sensitivity=_max_ref_sensitivity(
+                        context.manifest.max_sensitivity,
+                        tool_observation_refs,
+                    ),
+                )
             return await self._complete(
                 request,
                 ToolProposal(
@@ -337,9 +402,9 @@ class ToolReactLoop:
                     final_answer=_direct_tools_answer(tool_names, tool_observation_refs, request),
                 ),
                 step_started=step_started,
-                used_model_calls=0,
+                used_model_calls=used_model_calls,
                 used_tool_calls=used_tool_calls,
-                context_manifest_refs=(),
+                context_manifest_refs=context_manifest_refs,
                 tool_observation_refs=tool_observation_refs,
                 sensitivity=_max_ref_sensitivity(
                     request.current_message_sensitivity,
@@ -363,9 +428,9 @@ class ToolReactLoop:
                 request,
                 exc,
                 causation_id=step_started.event_id,
-                used_model_calls=0,
+                used_model_calls=used_model_calls,
                 used_tool_calls=used_tool_calls,
-                context_manifest_refs=(),
+                context_manifest_refs=context_manifest_refs,
                 tool_observation_refs=tool_observation_refs,
             )
             raise
@@ -862,6 +927,10 @@ def _direct_tools_answer(
     return _direct_tool_answer(tool_names[-1], observation_refs[-1])
 
 
+def _has_unparsed_direct_observation(observation_refs: tuple[ToolObservationRef, ...]) -> bool:
+    return any(ref.parse_status == ToolParseStatus.UNPARSED for ref in observation_refs)
+
+
 def _direct_tool_answer(
     tool_name: str,
     observation_ref: ToolObservationRef,
@@ -911,319 +980,169 @@ def _days_until_month_day(current_date: date, month: int, day: int) -> int:
 
 
 def _battery_charge_answer(observation_ref: ToolObservationRef) -> str:
-    stdout = _tool_stdout(observation_ref)
-    if stdout is None:
-        return "Не удалось прочитать заряд аккумулятора."
-    match = re.search(r"\b(\d{1,3})%;\s*([^;\n]+)", stdout)
-    if match is None:
+    payload = _typed_payload(observation_ref, "system.battery_charge")
+    if payload is None:
         return "Не удалось разобрать заряд аккумулятора."
-    percent = match.group(1)
-    state = _battery_state_label(match.group(2).strip())
-    return f"Аккумулятор: {percent}% ({state})."
+    percent = payload.get("percent")
+    state = _battery_state_label(payload.get("state"))
+    if percent is None:
+        return "Не удалось разобрать заряд аккумулятора."
+    return _with_partial_warning(f"Аккумулятор: {percent}% ({state}).", observation_ref)
 
 
-def _battery_state_label(raw_state: str) -> str:
-    state = raw_state.casefold()
+def _battery_state_label(raw_state: object) -> str:
+    state = str(raw_state or "").casefold()
     if "discharging" in state:
         return "разряжается"
     if "charging" in state:
         return "заряжается"
-    if "charged" in state:
+    if "charged" in state or "fully" in state:
         return "заряжен"
-    return raw_state
+    return str(raw_state) if raw_state else "состояние неизвестно"
 
 
 def _disk_free_answer(observation_ref: ToolObservationRef) -> str:
-    try:
-        payload = json.loads(observation_ref.content)
-    except json.JSONDecodeError:
-        return observation_ref.content
-    if not isinstance(payload, dict):
-        return observation_ref.content
-    stdout = payload.get("stdout")
-    stderr = payload.get("stderr")
-    exit_code = payload.get("exit_code")
-    if not isinstance(stdout, str):
-        return observation_ref.content
-    if exit_code not in {0, None}:
-        detail = stderr if isinstance(stderr, str) and stderr.strip() else stdout
-        return f"Не удалось прочитать свободное место на диске: {detail.strip()}"
-    parsed = _parse_df_snapshot(stdout)
-    if parsed is None:
-        compact = "\n".join(line for line in stdout.strip().splitlines()[:12])
-        return f"Свободное место на диске:\n{compact}"
-    return (
-        f"Диск {parsed['mount']}: свободно {parsed['available']} "
-        f"из {parsed['size']} (использовано {parsed['used_percent']})."
+    payload = _typed_payload(observation_ref, "system.disk_free")
+    if payload is None:
+        return "Не удалось разобрать свободное место на диске."
+    filesystems = payload.get("filesystems")
+    if not isinstance(filesystems, list) or not filesystems:
+        return "Не удалось разобрать свободное место на диске."
+    parsed = next(
+        (
+            filesystem
+            for filesystem in filesystems
+            if isinstance(filesystem, dict) and filesystem.get("mount") == "/"
+        ),
+        None,
     )
-
-
-def _parse_df_snapshot(stdout: str) -> dict[str, str] | None:
-    rows = [line.split() for line in stdout.splitlines() if line.strip()]
-    if len(rows) < 2:
-        return None
-    data_rows = rows[1:]
-    selected = next((row for row in data_rows if row and row[-1] == "/"), data_rows[0])
-    if len(selected) < 6:
-        return None
-    return {
-        "size": selected[1],
-        "available": selected[3],
-        "used_percent": selected[4],
-        "mount": selected[-1],
-    }
+    if parsed is None:
+        parsed = next((filesystem for filesystem in filesystems if isinstance(filesystem, dict)), None)
+    answer = (
+        f"Диск {parsed.get('mount', '/')}: свободно {parsed.get('available')} "
+        f"из {parsed.get('size')} (использовано {parsed.get('used_percent')})."
+        if isinstance(parsed, dict)
+        else "Не удалось разобрать свободное место на диске."
+    )
+    return _with_partial_warning(answer, observation_ref)
 
 
 def _vpn_status_answer(observation_ref: ToolObservationRef) -> str:
-    stdout = _tool_stdout(observation_ref)
-    if stdout is None:
-        return "Не удалось прочитать статус VPN."
-    connected_lines = [
-        line.strip()
-        for line in stdout.splitlines()
-        if "(connected)" in line.casefold()
-    ]
-    if connected_lines:
-        return f"VPN включен: {connected_lines[0]}"
-    if _linux_vpn_interface_is_up(stdout):
-        return "VPN включен: обнаружен активный VPN-интерфейс."
-    return "VPN не включен или активное VPN-подключение не найдено."
-
-
-def _linux_vpn_interface_is_up(stdout: str) -> bool:
-    vpn_interface_markers = ("tun", "tap", "wg", "vpn", "utun")
-    for block in re.split(r"\n(?=\d+:\s)", stdout.strip()):
-        header = block.splitlines()[0].strip() if block.strip() else ""
-        lowered_header = header.casefold()
-        name_match = re.match(r"\d+:\s+([^:@\s]+)", header)
-        interface_name = name_match.group(1).casefold() if name_match else ""
-        if not any(
-            marker in interface_name or marker in lowered_header
-            for marker in vpn_interface_markers
-        ):
-            continue
-        flags_match = re.search(r"<([^>]+)>", header)
-        flags = {
-            flag.strip().casefold()
-            for flag in (flags_match.group(1).split(",") if flags_match else ())
-        }
-        if "state up" in lowered_header or "up" in flags:
-            return True
-    return False
+    payload = _typed_payload(observation_ref, "system.vpn_status")
+    if payload is None:
+        return "Не удалось разобрать статус VPN."
+    if payload.get("connected") is True:
+        service = payload.get("interface_or_service")
+        answer = f"VPN включен: {service}." if service else "VPN включен."
+        return _with_partial_warning(answer, observation_ref)
+    return _with_partial_warning(
+        "VPN не включен или активное VPN-подключение не найдено.",
+        observation_ref,
+    )
 
 
 def _cpu_overview_answer(
     hardware_ref: ToolObservationRef,
     resources_ref: ToolObservationRef,
 ) -> str:
-    cores = _hardware_cpu_cores(hardware_ref)
-    cpu_usage = _top_cpu_usage(resources_ref)
+    payload = _merge_typed_payloads("system.cpu_overview", hardware_ref, resources_ref)
+    if not payload:
+        return "Не удалось разобрать сведения о ядрах CPU и текущей загрузке."
     parts = []
-    if cores is not None:
-        parts.append(f"CPU: {cores} логических ядер")
-    if cpu_usage is not None:
+    if payload.get("logical_cores") is not None:
+        parts.append(f"CPU: {payload['logical_cores']} логических ядер")
+    if {"user_percent", "system_percent", "idle_percent"}.issubset(payload):
         parts.append(
             "загрузка: "
-            f"{cpu_usage['user']}% user, "
-            f"{cpu_usage['system']}% sys, "
-            f"{cpu_usage['idle']}% idle"
+            f"{payload['user_percent']}% user, "
+            f"{payload['system_percent']}% sys, "
+            f"{payload['idle_percent']}% idle"
         )
     if parts:
-        return "; ".join(parts) + "."
+        return _with_partial_warning("; ".join(parts) + ".", hardware_ref, resources_ref)
     return "Не удалось разобрать сведения о ядрах CPU и текущей загрузке."
 
 
 def _os_version_answer(observation_ref: ToolObservationRef) -> str:
-    stdout = _tool_stdout(observation_ref)
-    if stdout is None:
-        return "Не удалось прочитать версию операционной системы."
-    sw_vers = _parse_sw_vers(stdout)
-    if sw_vers:
-        name = sw_vers.get("ProductName") or "macOS"
-        version = sw_vers.get("ProductVersion")
-        build = sw_vers.get("BuildVersion")
-        if version and build:
-            return f"Операционная система: {name} {version} (build {build})."
-        if version:
-            return f"Операционная система: {name} {version}."
-    first_line = stdout.strip().splitlines()[0] if stdout.strip() else ""
-    if first_line:
-        return f"Операционная система: {first_line}."
+    payload = _typed_payload(observation_ref, "system.os_version")
+    if payload is None:
+        return "Не удалось разобрать версию операционной системы."
+    name = payload.get("product_name") or payload.get("platform") or "операционная система"
+    version = payload.get("version")
+    build = payload.get("build")
+    if version and build:
+        return _with_partial_warning(
+            f"Операционная система: {name} {version} (build {build}).",
+            observation_ref,
+        )
+    if version:
+        return _with_partial_warning(f"Операционная система: {name} {version}.", observation_ref)
     return "Не удалось разобрать версию операционной системы."
 
 
-def _parse_sw_vers(stdout: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for line in stdout.splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        values[key.strip()] = value.strip()
-    return values
-
-
-def _hardware_cpu_cores(observation_ref: ToolObservationRef) -> int | None:
-    stdout = _tool_stdout(observation_ref)
-    if stdout is None:
-        return None
-    first_number = re.search(r"\b(\d+)\b", stdout)
-    return int(first_number.group(1)) if first_number else None
-
-
-def _top_cpu_usage(observation_ref: ToolObservationRef) -> dict[str, str] | None:
-    stdout = _tool_stdout(observation_ref)
-    if stdout is None:
-        return None
-    macos = re.search(
-        r"CPU usage:\s*([0-9.]+)% user,\s*([0-9.]+)% sys,\s*([0-9.]+)% idle",
-        stdout,
-    )
-    if macos:
-        return {
-            "user": macos.group(1),
-            "system": macos.group(2),
-            "idle": macos.group(3),
-        }
-    linux = re.search(
-        r"%Cpu\(s\):\s*([0-9.]+)\s*us,\s*([0-9.]+)\s*sy,.*?([0-9.]+)\s*id",
-        stdout,
-    )
-    if linux:
-        return {
-            "user": linux.group(1),
-            "system": linux.group(2),
-            "idle": linux.group(3),
-        }
-    return None
-
-
-def _tool_stdout(observation_ref: ToolObservationRef) -> str | None:
-    try:
-        payload = json.loads(observation_ref.content)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    stdout = payload.get("stdout")
-    return stdout if isinstance(stdout, str) else None
-
-
 def _resource_snapshot_answer(observation_ref: ToolObservationRef) -> str:
-    try:
-        payload = json.loads(observation_ref.content)
-    except json.JSONDecodeError:
-        return observation_ref.content
-    if not isinstance(payload, dict):
-        return observation_ref.content
-    stdout = payload.get("stdout")
-    stderr = payload.get("stderr")
-    exit_code = payload.get("exit_code")
-    if not isinstance(stdout, str):
-        return observation_ref.content
-    if exit_code not in {0, None}:
-        detail = stderr if isinstance(stderr, str) and stderr.strip() else stdout
-        return f"Не удалось прочитать память: {detail.strip()}"
-    if free_answer := _free_memory_answer(stdout):
-        return free_answer
-    if vm_stat_answer := _vm_stat_memory_answer(stdout):
-        return vm_stat_answer
-    compact = "\n".join(line for line in stdout.strip().splitlines()[:12])
-    return f"Диагностика памяти:\n{compact}"
+    if observation_ref.structured_schema == "system.memory_overview":
+        return _memory_overview_answer(observation_ref)
+    if observation_ref.structured_schema == "system.disk_free":
+        return _disk_free_answer(observation_ref)
+    if observation_ref.structured_schema == "system.cpu_overview":
+        payload = _typed_payload(observation_ref, "system.cpu_overview")
+        if payload and {"user_percent", "system_percent", "idle_percent"}.issubset(payload):
+            return _with_partial_warning(
+                "CPU загрузка: "
+                f"{payload['user_percent']}% user, "
+                f"{payload['system_percent']}% sys, "
+                f"{payload['idle_percent']}% idle.",
+                observation_ref,
+            )
+    return "Не удалось разобрать диагностику ресурсов."
+
+
+def _memory_overview_answer(observation_ref: ToolObservationRef) -> str:
+    payload = _typed_payload(observation_ref, "system.memory_overview")
+    if payload is None:
+        return "Не удалось разобрать сведения о памяти."
+    parts = []
+    if payload.get("free") is not None:
+        parts.append(f"свободно {payload['free']}")
+    if payload.get("available") is not None:
+        parts.append(f"доступно {payload['available']}")
+    if payload.get("used_percent") is not None:
+        parts.append(f"использовано {payload['used_percent']}%")
+    if not parts:
+        return "Не удалось разобрать сведения о памяти."
+    return _with_partial_warning("Память: " + ", ".join(parts) + ".", observation_ref)
 
 
 def _process_name_search_answer(observation_ref: ToolObservationRef) -> str:
-    try:
-        payload = json.loads(observation_ref.content)
-    except json.JSONDecodeError:
-        return observation_ref.content
-    if not isinstance(payload, dict):
-        return observation_ref.content
-    stdout = payload.get("stdout")
-    stderr = payload.get("stderr")
-    exit_code = payload.get("exit_code")
-    if not isinstance(stdout, str):
-        return observation_ref.content
-    matches = [line.strip() for line in stdout.splitlines() if line.strip()]
-    if exit_code == 0 and matches:
-        compact = "\n".join(matches[:10])
-        return f"Процесс запущен:\n{compact}"
-    if exit_code in {0, 1, None}:
-        return "Процесс не найден."
-    detail = stderr if isinstance(stderr, str) and stderr.strip() else stdout
-    return f"Не удалось проверить процессы: {detail.strip()}"
-
-
-def _free_memory_answer(stdout: str) -> str | None:
-    lines = [line.split() for line in stdout.splitlines() if line.strip()]
-    for index, columns in enumerate(lines):
-        if columns and columns[0].casefold().startswith("mem:") and index > 0:
-            headers = [header.casefold() for header in lines[index - 1]]
-            values = columns[1:] if columns[0].casefold() == "mem:" else columns
-            free = _column_value(headers, values, "free")
-            available = _column_value(headers, values, "available")
-            if free is None and available is None:
-                return None
-            parts = []
-            if free is not None:
-                parts.append(f"свободно {free} MiB")
-            if available is not None:
-                parts.append(f"доступно {available} MiB")
-            return "Память: " + ", ".join(parts) + "."
-    return None
-
-
-def _column_value(headers: list[str], values: list[str], name: str) -> str | None:
-    try:
-        index = headers.index(name)
-    except ValueError:
-        return None
-    if index >= len(values):
-        return None
-    value = values[index]
-    return value if re.fullmatch(r"\d+(?:\.\d+)?", value) else None
-
-
-def _vm_stat_memory_answer(stdout: str) -> str | None:
-    page_size_match = re.search(r"page size of (\d+) bytes", stdout)
-    free_pages = _vm_stat_pages(stdout, "Pages free")
-    speculative_pages = _vm_stat_pages(stdout, "Pages speculative")
-    if page_size_match is None or free_pages is None:
-        return None
-    page_size = int(page_size_match.group(1))
-    free_bytes = free_pages * page_size
-    available_bytes = free_bytes + ((speculative_pages or 0) * page_size)
-    if speculative_pages:
-        return (
-            f"Память: свободно {_format_bytes(free_bytes)}, "
-            f"доступно примерно {_format_bytes(available_bytes)}."
+    payload = _typed_payload(observation_ref, "system.process_name_search")
+    if payload is None:
+        return "Не удалось разобрать результат поиска процесса."
+    if payload.get("error"):
+        return f"Не удалось проверить процессы: {payload['error']}"
+    matches = payload.get("matches")
+    if isinstance(matches, list) and matches:
+        compact = "\n".join(
+            f"{match.get('pid')} {match.get('name')}"
+            for match in matches[:10]
+            if isinstance(match, dict)
         )
-    return f"Память: свободно {_format_bytes(free_bytes)}."
-
-
-def _vm_stat_pages(stdout: str, label: str) -> int | None:
-    pattern = rf"^{re.escape(label)}:\s+(\d+)\."
-    match = re.search(pattern, stdout, flags=re.MULTILINE)
-    return int(match.group(1)) if match else None
-
-
-def _format_bytes(value: int) -> str:
-    gib = value / (1024**3)
-    if gib >= 1:
-        return f"{gib:.2f} GiB"
-    return f"{value / (1024**2):.0f} MiB"
+        answer = f"Процесс запущен:\n{compact}" if compact else "Процесс запущен."
+        return _with_partial_warning(answer, observation_ref)
+    return _with_partial_warning("Процесс не найден.", observation_ref)
 
 
 def _sensor_snapshot_answer(observation_ref: ToolObservationRef) -> str:
-    try:
-        payload = json.loads(observation_ref.content)
-    except json.JSONDecodeError:
-        return observation_ref.content
-    if not isinstance(payload, dict):
-        return observation_ref.content
+    payload = _typed_payload(observation_ref, "system.sensor_snapshot")
+    if payload is None:
+        return "Не удалось разобрать температуру CPU."
     if payload.get("available") is False:
         source = payload.get("source") if isinstance(payload.get("source"), str) else "sensor"
         reason = payload.get("reason") if isinstance(payload.get("reason"), str) else "unavailable"
-        return f"Не удалось прочитать температуру CPU через {source}: {reason}."
+        return _with_partial_warning(
+            f"Не удалось прочитать температуру CPU через {source}: {reason}.",
+            observation_ref,
+        )
     readings = payload.get("readings")
     if not isinstance(readings, list) or not readings:
         return "Не удалось прочитать температуру CPU: датчики не вернули показания."
@@ -1233,7 +1152,35 @@ def _sensor_snapshot_answer(observation_ref: ToolObservationRef) -> str:
     label = cpu_reading.get("label") if isinstance(cpu_reading.get("label"), str) else "CPU"
     value = cpu_reading.get("value")
     unit = cpu_reading.get("unit") if isinstance(cpu_reading.get("unit"), str) else "C"
-    return f"Температура CPU ({label}): {value:g} °{unit}."
+    return _with_partial_warning(f"Температура CPU ({label}): {value:g} °{unit}.", observation_ref)
+
+
+def _typed_payload(observation_ref: ToolObservationRef, schema: str) -> dict[str, Any] | None:
+    if observation_ref.structured_schema != schema:
+        return None
+    if observation_ref.parse_status not in {
+        ToolParseStatus.PARSED,
+        ToolParseStatus.PARTIAL,
+    }:
+        return None
+    if not isinstance(observation_ref.structured_content, dict):
+        return None
+    return observation_ref.structured_content
+
+
+def _merge_typed_payloads(schema: str, *refs: ToolObservationRef) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for ref in refs:
+        payload = _typed_payload(ref, schema)
+        if payload:
+            merged.update(payload)
+    return merged
+
+
+def _with_partial_warning(answer: str, *refs: ToolObservationRef) -> str:
+    if any(ref.parse_status == ToolParseStatus.PARTIAL for ref in refs):
+        return f"Данные частично разобраны; некоторые поля могут быть неполными. {answer}"
+    return answer
 
 
 def _select_cpu_reading(readings: list[Any]) -> dict[str, Any] | None:

@@ -28,6 +28,13 @@ class ToolObservationStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ToolParseStatus(StrEnum):
+    PARSED = "parsed"
+    PARTIAL = "partial"
+    UNPARSED = "unparsed"
+    NOT_APPLICABLE = "not_applicable"
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -120,6 +127,16 @@ class ToolObservation:
     error: dict[str, Any] | None = None
     artifact_refs: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    structured_content: Any | None = None
+    structured_schema: str | None = None
+    structured_schema_version: int | None = None
+    parse_status: ToolParseStatus | str = ToolParseStatus.NOT_APPLICABLE
+    parse_warnings: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.parse_status, ToolParseStatus):
+            object.__setattr__(self, "parse_status", ToolParseStatus(self.parse_status))
+        object.__setattr__(self, "parse_warnings", tuple(self.parse_warnings))
 
     @classmethod
     def empty(
@@ -157,3 +174,13 @@ class ToolInvocationResult:
     truncated: bool = False
     output_bytes: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    structured_content: Any | None = None
+    structured_schema: str | None = None
+    structured_schema_version: int | None = None
+    parse_status: ToolParseStatus | str = ToolParseStatus.NOT_APPLICABLE
+    parse_warnings: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.parse_status, ToolParseStatus):
+            object.__setattr__(self, "parse_status", ToolParseStatus(self.parse_status))
+        object.__setattr__(self, "parse_warnings", tuple(self.parse_warnings))

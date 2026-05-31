@@ -15,7 +15,12 @@ from assistant_core.domain.system_diagnostics import (
     SystemDiagnosticsDecision,
     SystemDiagnosticsFamily,
 )
-from assistant_core.domain.tools import ToolInvocationResult, ToolSpec
+from assistant_core.domain.tools import ToolInvocationResult, ToolParseStatus, ToolSpec
+from assistant_core.tools.diagnostics_normalizers import (
+    normalize_command_output,
+    sensor_payload,
+    unavailable_sensor_payload,
+)
 from assistant_core.tools.registry import ToolClassificationResult, ToolExecutionDenied
 from assistant_core.tools.shell_read import (
     ShellExecutionResult,
@@ -476,9 +481,10 @@ class SystemDiagnosticsTool:
     ) -> None:
         self._family = family if isinstance(family, SystemDiagnosticsFamily) else SystemDiagnosticsFamily(family)
         self._allowed_roots = [_resolve_root(root) for root in allowed_roots]
+        self._platform = _normalize_platform(platform or sys.platform)
         self._classifier = SystemDiagnosticsClassifier(
             allowed_roots=self._allowed_roots,
-            platform=platform,
+            platform=self._platform,
         )
         self._executor = executor or SubprocessShellExecutor(
             max_stdout_bytes=max_stdout_bytes,
@@ -556,6 +562,10 @@ class SystemDiagnosticsTool:
                     "source": snapshot.source,
                     "unavailable": not snapshot.available,
                 },
+                structured_content=content,
+                structured_schema="system.sensor_snapshot",
+                structured_schema_version=1,
+                parse_status=sensor_payload(content).parse_status,
             )
 
         try:
@@ -601,6 +611,13 @@ class SystemDiagnosticsTool:
                 "stderr": stderr_truncated,
             },
         }
+        normalized = normalize_command_output(
+            decision=decision,
+            stdout=bounded_stdout.text,
+            stderr=bounded_stderr.text,
+            exit_code=result.exit_code,
+            platform=self._platform,
+        )
         return ToolInvocationResult(
             content=json.dumps(content, sort_keys=True),
             content_type="application/json",
@@ -615,6 +632,11 @@ class SystemDiagnosticsTool:
                 "raw_stdout_bytes": raw_stdout_bytes,
                 "raw_stderr_bytes": raw_stderr_bytes,
             },
+            structured_content=normalized.structured_content,
+            structured_schema=normalized.structured_schema,
+            structured_schema_version=normalized.structured_schema_version,
+            parse_status=normalized.parse_status,
+            parse_warnings=normalized.parse_warnings,
         )
 
     def _classify_arguments(self, arguments: dict[str, Any]) -> SystemDiagnosticsDecision:
@@ -664,6 +686,7 @@ def _unavailable_result(
         "readings": [],
     }
     encoded = json.dumps(content, sort_keys=True)
+    is_sensor_result = decision.family == SystemDiagnosticsFamily.SENSORS
     return ToolInvocationResult(
         content=encoded,
         content_type="application/json",
@@ -675,6 +698,14 @@ def _unavailable_result(
             "source": source,
             "unavailable": True,
         },
+        structured_content=content if is_sensor_result else None,
+        structured_schema="system.sensor_snapshot" if is_sensor_result else None,
+        structured_schema_version=1 if is_sensor_result else None,
+        parse_status=(
+            unavailable_sensor_payload(content).parse_status
+            if is_sensor_result
+            else ToolParseStatus.NOT_APPLICABLE
+        ),
     )
 
 
@@ -713,6 +744,10 @@ def _sensor_snapshot_result(
             "source": snapshot.source,
             "unavailable": not snapshot.available,
         },
+        structured_content=content,
+        structured_schema="system.sensor_snapshot",
+        structured_schema_version=1,
+        parse_status=sensor_payload(content).parse_status,
     )
 
 
