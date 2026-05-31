@@ -100,7 +100,7 @@ async def run_interactive_chat(
     stdout.write("Use Up/Down for in-session history; history is not saved to disk.\n\n")
 
     while True:
-        raw_line = line_reader.readline("jarvis> ")
+        raw_line = await line_reader.read_line("jarvis> ")
         if raw_line is None:
             stdout.write("bye\n")
             return 0

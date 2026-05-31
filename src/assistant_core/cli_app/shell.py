@@ -121,13 +121,7 @@ class PromptToolkitLineReader:
         try:
             session = self._ensure_session()
         except ImportError:
-            self._stdout.write(prompt)
-            self._stdout.flush()
-            raw_line = self._stdin.readline()
-            if raw_line == "":
-                return None
-            line = raw_line.rstrip("\n")
-            return line if self._should_add_history(line) or not line.strip() else line
+            return self._fallback_readline(prompt)
 
         try:
             return session.prompt(prompt)
@@ -135,6 +129,28 @@ class PromptToolkitLineReader:
             return None
         except KeyboardInterrupt:
             return ""
+
+    async def read_line(self, prompt: str) -> str | None:
+        try:
+            session = self._ensure_session()
+        except ImportError:
+            return self._fallback_readline(prompt)
+
+        try:
+            return await session.prompt_async(prompt)
+        except EOFError:
+            return None
+        except KeyboardInterrupt:
+            return ""
+
+    def _fallback_readline(self, prompt: str) -> str | None:
+        self._stdout.write(prompt)
+        self._stdout.flush()
+        raw_line = self._stdin.readline()
+        if raw_line == "":
+            return None
+        line = raw_line.rstrip("\n")
+        return line if self._should_add_history(line) or not line.strip() else line
 
     def _ensure_session(self):
         if self._session is not None:
@@ -162,6 +178,7 @@ class PromptToolkitLineReader:
 
         class FilteredHistory(History):
             def __init__(self) -> None:
+                super().__init__()
                 self._strings: list[str] = []
 
             def load_history_strings(self):

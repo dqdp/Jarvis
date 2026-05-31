@@ -49,6 +49,9 @@ class InteractiveLineReader:
                 self._readline.add_history(line)
         return line
 
+    async def read_line(self, prompt: str) -> str | None:
+        return self.readline(prompt)
+
 
 class TerminalInteractiveLineReader:
     def __init__(
@@ -68,6 +71,9 @@ class TerminalInteractiveLineReader:
     def readline(self, prompt: str) -> str | None:
         with _terminal_input_mode(self._stdin, enabled=self._raw_mode):
             return self._readline(prompt)
+
+    async def read_line(self, prompt: str) -> str | None:
+        return self.readline(prompt)
 
     def _readline(self, prompt: str) -> str | None:
         buffer = ""

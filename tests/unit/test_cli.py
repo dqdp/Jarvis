@@ -550,6 +550,80 @@ def test_prompt_toolkit_reader_binds_injected_stdio(monkeypatch) -> None:
     assert created_kwargs["output"] == ("output", stdout)
 
 
+def test_prompt_toolkit_filtered_history_initializes_prompt_toolkit_base_state() -> None:
+    reader = cli.PromptToolkitLineReader(
+        stdin=TtyStringIO(),
+        stdout=TtyStringIO(),
+        command_registry=cli.SlashCommandRegistry.from_commands(cli.SLASH_COMMANDS),
+    )
+
+    session = reader._ensure_session()
+
+    assert hasattr(session.history, "_loaded")
+    assert hasattr(session.history, "_loaded_strings")
+
+
+def test_prompt_toolkit_reader_uses_async_prompt_inside_interactive_cli(monkeypatch) -> None:
+    prompts: list[str] = []
+    stdout = TtyStringIO()
+
+    class FakePromptSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def prompt(self, prompt: str) -> str:
+            raise AssertionError("sync prompt must not run inside asyncio CLI")
+
+        async def prompt_async(self, prompt: str) -> str:
+            prompts.append(prompt)
+            return "/exit"
+
+    class FakeCompleter:
+        pass
+
+    class FakeCompletion:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class FakeHistory:
+        pass
+
+    prompt_toolkit_module = types.ModuleType("prompt_toolkit")
+    prompt_toolkit_module.PromptSession = FakePromptSession
+    completion_module = types.ModuleType("prompt_toolkit.completion")
+    completion_module.Completer = FakeCompleter
+    completion_module.Completion = FakeCompletion
+    history_module = types.ModuleType("prompt_toolkit.history")
+    history_module.History = FakeHistory
+    input_module = types.ModuleType("prompt_toolkit.input")
+    input_defaults_module = types.ModuleType("prompt_toolkit.input.defaults")
+    output_module = types.ModuleType("prompt_toolkit.output")
+    output_defaults_module = types.ModuleType("prompt_toolkit.output.defaults")
+    input_defaults_module.create_input = lambda *, stdin=None: ("input", stdin)
+    output_defaults_module.create_output = lambda *, stdout=None: ("output", stdout)
+
+    monkeypatch.setitem(sys.modules, "prompt_toolkit", prompt_toolkit_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.completion", completion_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.history", history_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.input", input_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.input.defaults", input_defaults_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.output", output_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.output.defaults", output_defaults_module)
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["--base-url", "http://testserver"],
+            client_factory=FakeCliClient,
+            stdin=TtyStringIO(),
+            stdout=stdout,
+        )
+    )
+
+    assert exit_code == 0
+    assert prompts == ["jarvis> "]
+    assert "bye" in stdout.getvalue()
+
+
 def test_plain_flag_forces_line_reader_without_prompt_toolkit() -> None:
     args = cli._parser().parse_args(["--plain", "chat"])
 
