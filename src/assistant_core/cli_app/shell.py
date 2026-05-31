@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import shutil
 from typing import Any, TextIO
 
 from assistant_core.cli_app.config import SlashCommand
@@ -98,6 +99,55 @@ def write_activity_indicator(
         return
     stdout.write(f"\n{activity.render_indicator()}\n")
     stdout.flush()
+
+
+class TerminalStatusBar:
+    def __init__(
+        self,
+        *,
+        stdout: TextIO,
+        status_provider: Callable[[], str],
+        enabled: bool | None = None,
+    ) -> None:
+        self._stdout = stdout
+        self._status_provider = status_provider
+        self._enabled = (
+            bool(getattr(stdout, "isatty", lambda: False)())
+            if enabled is None
+            else enabled
+        )
+        self._active = False
+        self._rows = 0
+
+    def start(self) -> None:
+        if not self._enabled or self._active:
+            return
+        size = _terminal_size()
+        self._rows = max(2, size.lines)
+        self._stdout.write(f"\x1b7\x1b[1;{self._rows - 1}r\x1b8")
+        self._active = True
+        self.render()
+
+    def render(self) -> None:
+        if not self._enabled:
+            return
+        size = _terminal_size()
+        rows = self._rows or max(2, size.lines)
+        columns = max(20, size.columns)
+        line = _fit_width(self._status_provider(), columns)
+        self._stdout.write(
+            f"\x1b7\x1b[{rows};1H\x1b[2K\x1b[7m{line}\x1b[0m\x1b8"
+        )
+        self._stdout.flush()
+
+    def stop(self) -> None:
+        if not self._enabled or not self._active:
+            return
+        rows = self._rows or max(2, _terminal_size().lines)
+        self._stdout.write(f"\x1b7\x1b[r\x1b[{rows};1H\x1b[2K\x1b8")
+        self._stdout.flush()
+        self._active = False
+        self._rows = 0
 
 
 class PromptToolkitLineReader:
@@ -392,12 +442,17 @@ def _fit_width(value: str, width: int) -> str:
     return value[: width - 1] + "…"
 
 
+def _terminal_size() -> shutil.terminal_size:
+    return shutil.get_terminal_size((120, 24))
+
+
 __all__ = [
     "PromptToolkitLineReader",
     "ShellActivityState",
     "SlashCommandCompletion",
     "SlashCommandDefinition",
     "SlashCommandRegistry",
+    "TerminalStatusBar",
     "display_loop_mode",
     "context_remaining_summary",
     "model_context_limit",

@@ -62,6 +62,7 @@ async def _run_command(
             loop_strategy=None,
             working_directory=str(Path.cwd()),
             plain=args.plain,
+            developer_mode=args.developer,
         )
 
     if args.command == "health":
@@ -82,6 +83,7 @@ async def _run_command(
                 loop_strategy=args.loop_strategy,
                 working_directory=args.working_directory or str(Path.cwd()),
                 plain=args.plain,
+                developer_mode=args.developer,
             )
         conversation_id = args.conversation_id
         if conversation_id is None:
@@ -159,6 +161,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="jarvis")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--plain", action="store_true", help="Use deterministic line-oriented CLI.")
+    parser.add_argument(
+        "--developer",
+        action="store_true",
+        help="Show developer diagnostics in interactive CLI.",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("health")
@@ -173,6 +180,7 @@ def _parser() -> argparse.ArgumentParser:
     chat.add_argument("--loop-strategy", choices=LOOP_STRATEGY_CHOICES)
     chat.add_argument("--working-directory")
     chat.add_argument("--plain", action="store_true", default=argparse.SUPPRESS)
+    chat.add_argument("--developer", action="store_true", default=argparse.SUPPRESS)
 
     memory = subparsers.add_parser("memory")
     memory_subparsers = memory.add_subparsers(dest="memory_command", required=True)

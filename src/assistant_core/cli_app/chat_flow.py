@@ -24,6 +24,7 @@ from assistant_core.cli_app.renderers import (
 )
 from assistant_core.cli_app.shell import (
     ShellActivityState,
+    TerminalStatusBar,
     context_remaining_summary,
     display_loop_mode,
     model_context_limit,
@@ -59,6 +60,7 @@ async def run_interactive_chat(
     loop_strategy: str | None = None,
     working_directory: str | None = None,
     plain: bool = False,
+    developer_mode: bool = False,
 ) -> int:
     state = ChatShellState(conversation_id=None, next_title=title, loop_strategy=loop_strategy)
     request_working_directory = working_directory or str(Path.cwd())
@@ -79,11 +81,18 @@ async def run_interactive_chat(
             cwd=request_working_directory,
         )
 
+    status_bar = TerminalStatusBar(
+        stdout=stdout,
+        status_provider=status_provider,
+        enabled=not plain and bool(getattr(stdout, "isatty", lambda: False)()),
+    )
+
     def mark_request_started(request_id: str) -> None:
         nonlocal activity_state
         state.last_request_id = request_id
         activity_state = activity_state.mark_submitting(request_id)
-        write_activity_indicator(stdout, activity_state, enabled=False if plain else None)
+        status_bar.start()
+        write_activity_indicator(stdout, activity_state, enabled=developer_mode)
 
     def mark_stream_event(event_type: str, data: dict[str, Any]) -> None:
         nonlocal activity_state, context_remaining
@@ -94,8 +103,12 @@ async def run_interactive_chat(
                 token_estimate=_optional_int(data.get("token_estimate")),
                 max_input_tokens=max_input_tokens,
             )
-        if activity_state.phase != previous_phase:
-            write_activity_indicator(stdout, activity_state, enabled=False if plain else None)
+        phase_changed = activity_state.phase != previous_phase
+        context_changed = event_type == "context.assembled"
+        if phase_changed or context_changed:
+            status_bar.render()
+        if phase_changed:
+            write_activity_indicator(stdout, activity_state, enabled=developer_mode)
 
     if _should_load_toolbar_status(stdin=stdin, stdout=stdout, plain=plain):
         try:
@@ -249,21 +262,24 @@ async def run_interactive_chat(
                 state.conversation_id = _required_str(conversation, "conversation_id")
                 state.next_title = None
 
-            exit_code = await submit_and_stream_message(
-                client=client,
-                stdout=stdout,
-                conversation_id=state.conversation_id,
-                content=line,
-                sensitivity=sensitivity,
-                loop_strategy=state.loop_strategy,
-                working_directory=request_working_directory,
-                client_message_id=None,
-                assistant_prefix="assistant> ",
-                stdin=stdin,
-                on_request_started=mark_request_started,
-                on_stream_event=mark_stream_event,
-                allow_tty_cancel_command=not plain,
-            )
+            try:
+                exit_code = await submit_and_stream_message(
+                    client=client,
+                    stdout=stdout,
+                    conversation_id=state.conversation_id,
+                    content=line,
+                    sensitivity=sensitivity,
+                    loop_strategy=state.loop_strategy,
+                    working_directory=request_working_directory,
+                    client_message_id=None,
+                    assistant_prefix="assistant> ",
+                    stdin=stdin,
+                    on_request_started=mark_request_started,
+                    on_stream_event=mark_stream_event,
+                    allow_tty_cancel_command=not plain,
+                )
+            finally:
+                status_bar.stop()
             state.last_request_id = None
             if exit_code != 0:
                 continue
@@ -299,9 +315,24 @@ async def submit_and_stream_message(
     request_id = _required_str(submitted, "request_id")
     if on_request_started is not None:
         on_request_started(request_id)
-    if assistant_prefix is not None:
+    assistant_prefix_pending = assistant_prefix is not None
+    assistant_line_open = False
+
+    def write_pending_assistant_prefix() -> None:
+        nonlocal assistant_prefix_pending, assistant_line_open
+        if not assistant_prefix_pending or assistant_prefix is None:
+            return
         stdout.write(assistant_prefix)
         stdout.flush()
+        assistant_prefix_pending = False
+        assistant_line_open = True
+
+    def break_assistant_line_if_needed() -> None:
+        nonlocal assistant_line_open
+        if assistant_line_open:
+            stdout.write("\n")
+            assistant_line_open = False
+
     try:
         async for event_type, data in stream_with_optional_cancel_command(
             client=client,
@@ -310,29 +341,28 @@ async def submit_and_stream_message(
             enabled=allow_tty_cancel_command,
         ):
             if event_type == CLI_CANCEL_EVENT:
-                stdout.write("\n")
+                break_assistant_line_if_needed()
                 await cancel_server_request(client=client, request_id=request_id, stdout=stdout)
                 return 130
             if on_stream_event is not None:
                 on_stream_event(event_type, data)
             if event_type == "token":
+                write_pending_assistant_prefix()
                 stdout.write(data.get("delta", ""))
                 stdout.flush()
             elif is_tool_stream_event(event_type):
-                if assistant_prefix is not None:
-                    stdout.write("\n")
+                break_assistant_line_if_needed()
                 write_tool_stream_event(stdout, event_type=event_type, data=data)
             elif event_type == "request.processing.failed":
-                stdout.write("\n")
+                break_assistant_line_if_needed()
                 write_request_error(stdout, data)
                 return 1
             elif event_type == "request.processing.cancelled":
-                stdout.write("\n")
+                break_assistant_line_if_needed()
                 stdout.write(f"cancelled> request {request_id}\n")
                 return 130
             elif event_type == "approval.required":
-                if assistant_prefix is not None:
-                    stdout.write("\n")
+                break_assistant_line_if_needed()
                 cancelled = await handle_approval_prompt(
                     client=client,
                     stdout=stdout,

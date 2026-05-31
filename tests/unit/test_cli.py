@@ -746,6 +746,24 @@ def test_tty_activity_writer_outputs_phase_without_percentages() -> None:
     assert "100" not in output
 
 
+def test_terminal_status_bar_writes_status_without_activity_transcript_line() -> None:
+    stdout = TtyStringIO()
+    bar = cli.TerminalStatusBar(
+        stdout=stdout,
+        status_provider=lambda: "mode=auto | status=ready | phase=streaming | model=qwen3.5:9b",
+        enabled=True,
+    )
+
+    bar.start()
+    bar.render()
+    bar.stop()
+
+    output = stdout.getvalue()
+    assert "model=qwen3.5:9b" in output
+    assert "\x1b[" in output
+    assert "activity=" not in output
+
+
 def test_status_and_model_renderers_return_payload_for_shell_state() -> None:
     client = FakeCliClient("http://test")
     stdout = StringIO()
@@ -1296,6 +1314,45 @@ def test_plain_interactive_chat_suppresses_tty_activity_indicator() -> None:
     assert exit_code == 0
     assert "assistant> OK" in output
     assert "activity=" not in output
+
+
+def test_normal_interactive_chat_suppresses_activity_transcript_lines_on_tty_stdout() -> None:
+    stdout = TtyStringIO()
+    stdin = StringIO("hello\n/exit\n")
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=FakeCliClient,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "assistant> OK" in output
+    assert "activity=" not in output
+    assert "phase=streaming" in output
+
+
+def test_developer_interactive_chat_keeps_activity_transcript_lines() -> None:
+    stdout = TtyStringIO()
+    stdin = StringIO("hello\n/exit\n")
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "--developer"],
+            client_factory=FakeCliClient,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "assistant> OK" in output
+    assert "activity=submitting" in output
 
 
 def test_status_command_prints_degraded_reasons() -> None:
