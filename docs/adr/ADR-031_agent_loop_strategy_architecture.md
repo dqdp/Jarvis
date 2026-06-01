@@ -2,7 +2,15 @@
 
 ## Status
 
-Accepted.
+Accepted, amended by ADR-037 and PM-08l.
+
+PM-08k/ADR-037 supersedes the selector-first production default for
+natural-language user input. For normal typed input and future voice transcripts,
+`auto`, `chat` and `tools` are policy modes of one bounded agent loop, not a
+semantic route classifier that chooses between separate natural-language
+strategies before the loop. This ADR still defines the loop-strategy boundary,
+the requirement that strategies use ports, and the rule that tool execution goes
+through `ToolGatewayPort`.
 
 ## Context
 
@@ -92,9 +100,11 @@ emitted_events
 The existing `memory_augmented_answer` strategy remains the reliable baseline
 and keeps `max_tool_calls=0`.
 
-ADR-035 later defines user-facing `auto` selection. `auto` is not a loop
-strategy; it is a routing mode that resolves to one of the concrete strategies
-defined here.
+ADR-035 later defined user-facing `auto` selection. ADR-037 and PM-08l amend
+that production default: for natural-language input, `auto` is now a policy mode
+of the bounded agent loop. Historical selector/classifier behavior may remain
+only for migration, explicit non-default overrides, evaluation fixtures or
+non-natural-language workflows that have a separate ADR.
 
 ## Architecture shape
 
@@ -102,10 +112,10 @@ Target shape:
 
 ```text
 AgentRuntime
-  -> LoopStrategySelector after ADR-035
+  -> request plan / policy mode after ADR-037
   -> LoopStrategyRegistry
       -> MemoryAugmentedAnswerLoop
-      -> ToolReactLoop
+      -> ToolReactLoop / AgentLoop
       -> PlannerExecutorLoop later
 
 LoopStrategy
@@ -120,7 +130,8 @@ LoopStrategy
 Rules:
 
 - strategies use ports, not concrete adapters;
-- `auto` routing must resolve before strategy execution;
+- production natural-language `auto/chat/tools` behavior is represented as
+  request-plan policy for the bounded agent loop;
 - only tool-capable strategies depend on `ToolGatewayPort`;
 - `memory_augmented_answer` must not gain hidden tool behavior;
 - planner-executor and sleep/reflection remain separate future strategies;

@@ -58,6 +58,18 @@ request understanding:
 The ReAct/tool loop is therefore the central runtime primitive for normal chat,
 typed input and future voice transcripts.
 
+PM-08l refines this into a bounded typed agent-loop contract. ReAct is a design
+influence, not the runtime wire protocol: Jarvis must not depend on free-form
+`Thought/Action/Observation` transcript parsing. Tool proposals, observations,
+finalization, recovery and lifecycle streaming are typed runtime states behind
+the existing ports/adapters boundaries.
+
+The bounded typed loop is also the intended executor for future
+plan-and-execute workflows. Simple requests should not pay a mandatory planning
+latency cost, while future compound tasks may introduce a planner shell that
+executes scoped plan steps through the same bounded loop, policy gates and
+ToolGateway path.
+
 ## Consequences
 
 - PM-08k implementation should remove runtime model-route adjudication, route
@@ -80,6 +92,8 @@ typed input and future voice transcripts.
   typed tool observations.
 - This ADR does not require a full-screen TUI, voice implementation or durable
   workflow checkpoints.
+- This ADR does not implement a full planner-executor or plan-and-execute
+  runtime.
 
 ## Acceptance Notes
 
@@ -92,3 +106,5 @@ PM-08k is complete only when the documentation, tests and runtime agree that:
 - unsupported or risky tool proposals fail through PolicyPort/ToolGatewayPort
   or clarification behavior, not hidden pre-routing guesses;
 - PM-09 voice uses the same request lifecycle and agent loop as text.
+- PM-08l hardens the loop state machine, final-answer path, tool-observation
+  recovery and stream/replay semantics before PM-09 starts.

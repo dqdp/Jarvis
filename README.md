@@ -74,6 +74,7 @@ docs/
   37_post_mvp_tdd_slices_plan.md
   38_pm08k_classifier_contract_simplification.md
   39_pm08k_agentic_loop_refactor_plan.md
+  40_pm08l_agent_loop_architecture_hardening_plan.md
 ```
 
 ## ADR Index
@@ -181,10 +182,11 @@ docs/adr/
   lifecycle wiring, CLI mode controls, CLI tool/RAG/approval readiness,
   direct-answer hardening, request-quality gates and Codex-like interactive CLI
   shell UX, followed by canonical Jarvis runtime startup and PM-08k
-  agentic-loop-first request handling plus the PM-08l pre-PM09 hardening gate.
+  agentic-loop-first request handling plus the PM-08l agent-loop architecture
+  hardening gate.
   PM-09 voice gateway foundation starts only after that text surface is usable,
-  operationally repeatable, routing-safe and proven through DB-backed
-  transcript-like API/e2e turns.
+  operationally repeatable, routing-safe, structurally hardened and proven
+  through DB-backed transcript-like API/e2e turns.
   LangGraph stays a follow-up for later durable workflows.
 - Planner-executor and unbounded autonomous ReAct behavior remain future scope.
 - Future loop strategies must declare budgets, capabilities, policy hooks, failure semantics and emitted events.
@@ -265,14 +267,15 @@ wave:
 - event/data hardening, append-only event protection and no-secret storage
   constraints.
 
-PM-08a through PM-08k are documented as the next implementation sequence. They
+PM-08a through PM-08l are documented as the next implementation sequence. They
 make `auto` the user-facing default, harden tool/policy behavior and turn the
 interactive CLI into the pre-voice dogfood shell. PM-08j then makes that Jarvis
 surface startable through one canonical local runtime path instead of manual
 DB/migration/daemon orchestration. PM-08k changes the request-handling direction:
 normal natural-language input should enter the bounded agent loop first, rather
 than being pre-classified by a runtime LLM router or broad deterministic intent
-router.
+router. PM-08l then decomposes and hardens that bounded loop before PM-09 voice
+starts.
 
 Implementation notes:
 
@@ -312,8 +315,9 @@ Post-MVP planning is tracked in:
 - `docs/35_post_mvp_adr_backlog.md`;
 - `docs/36_post_mvp_plan_review.md`;
 - `docs/37_post_mvp_tdd_slices_plan.md`;
-- `docs/38_pm08k_classifier_contract_simplification.md`.
-- `docs/39_pm08k_agentic_loop_refactor_plan.md`.
+- `docs/38_pm08k_classifier_contract_simplification.md`;
+- `docs/39_pm08k_agentic_loop_refactor_plan.md`;
+- `docs/40_pm08l_agent_loop_architecture_hardening_plan.md`.
 
 ## Final hardening additions in v16
 
@@ -351,7 +355,10 @@ Post-MVP planning is tracked in:
 - PM-08i comparison evidence is recorded in
   `tests/fixtures/intent_routing/pm08i_classifier_model_comparison.json`.
 - PM-08k planning is documented in
-  `docs/38_pm08k_classifier_contract_simplification.md`.
+  `docs/38_pm08k_classifier_contract_simplification.md` and
+  `docs/39_pm08k_agentic_loop_refactor_plan.md`.
+- PM-08l agent-loop architecture hardening is documented in
+  `docs/40_pm08l_agent_loop_architecture_hardening_plan.md`.
 - `embeddinggemma:latest` is the initial local embedding model.
 - The Ollama adapter passes anti-repeat generation options and cuts off
   repeated-line loops before they run to the full token cap.

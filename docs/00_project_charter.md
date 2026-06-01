@@ -157,14 +157,15 @@ Phase 1 не предназначена для:
 8. Current baseline: post-MVP Alpha includes bounded `tool_react_loop` after
    `ToolGatewayPort`; planner-executor and autonomous ReAct remain deferred.
 9. Graph checkpoints are deferred runtime state, not MVP storage scope.
-10. Near-term priority is PM-08a through PM-08k: backend auto-selection, API
+10. Near-term priority is PM-08a through PM-08l: backend auto-selection, API
     lifecycle wiring, CLI mode controls, CLI tool/RAG/approval readiness,
     direct-answer hardening, request-quality gates and Codex-like interactive
     CLI shell UX, followed by canonical Jarvis runtime startup and PM-08k request
     handling cleanup. PM-08k makes the bounded agent loop the default
     natural-language path and removes classifier-first routing before PM-09 voice
-    gateway foundation starts. LangGraph remains a follow-up for later durable
-    workflows.
+    gateway foundation starts. PM-08l then hardens the agent-loop state machine,
+    finalization and tool-observation recovery contracts before voice. LangGraph
+    remains a follow-up for later durable workflows.
 11. Redis/NATS не вводятся как обязательная зависимость Phase 1.
 12. SSE — primary streaming transport.
 13. RuntimeStreamEvent schema transport-agnostic.

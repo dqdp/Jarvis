@@ -503,7 +503,7 @@ PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate
 PM-08i interactive CLI shell UX hardening
 PM-08j canonical Jarvis runtime startup
 PM-08k agentic-loop-first request handling cleanup
-PM-08l pre-PM09 hardening gate
+PM-08l agent-loop architecture hardening gate
 PM-09 voice gateway foundation
 then stabilize the implemented Alpha surface
 then choose between durable workflow execution, artifact storage, MCP or integrations
@@ -515,8 +515,10 @@ chat, before PM-08i makes the interactive CLI usable as the pre-voice dogfood
 surface, before PM-08j makes that surface startable through a canonical local
 runtime path, before PM-08k removes classifier-first routing in favor of the
 same bounded agent loop for text and future voice transcripts, before PM-08l
-proves that path with DB-backed transcript-like API/e2e turns and startup
-invariants, and before the durable workflow, artifact, permission and audit
-questions for that specific feature are documented and tested. Voice is the
-selected near-term product direction after PM-08l and must use the same runtime
-and agent loop rather than introducing a separate voice agent.
+hardens that loop through explicit state-machine, finalization and
+tool-observation recovery contracts and proves the path with DB-backed
+transcript-like API/e2e turns and startup invariants, and before the durable
+workflow, artifact, permission and audit questions for that specific feature are
+documented and tested. Voice is the selected near-term product direction after
+PM-08l and must use the same runtime and agent loop rather than introducing a
+separate voice agent.

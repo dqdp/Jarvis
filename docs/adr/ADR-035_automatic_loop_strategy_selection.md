@@ -63,8 +63,9 @@ The default user-facing mode becomes:
 auto
 ```
 
-`auto` is not a third execution algorithm. It is a routing mode that resolves to
-one concrete loop strategy before `AgentRuntime` invokes a loop:
+Historical PM-08a/PM-08e selector-era semantics: `auto` was not a third
+execution algorithm. It was a routing mode that resolved to one concrete loop
+strategy before `AgentRuntime` invoked a loop:
 
 ```text
 auto

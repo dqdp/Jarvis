@@ -36,7 +36,7 @@ PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
 PM-08k Agentic loop-first request handling cleanup
-PM-08l Pre-PM09 hardening gate
+PM-08l Agent loop architecture hardening gate
 PM-09 Voice gateway foundation
 ```
 
@@ -936,7 +936,7 @@ tool_react_loop or equivalent strategy is explicit and bounded;
 all tool execution goes through ToolGatewayPort;
 fake/safe tool e2e smoke passes;
 malformed tool proposals fail safely;
-budget exhaustion fails safely;
+budget exhaustion has deterministic safe terminal behavior;
 tool observations are not normal conversation messages;
 step events are emitted;
 existing memory_augmented_answer behavior remains green;
@@ -2265,14 +2265,15 @@ tool_react_loop
 specific internal tool names
 ```
 
-The default user-facing behavior is:
+The historical PM-08a/PM-08e selector-era default user-facing behavior was:
 
 ```text
 auto
 ```
 
-`auto` resolves on the backend to one concrete loop strategy before runtime
-execution.
+In that historical model, `auto` resolved on the backend to one concrete loop
+strategy before runtime execution. PM-08k/ADR-037 supersedes this for production
+natural-language handling: `auto` is now a policy mode of the bounded agent loop.
 
 PM-08 must not implement a deterministic-only selector as the target
 architecture. The slice must introduce `LoopStrategySelector` plus
@@ -4298,10 +4299,12 @@ PM-08i red phase failed for missing prompt_toolkit shell/status/completion
 PM-08j red phase failed for missing canonical Jarvis runtime startup behavior;
 PM-08k red phase failed for missing agentic-loop-first request contract and
   removal/quarantine of production classifier-first routing;
-missing loop_strategy means auto, not direct memory loop;
-ordinary chat still uses memory_augmented_answer;
-project-docs questions use RAG without tool_react_loop;
-live project/system inspection uses tool_react_loop;
+missing loop_strategy means auto request-plan policy, not selector-era direct
+  memory loop;
+ordinary chat, project-docs questions and live project/system inspection enter
+  the bounded agent loop by default;
+RAG remains ContextAssembler behavior and is not a separate route trigger;
+safe tool use happens only through bounded agent loop proposals and ToolGateway;
 tools-disabled tool intent does not silently hallucinate;
 direct diagnostics answers use typed payloads and parse_status, not raw stdout
   parsing in the loop;
@@ -4340,17 +4343,53 @@ provider-native tool execution bypassing ToolGateway
 RAG as a tool-loop requirement
 ```
 
-## 12. Slice PM-08l — Pre-PM09 hardening gate
+## 12. Slice PM-08l — Agent loop architecture hardening gate
 
 ### Goal
 
 Close the final architecture-review findings that can make PM-09 start with
-false confidence. PM-08l is not a voice implementation slice; it proves that the
-post-PM-08k request path is ready for voice to sit on top of it.
+false confidence. PM-08l is not a voice implementation slice; it hardens the
+post-PM-08k bounded agent loop architecture and then proves that voice can sit on
+top of the same request path.
+
+Detailed plan:
+
+```text
+docs/40_pm08l_agent_loop_architecture_hardening_plan.md
+```
+
+Target architecture:
+
+```text
+simple natural-language input or future voice transcript
+  -> one bounded agent loop
+  -> explicit step state machine
+  -> optional tool action
+  -> typed observation
+  -> recovery, clarification or final answer
+
+future compound task
+  -> plan-and-execute shell
+  -> each executable step uses the same bounded agent loop
+```
 
 ### Tests first
 
 ```text
+test_agent_loop_state_machine_records_expected_step_order
+test_agent_loop_final_answer_uses_single_finalizer
+test_agent_loop_auto_mode_plain_chat_survives_bad_non_tool_proposal
+test_agent_loop_auto_mode_non_tool_question_survives_tool_observation_failure
+test_agent_loop_auto_mode_arithmetic_survives_tool_observation_failure
+test_agent_loop_cpu_usage_failure_returns_typed_recovery_or_actionable_failure
+test_agent_loop_required_tools_mode_does_not_fallback_before_observation
+test_agent_loop_denied_tool_observation_uses_recovery_policy
+test_agent_loop_unavailable_tool_observation_preserves_typed_reason
+test_agent_loop_cancel_or_approval_denial_has_controlled_terminal_state
+test_agent_loop_tools_mode_budget_and_unavailable_matrix
+test_agent_loop_stream_reconnect_replays_terminal_state
+test_agent_loop_context_manifest_records_final_observation_refs
+test_agent_loop_preserves_future_plan_step_metadata_without_planner_bypass
 test_transcript_like_api_turn_uses_agent_loop_lifecycle
 test_transcript_like_tool_turn_uses_toolgateway
 test_default_runtime_can_execute_default_agent_loop_without_tool_registry
@@ -4361,24 +4400,63 @@ test_pm09_docs_gate_on_full_pm08_sequence_through_pm08l
 ### Implementation
 
 ```text
+contract/docs:
+  align PM-08l with the agent-loop architecture hardening plan
+  replace old generic budget-exhaustion wording with the precise PM-08l
+    budget/finalization matrix
+
+runtime loop:
+  keep ToolReactLoop as the public implementation vehicle until behavior is green
+  extract explicit AgentLoopState and AgentLoopStep internals
+  extract LoopEventRecorder so lifecycle events do not remain scattered through
+    the loop body
+  extract FinalAnswerStep so tools-disabled, final_answer proposal, safe budget
+    exhaustion and malformed non-tool fallback all use one finalization path
+  extract ToolObservationRecoveryPolicy and LoopFailurePolicy for denied,
+    unavailable, failed, approval and malformed-output outcomes
+
+auto/tools modes:
+  auto mode must allow ordinary final answers without requiring a tool
+    observation
+  explicit malformed tool_call proposals still fail closed
+  tools mode must not silently fallback before a valid tool observation when a
+    tool observation is required
+  live regressions such as "где раки зимуют?" and "Двадцать два в третьей
+    степени." must not surface as generic `tool_observation_failed` when the
+    request can be answered, clarified or safely finalized without the failed
+    tool path
+
+streaming/events:
+  keep CLI/activity phases tied to real lifecycle events
+  emit one terminal completion or failure
+  support durable terminal replay after buffer cleanup or daemon restart through
+    persisted request status, event log and conversation messages
+  document any remaining lack of true token streaming as a PM-09 input if not
+    fixed in PM-08l
+
 e2e/API:
   add DB-backed transcript-like requests through the existing
     /v1/conversations/{id}/messages lifecycle
   cover one no-tool final-answer turn and one tool turn through ToolGateway
 
-runtime:
+runtime composition:
   keep RuntimeTurnCommand, AgentRuntime default registry and legacy persisted
-    request fallback aligned with tool_react_loop
+    request fallback aligned with the bounded agent loop
   direct runtime construction must not fail merely because no concrete tool
     registry was injected
-
-startup/composition:
   validate that request-plan allowed tool names are registered in the actual
     ToolGateway surface
+  preserve compatibility with a future plan-and-execute shell where scoped plan
+    steps execute through the same bounded agent loop, PolicyPort and
+    ToolGatewayPort path
 
 verification:
-  PM-09 entry requires DB-enabled gates, not only bare pytest:
+  each PM-08l milestone requires a verification gate and two read-only review
+    agents from scratch after tests are green
+  PM-09 entry requires the final DB-enabled gates, not only bare pytest:
+    make test-unit
     make test-contract
+    make test-golden
     make test-integration
     make test-e2e
     make test-architecture
@@ -4393,6 +4471,15 @@ spoken-transcript-like API turns enter the same request lifecycle and bounded
 transcript-like tool turns execute only through ToolGateway;
 AgentRuntime direct construction is aligned with the default agent loop;
 request-plan tool availability cannot drift silently from ToolGateway registry;
+ToolReactLoop no longer owns every state transition, event, proposal, final
+  answer and failure policy in one large orchestration method;
+final answers use one shared finalization path;
+auto/chat/tools behavior is covered by unit, contract and e2e tests;
+denied, unavailable, failed, approval and malformed-output outcomes have typed
+  recovery, clarification or controlled-failure semantics;
+lifecycle streaming emits stable phases and a single terminal event;
+bounded agent loop can become the executor for future plan-and-execute scoped
+  steps without adding a planner-specific router or ToolGateway bypass;
 PM-09 cannot start until the DB-enabled preflight gates are green.
 ```
 
@@ -4404,7 +4491,11 @@ STT/TTS providers
 wake-word implementation
 renaming loop_selection event types
 storage/content application-service extraction
-ToolReactLoop decomposition
+full planner-executor or plan-and-execute implementation
+new production tools
+provider-native tool calling migration
+LangGraph or durable workflow checkpointing
+semantic classifier or deterministic natural-language route resolver
 ```
 
 ## 13. Slice PM-09 — Voice gateway foundation
@@ -4493,10 +4584,11 @@ observations, transcript-like corpus evidence and Codex-like interactive shell
 UX, plus a canonical local Jarvis startup path and an agentic-loop-first request
 contract, before voice is layered on top.
 
-Voice must use the PM-08k request path:
+Voice must use the PM-08k/PM-08l request path:
 
 ```text
-spoken request -> transcript -> bounded agent loop -> policy/tool gates
+spoken request -> transcript -> bounded agent loop -> request-plan policy
+  -> policy/tool gates
 ```
 
 The voice channel must not implement separate intent routing, a separate
@@ -4537,14 +4629,14 @@ test_voice_gateway_does_not_import_concrete_model_providers
 test_voice_gateway_does_not_import_external_speech_api_clients
 test_voice_gateway_does_not_bypass_api_runtime_or_agent_runtime
 test_stt_tts_adapters_do_not_import_conversation_storage
-test_voice_channel_uses_loop_selection_contract_not_custom_router
+test_voice_channel_uses_agent_loop_request_plan_contract_not_custom_router
 ```
 
 E2E smoke with fake STT/TTS/model providers:
 
 ```text
 test_fake_voice_turn_transcribes_routes_answers_and_synthesizes
-test_fake_voice_turn_can_trigger_pm08_tool_routing_from_transcript
+test_fake_voice_turn_can_trigger_toolgateway_from_transcript
 test_fake_voice_cancel_stops_active_request
 ```
 
@@ -4567,7 +4659,7 @@ test requires microphone or speaker hardware
 test requires real STT/TTS provider
 test requires cloud model or cloud speech service
 test stores raw audio by default
-test bypasses PM-08 auto loop selection
+test bypasses PM-08k/PM-08l bounded agent loop request-plan policy
 ```
 
 ### Implementation
@@ -4645,7 +4737,8 @@ tests were added before production code;
 red phase failed for missing voice ports/gateway;
 fake STT/TTS e2e voice turn works without hardware;
 voice submits transcript through existing runtime lifecycle;
-PM-08 auto loop selection is used for spoken turns;
+PM-08k/PM-08l bounded agent loop request-plan policy modes are used for spoken
+  turns;
 voice gateway is provider-neutral and can select local/fake/external-api
 provider profiles without importing concrete clients;
 raw audio is not stored by default;
