@@ -355,7 +355,7 @@ Testing:
   tool-observation/direct-answer hardening, PM-08g direct planner/registry
   cleanup, PM-08h corpus hardening, PM-08i interactive CLI shell hardening and
   PM-08j canonical Jarvis runtime startup plus PM-08k agentic-loop-first request
-  handling cleanup before voice.
+  handling cleanup plus PM-08l pre-PM09 hardening gate before voice.
 
 ### Resolved by ADR-031/PM-04 — Bounded tool loop strategy
 
@@ -389,8 +389,8 @@ write/promote this ADR after PM-08d CLI tool/RAG/approval readiness, PM-08e
 model-backed classifier adapter, PM-08f typed tool-observation hardening,
 PM-08g direct planner/registry cleanup, PM-08h corpus hardening, PM-08i
 interactive CLI shell hardening, PM-08j canonical Jarvis runtime startup and
-PM-08k agentic-loop-first request handling cleanup before PM-09 voice gateway
-foundation
+PM-08k agentic-loop-first request handling cleanup plus PM-08l pre-PM09
+hardening gate before PM-09 voice gateway foundation
 implementation.
 ```
 

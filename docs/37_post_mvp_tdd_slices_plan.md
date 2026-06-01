@@ -36,6 +36,7 @@ PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
 PM-08k Agentic loop-first request handling cleanup
+PM-08l Pre-PM09 hardening gate
 PM-09 Voice gateway foundation
 ```
 
@@ -2374,14 +2375,16 @@ historical evidence or explicitly quarantined follow-up work. They are not a
 PM-09 gate and must not be reintroduced as a pre-agent semantic router.
 
 Do not start PM-09 voice implementation until PM-08d, PM-08e, PM-08f, PM-08g,
-PM-08h, PM-08i, PM-08j and PM-08k are complete. Voice depends on the same
+PM-08h, PM-08i, PM-08j, PM-08k and PM-08l are complete. Voice depends on the same
 user-turn surface being usable from text first, on direct answers not inheriting
 fragile stdout parsing, on registry-backed tool metadata, on corpus evidence
 that covers typed and spoken-transcript-like requests, on a Codex-like
 interactive CLI shell that is usable enough to dogfood before voice, on a
 canonical local startup path that does not rely on manual
 DB/migration/daemon orchestration, and on the PM-08k agentic-loop-first contract
-that removes the separate classifier-first path before voice.
+that removes the separate classifier-first path before voice. PM-08l is the
+final hardening gate that proves that contract through DB-backed transcript-like
+API/e2e evidence and startup invariants before PM-09 starts.
 
 ### PM-08a — Loop selection domain and selector contract
 
@@ -4337,7 +4340,74 @@ provider-native tool execution bypassing ToolGateway
 RAG as a tool-loop requirement
 ```
 
-## 12. Slice PM-09 — Voice gateway foundation
+## 12. Slice PM-08l — Pre-PM09 hardening gate
+
+### Goal
+
+Close the final architecture-review findings that can make PM-09 start with
+false confidence. PM-08l is not a voice implementation slice; it proves that the
+post-PM-08k request path is ready for voice to sit on top of it.
+
+### Tests first
+
+```text
+test_transcript_like_api_turn_uses_agent_loop_lifecycle
+test_transcript_like_tool_turn_uses_toolgateway
+test_default_runtime_can_execute_default_agent_loop_without_tool_registry
+test_runtime_app_validates_request_plan_tools_match_gateway_registry
+test_pm09_docs_gate_on_full_pm08_sequence_through_pm08l
+```
+
+### Implementation
+
+```text
+e2e/API:
+  add DB-backed transcript-like requests through the existing
+    /v1/conversations/{id}/messages lifecycle
+  cover one no-tool final-answer turn and one tool turn through ToolGateway
+
+runtime:
+  keep RuntimeTurnCommand, AgentRuntime default registry and legacy persisted
+    request fallback aligned with tool_react_loop
+  direct runtime construction must not fail merely because no concrete tool
+    registry was injected
+
+startup/composition:
+  validate that request-plan allowed tool names are registered in the actual
+    ToolGateway surface
+
+verification:
+  PM-09 entry requires DB-enabled gates, not only bare pytest:
+    make test-contract
+    make test-integration
+    make test-e2e
+    make test-architecture
+```
+
+### Acceptance
+
+```text
+PM-08l complete
+spoken-transcript-like API turns enter the same request lifecycle and bounded
+  agent loop as typed turns;
+transcript-like tool turns execute only through ToolGateway;
+AgentRuntime direct construction is aligned with the default agent loop;
+request-plan tool availability cannot drift silently from ToolGateway registry;
+PM-09 cannot start until the DB-enabled preflight gates are green.
+```
+
+### Out of scope
+
+```text
+voice audio capture
+STT/TTS providers
+wake-word implementation
+renaming loop_selection event types
+storage/content application-service extraction
+ToolReactLoop decomposition
+```
+
+## 13. Slice PM-09 — Voice gateway foundation
 
 ### Goal
 
@@ -4349,7 +4419,9 @@ and after PM-08i makes the interactive CLI shell usable enough to dogfood the
 same surface before voice. PM-08j must then make that Jarvis surface
 operationally repeatable through canonical startup/status/log/shutdown commands.
 PM-08k must then replace classifier-first routing with agentic-loop-first
-request handling before spoken turns rely on the same path.
+request handling before spoken turns rely on the same path. PM-08l must then
+prove that path with DB-backed transcript-like API/e2e turns and startup
+invariants before any voice code is added.
 
 Voice is a client/channel over the existing runtime, not a separate agent
 runtime. A spoken turn must become the same kind of user turn that CLI/API uses:
@@ -4412,6 +4484,7 @@ PM-08h complete
 PM-08i complete
 PM-08j complete
 PM-08k complete
+PM-08l complete
 ```
 
 In practice this means the text CLI already has a working normal chat surface

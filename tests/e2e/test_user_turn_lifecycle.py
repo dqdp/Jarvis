@@ -28,8 +28,9 @@ from assistant_core.storage.event_log import PostgresEventLog
 from assistant_core.storage.memory_store import PostgresMemoryStore
 from assistant_core.storage.migrations import run_migrations
 from assistant_core.storage.model_invocations import PostgresModelInvocationRepository
+from assistant_core.tools.builtin import datetime_now_tool
 from assistant_core.tools.gateway import ToolGateway
-from assistant_core.tools.registry import ToolRegistry
+from assistant_core.tools.registry import ToolAdapter, ToolRegistry
 
 
 pytestmark = [pytest.mark.e2e, pytest.mark.db]
@@ -76,7 +77,14 @@ def _sse_events(raw: str) -> list[str]:
     ]
 
 
-def _run_user_turn_lifecycle():
+def _run_user_turn_lifecycle(
+    *,
+    content: str = "stream lifecycle memory",
+    client_message_id: str = "client-e2e",
+    chat_response: str = "OK",
+    structured_text_responses: list[str] | None = None,
+    tool_adapters: list[ToolAdapter] | None = None,
+):
     database_url = _database_url()
     assert_test_database_url(database_url)
     run_migrations(database_url)
@@ -102,9 +110,10 @@ def _run_user_turn_lifecycle():
             event_log=event_log,
             providers={
                 "local_openai_compatible": FakeModelProvider(
-                    chat_response="OK",
-                    stream_tokens=["OK"],
-                    structured_text_responses=['{"action":"final_answer"}'],
+                    chat_response=chat_response,
+                    stream_tokens=[chat_response],
+                    structured_text_responses=structured_text_responses
+                    or ['{"action":"final_answer"}'],
                 ),
                 "local_embedding": FakeEmbeddingProvider(),
             },
@@ -116,7 +125,7 @@ def _run_user_turn_lifecycle():
             policy=policy,
         )
         tool_gateway = ToolGateway(
-            registry=ToolRegistry([]),
+            registry=ToolRegistry(tool_adapters or []),
             policy=policy,
             event_log=event_log,
         )
@@ -150,6 +159,7 @@ def _run_user_turn_lifecycle():
             settings=settings,
             runtime=runtime,
             event_log=event_log,
+            policy=policy,
         )
         assert isinstance(app, FastAPI)
         try:
@@ -167,7 +177,7 @@ def _run_user_turn_lifecycle():
                 {
                     "namespace": "project.personal_assistant",
                     "memory_type": "fact",
-                    "content": "stream lifecycle memory",
+                    "content": content,
                     "sensitivity": "project",
                 },
             )
@@ -176,8 +186,8 @@ def _run_user_turn_lifecycle():
                 "POST",
                 f"/v1/conversations/{conversation['conversation_id']}/messages",
                 {
-                    "client_message_id": "client-e2e",
-                    "content": "stream lifecycle memory",
+                    "client_message_id": client_message_id,
+                    "content": content,
                     "sensitivity": "project",
                 },
             )
@@ -256,3 +266,43 @@ def test_no_tool_events_are_emitted_when_agent_loop_model_skips_tools() -> None:
     _, _, _, _, events, _ = _run_user_turn_lifecycle()
 
     assert all(not event.event_type.value.startswith("tool.") for event in events)
+
+
+def test_transcript_like_api_turn_uses_agent_loop_lifecycle() -> None:
+    submitted, stream_events, request_status, messages, events, invocations = (
+        _run_user_turn_lifecycle(
+            content="Джарвис, пожалуйста, кратко ответь по памяти",
+            client_message_id="client-transcript-chat",
+            chat_response="transcript OK",
+        )
+    )
+
+    assert submitted["request_id"]
+    assert stream_events[-1] == "request.processing.completed"
+    assert request_status["status"] == "completed"
+    assert messages["messages"][-1]["content"] == "transcript OK"
+    loop_started = next(event for event in events if event.event_type == EventType.AGENT_LOOP_STARTED)
+    assert loop_started.payload["strategy_name"] == "tool_react_loop"
+    assert len(invocations) == 2
+
+
+def test_transcript_like_tool_turn_uses_toolgateway() -> None:
+    _, _, request_status, messages, events, invocations = _run_user_turn_lifecycle(
+        content="Джарвис, сколько времени сейчас?",
+        client_message_id="client-transcript-tool",
+        chat_response="tool transcript OK",
+        structured_text_responses=[
+            '{"action":"tool_call","tool_name":"datetime.now","arguments":{}}',
+            '{"action":"final_answer"}',
+        ],
+        tool_adapters=[datetime_now_tool()],
+    )
+
+    assert request_status["status"] == "completed"
+    assert messages["messages"][-1]["content"] == "tool transcript OK"
+    assert EventType.TOOL_CALL_COMPLETED in [event.event_type for event in events]
+    loop_completed = next(
+        event for event in events if event.event_type == EventType.AGENT_LOOP_COMPLETED
+    )
+    assert loop_completed.payload["used_tool_calls"] == 1
+    assert len(invocations) == 3

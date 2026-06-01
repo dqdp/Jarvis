@@ -223,6 +223,17 @@ def _command() -> RuntimeTurnCommand:
     )
 
 
+def _default_agent_command() -> RuntimeTurnCommand:
+    return RuntimeTurnCommand(
+        request_id="11111111-1111-1111-1111-111111111111",
+        conversation_id="22222222-2222-2222-2222-222222222222",
+        user_message_id="user-message-1",
+        user_id="user-1",
+        user_input="current question",
+        active_project_namespace="project.personal_assistant",
+    )
+
+
 def _message_text(messages: list[ChatMessage]) -> str:
     return "\n".join(part.text for message in messages for part in message.content)
 
@@ -243,6 +254,20 @@ def test_run_turn_passes_context_assembler_messages_to_model_prompt() -> None:
     assert "remembered project fact" in prompt_text
     assert messages[0].metadata == {"source": "context_assembler"}
     assert messages[-1].role == MessageRole.USER
+    assert messages[-1].content[0].text == "current question"
+
+
+def test_default_runtime_can_execute_default_agent_loop_without_tool_registry() -> None:
+    async def scenario():
+        model_router = RecordingModelRouter()
+        store = FakeConversationStore()
+        result = await _runtime(model_router, store).run_turn(_default_agent_command())
+        return result, model_router.chat_messages
+
+    result, messages = asyncio.run(scenario())
+
+    assert result.response_text == "answer"
+    assert messages is not None
     assert messages[-1].content[0].text == "current question"
 
 

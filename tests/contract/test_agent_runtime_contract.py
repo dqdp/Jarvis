@@ -282,6 +282,7 @@ def test_runtime_persists_event_chain_success(runtime_parts) -> None:
                 user_id="user-1",
                 user_input=submission.user_message.content,
                 active_project_namespace="project.personal_assistant",
+                loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
             ),
         )
         return await event_log.query(EventFilter(request_id=submission.request.request_id))
@@ -326,6 +327,7 @@ def test_memory_augmented_answer_loop_preserves_existing_runtime_result(runtime_
                 user_id="user-1",
                 user_input=submission.user_message.content,
                 active_project_namespace="project.personal_assistant",
+                loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
             ),
         )
 
@@ -350,6 +352,7 @@ def test_memory_augmented_answer_loop_preserves_existing_event_chain(runtime_par
                 user_id="user-1",
                 user_input=submission.user_message.content,
                 active_project_namespace="project.personal_assistant",
+                loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
             ),
         )
         return await event_log.query(EventFilter(request_id=submission.request.request_id))
@@ -401,6 +404,7 @@ def test_agent_runtime_delegates_to_strategy_registry() -> None:
                 user_id="user-1",
                 user_input="hello",
                 active_project_namespace="project.personal_assistant",
+                loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
                 permission_mode=PermissionMode.LOCKED_DOWN,
             ),
         )
@@ -436,6 +440,7 @@ def test_agent_runtime_stream_uses_same_strategy_request_shape() -> None:
                     user_id="user-1",
                     user_input="hello",
                     active_project_namespace="project.personal_assistant",
+                    loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
                     permission_mode=PermissionMode.LOCKED_DOWN,
                 ),
             )
@@ -467,6 +472,7 @@ def test_strategy_uses_context_assembler_model_router_policy_and_stores_ports(ru
                 user_id="user-1",
                 user_input=submission.user_message.content,
                 active_project_namespace="project.personal_assistant",
+                loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
             ),
         )
         request = await store.get_assistant_request(submission.request.request_id)
@@ -495,6 +501,7 @@ def test_runtime_uses_context_assembler(runtime_parts) -> None:
                 user_id="user-1",
                 user_input=submission.user_message.content,
                 active_project_namespace="project.personal_assistant",
+                loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
             ),
         )
         return assembler.calls
@@ -516,6 +523,7 @@ def test_runtime_calls_model_router_once(runtime_parts) -> None:
                 user_id="user-1",
                 user_input=submission.user_message.content,
                 active_project_namespace="project.personal_assistant",
+                loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
             ),
         )
         return provider.chat_calls
@@ -536,6 +544,7 @@ def test_runtime_max_model_calls_one(runtime_parts) -> None:
                 user_id="user-1",
                 user_input=submission.user_message.content,
                 active_project_namespace="project.personal_assistant",
+                loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
             ),
         )
         return result.model_calls
@@ -556,6 +565,7 @@ def test_runtime_memory_retrieval_failure_degraded(runtime_parts) -> None:
                 user_id="user-1",
                 user_input=submission.user_message.content,
                 active_project_namespace="project.personal_assistant",
+                loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
             ),
         )
 
@@ -579,6 +589,7 @@ def test_runtime_model_failure_marks_request_failed(runtime_parts) -> None:
                     user_id="user-1",
                     user_input=submission.user_message.content,
                     active_project_namespace="project.personal_assistant",
+                    loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
                 ),
             )
         events = await event_log.query(EventFilter(request_id=submission.request.request_id))
@@ -605,6 +616,7 @@ def test_runtime_uses_canonical_event_type_enum(runtime_parts) -> None:
                 user_id="user-1",
                 user_input=submission.user_message.content,
                 active_project_namespace="project.personal_assistant",
+                loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
             ),
         )
         return await event_log.query(EventFilter(request_id=submission.request.request_id))
@@ -624,6 +636,7 @@ def test_runtime_context_manifest_id_links_model_invocation_to_context_event(run
                 user_id="user-1",
                 user_input=submission.user_message.content,
                 active_project_namespace="project.personal_assistant",
+                loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
             ),
         )
         events = await event_log.query(EventFilter(request_id=submission.request.request_id))
@@ -648,6 +661,7 @@ def test_runtime_context_events_preserve_causation_chain(runtime_parts) -> None:
                 user_id="user-1",
                 user_input=submission.user_message.content,
                 active_project_namespace="project.personal_assistant",
+                loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
             ),
         )
         events = await event_log.query(EventFilter(request_id=submission.request.request_id))
@@ -693,6 +707,7 @@ def test_runtime_secret_policy_denial_is_audited(runtime_parts) -> None:
                     user_id="user-1",
                     user_input=submission.user_message.content,
                     active_project_namespace="project.personal_assistant",
+                    loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
                     current_message_sensitivity=Sensitivity.SECRET,
                 ),
             )
@@ -734,6 +749,7 @@ def test_runtime_context_assembly_timeout_marks_request_failed(runtime_parts) ->
                     user_id="user-1",
                     user_input=submission.user_message.content,
                     active_project_namespace="project.personal_assistant",
+                    loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
                 ),
             )
         request = await store.get_assistant_request(submission.request.request_id)
@@ -761,6 +777,7 @@ def test_no_assistant_message_on_system_failure(runtime_parts) -> None:
                     user_id="user-1",
                     user_input=submission.user_message.content,
                     active_project_namespace="project.personal_assistant",
+                    loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
                 ),
             )
         return await store.load_recent_messages(
@@ -789,6 +806,7 @@ def test_stream_cancel_after_model_response_does_not_persist_assistant_side_effe
             user_id="user-1",
             user_input=submission.user_message.content,
             active_project_namespace="project.personal_assistant",
+            loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
         )
 
         emitted = []
@@ -841,6 +859,7 @@ def test_stream_completion_wins_atomically_after_assistant_message_append(
             user_id="user-1",
             user_input=submission.user_message.content,
             active_project_namespace="project.personal_assistant",
+            loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
         )
 
         emitted = [event async for event in runtime.stream_turn(command)]
@@ -878,6 +897,7 @@ def test_stream_model_failure_emits_model_failed_before_request_failed(runtime_p
             user_id="user-1",
             user_input=submission.user_message.content,
             active_project_namespace="project.personal_assistant",
+            loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
         )
 
         emitted = [event async for event in runtime.stream_turn(command)]

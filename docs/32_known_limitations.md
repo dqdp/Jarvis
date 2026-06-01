@@ -21,7 +21,8 @@
 - Automatic loop selection and CLI readiness now cover PM-08a through PM-08i,
   including the Codex-like interactive shell surface. Canonical Jarvis runtime
   startup is tracked as PM-08j and agentic-loop-first request handling cleanup
-  is tracked as PM-08k before PM-09. PM-09 voice, durable graph
+  is tracked as PM-08k. PM-08l is the final pre-PM09 hardening gate before
+  PM-09. PM-09 voice, durable graph
   checkpoints and full-screen TUI behavior remain future work.
 - MCP, planner-executor, voice, remembered approvals, durable background
   workers and external integrations remain future work.
@@ -57,6 +58,7 @@ Next priority:
 
 - PM-08j canonical Jarvis runtime startup;
 - PM-08k agentic-loop-first request handling cleanup;
+- PM-08l pre-PM09 hardening gate;
 - PM-09 voice gateway foundation;
 
 Later priority candidates:

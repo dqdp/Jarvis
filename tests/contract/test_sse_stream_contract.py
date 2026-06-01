@@ -24,6 +24,7 @@ from assistant_core.domain.conversations import (
     UpdateAssistantRequestStatusCommand,
 )
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
+from assistant_core.domain.loops import LoopStrategyName
 from assistant_core.domain.messages import MessageRole
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
@@ -148,6 +149,19 @@ class ToolPhaseRuntime:
         )
 
 
+class MemoryLoopRuntimeAdapter:
+    def __init__(self, delegate: AgentRuntime) -> None:
+        self._delegate = delegate
+
+    async def stream_turn(self, command):
+        memory_command = replace(
+            command,
+            loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
+        )
+        async for event in self._delegate.stream_turn(memory_command):
+            yield event
+
+
 @pytest.fixture
 def stream_parts():
     database_url = _database_url()
@@ -194,7 +208,7 @@ def stream_parts():
             conversation_store=conversation_store,
             memory_store=memory_store,
             settings=app_settings,
-            runtime=runtime_override or runtime,
+            runtime=runtime_override or MemoryLoopRuntimeAdapter(runtime),
             event_log=event_log,
             policy=policy,
         )
@@ -237,6 +251,7 @@ async def _accepted_message(
     client_message_id: str = "client-sse",
     content: str = "hello stream",
     sensitivity: str = "project",
+    loop_strategy: str | None = LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
 ):
     _, conversation_raw = await _request(
         app,
@@ -245,11 +260,18 @@ async def _accepted_message(
         {"title": "sse", "active_project_namespace": "project.personal_assistant"},
     )
     conversation = json.loads(conversation_raw)
+    body: dict[str, Any] = {
+        "client_message_id": client_message_id,
+        "content": content,
+        "sensitivity": sensitivity,
+    }
+    if loop_strategy is not None:
+        body["loop_strategy"] = loop_strategy
     _, message_raw = await _request(
         app,
         "POST",
         f"/v1/conversations/{conversation['conversation_id']}/messages",
-        {"client_message_id": client_message_id, "content": content, "sensitivity": sensitivity},
+        body,
     )
     return json.loads(message_raw)
 

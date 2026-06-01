@@ -36,6 +36,7 @@ from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.runtime.agent_runtime import AgentRuntime
 from assistant_core.runtime.loops import LoopStrategyRegistry, MemoryAugmentedAnswerLoop
 from assistant_core.runtime.loops.tool_react import ToolReactLoop
+from assistant_core.runtime.routing import CapabilityRoutingRegistry
 from assistant_core.storage.conversation_store import PostgresConversationStore
 from assistant_core.storage.approval_store import PostgresApprovalStore
 from assistant_core.storage.content_store import PostgresContentStore
@@ -120,19 +121,21 @@ def create_runtime_app(
         policy=policy,
         settings=settings,
     )
+    tool_registry = ToolRegistry(
+        [
+            fake_echo_tool(),
+            fake_fail_tool(),
+            fake_timeout_tool(),
+            datetime_now_tool(),
+            calculator_tool(),
+            daemon_status_tool(),
+            project_shell_read_tool_from_config(settings.capabilities),
+            *system_diagnostics_tools_from_config(settings.capabilities),
+        ],
+    )
+    _validate_request_plan_tool_surface(settings, tool_registry)
     tool_gateway = ToolGateway(
-        registry=ToolRegistry(
-            [
-                fake_echo_tool(),
-                fake_fail_tool(),
-                fake_timeout_tool(),
-                datetime_now_tool(),
-                calculator_tool(),
-                daemon_status_tool(),
-                project_shell_read_tool_from_config(settings.capabilities),
-                *system_diagnostics_tools_from_config(settings.capabilities),
-            ],
-        ),
+        registry=tool_registry,
         policy=policy,
         event_log=event_log,
         approval_store=approval_store,
@@ -190,6 +193,53 @@ def create_runtime_app(
     app.state.runtime_application = runtime_app
 
     return runtime_app
+
+
+def _validate_request_plan_tool_surface(settings: Settings, registry: ToolRegistry) -> None:
+    request_plan_tools = {
+        item["tool_name"]: item
+        for item in CapabilityRoutingRegistry.from_settings(settings).available_tools_summary()
+        if isinstance(item, dict) and isinstance(item.get("tool_name"), str)
+    }
+    gateway_tools = {spec.name: spec for spec in registry.list_specs()}
+    missing = sorted(set(request_plan_tools) - set(gateway_tools))
+    if missing:
+        raise RuntimeError(
+            "request-plan tool is not registered in ToolGateway: " + ", ".join(missing)
+        )
+    drifted = [
+        name
+        for name, request_plan_tool in request_plan_tools.items()
+        if _request_plan_tool_shape(request_plan_tool) != _gateway_tool_shape(gateway_tools[name])
+    ]
+    if drifted:
+        raise RuntimeError(
+            "request-plan tool metadata differs from ToolGateway: " + ", ".join(sorted(drifted))
+        )
+
+
+def _request_plan_tool_shape(tool_summary: dict) -> tuple[str | None, tuple[str, ...], str | None]:
+    risk_classes = tool_summary.get("risk_classes")
+    return (
+        tool_summary.get("capability") if isinstance(tool_summary.get("capability"), str) else None,
+        tuple(sorted(item for item in risk_classes if isinstance(item, str)))
+        if isinstance(risk_classes, list)
+        else (),
+        (
+            tool_summary.get("sensitivity_ceiling")
+            if isinstance(tool_summary.get("sensitivity_ceiling"), str)
+            else None
+        ),
+    )
+
+
+def _gateway_tool_shape(spec) -> tuple[str, tuple[str, ...], str]:
+    return (
+        spec.capability.value,
+        tuple(sorted(risk.value for risk in spec.risk_classes)),
+        spec.sensitivity_ceiling.value,
+    )
+
 
 async def _shutdown_request_execution_manager(app: FastAPI) -> None:
     manager = getattr(app.state, "request_execution_manager", None)

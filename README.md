@@ -177,13 +177,14 @@ docs/adr/
 - Phase 1 loop = deterministic `memory_augmented_answer`; LangGraph is deferred.
 - Original MVP shipped with only `memory_augmented_answer`; current post-MVP
   Alpha adds bounded `tool_react_loop` behind the loop-strategy boundary.
-- Near-term priority is PM-08a through PM-08k: backend auto-selection, API
+- Near-term priority is PM-08a through PM-08l: backend auto-selection, API
   lifecycle wiring, CLI mode controls, CLI tool/RAG/approval readiness,
   direct-answer hardening, request-quality gates and Codex-like interactive CLI
   shell UX, followed by canonical Jarvis runtime startup and PM-08k
-  agentic-loop-first request handling. PM-09 voice gateway foundation starts
-  only after that text surface is usable, operationally repeatable and
-  routing-safe.
+  agentic-loop-first request handling plus the PM-08l pre-PM09 hardening gate.
+  PM-09 voice gateway foundation starts only after that text surface is usable,
+  operationally repeatable, routing-safe and proven through DB-backed
+  transcript-like API/e2e turns.
   LangGraph stays a follow-up for later durable workflows.
 - Planner-executor and unbounded autonomous ReAct behavior remain future scope.
 - Future loop strategies must declare budgets, capabilities, policy hooks, failure semantics and emitted events.

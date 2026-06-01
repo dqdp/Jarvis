@@ -359,13 +359,16 @@ PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
 PM-08k Agentic loop-first request handling cleanup
+PM-08l Pre-PM09 hardening gate
 ```
 
 PM-08a through PM-08h describe the selector/classifier-era implementation path.
 PM-08k supersedes that direction for production natural-language request
 handling: the bounded agent loop is the default, and classifier/threshold
 artifacts are historical, evaluation-only or quarantined follow-up material
-unless an updated ADR explicitly changes the architecture.
+unless an updated ADR explicitly changes the architecture. PM-08l then proves
+that the PM-08k path is ready for voice through DB-backed transcript-like API/e2e
+turns and startup invariants.
 
 PM-08a:
 
@@ -563,6 +566,9 @@ as the pre-voice dogfood surface, and PM-08j makes that surface operationally
 repeatable through canonical startup commands. PM-08k then replaces
 classifier-first routing with agentic-loop-first request handling so voice does
 not inherit a separate semantic router or threshold-tuned classifier path.
+PM-08l then runs the final pre-PM09 hardening gate: transcript-like API turns,
+tool-gateway parity and DB-enabled verification must be green before voice code
+starts.
 ```
 
 Work:
@@ -574,7 +580,7 @@ Work:
   gateway can later use local engines, local libraries or external API adapters;
 - add fake STT/TTS adapters for CI;
 - submit transcripts through the same API/runtime path as typed input;
-- use the PM-08k agentic loop path for spoken turns after PM-08k readiness;
+- use the PM-08k agentic loop path for spoken turns after PM-08l readiness;
 - stream assistant text through existing runtime events before TTS output;
 - disable raw audio storage by default;
 - keep external speech API and cloud realtime providers disabled until explicit

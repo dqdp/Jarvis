@@ -13,11 +13,15 @@ from assistant_core.domain.loops import (
 )
 from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
+from assistant_core.ports.approvals import ApprovalStorePort
 from assistant_core.ports.context_assembler import ContextAssemblerPort
 from assistant_core.ports.conversation_store import ConversationStorePort
 from assistant_core.ports.event_log import EventLogPort
 from assistant_core.ports.model_router import ModelRouterPort
+from assistant_core.ports.tools import ToolGatewayPort
 from assistant_core.runtime.loops import LoopStrategyRegistry, MemoryAugmentedAnswerLoop
+from assistant_core.runtime.loops.tool_react import ToolReactLoop
+from assistant_core.runtime.noop_tool_gateway import NoopToolGateway
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,18 @@ class RuntimeTurnCommand:
     working_directory: str | None = None
     permission_mode: PermissionMode | str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if (
+            self.loop_strategy == LoopStrategyName.TOOL_REACT_LOOP.value
+            and "agent_tool_policy" not in self.metadata
+        ):
+            metadata = {
+                **self.metadata,
+                "agent_tool_policy": "disabled",
+                "agent_allowed_tool_count": 0,
+            }
+            object.__setattr__(self, "metadata", metadata)
 
 
 @dataclass(frozen=True)
@@ -67,17 +83,17 @@ class AgentRuntime:
         event_log: EventLogPort,
         settings: Settings,
         loop_strategy_registry=None,
+        tool_gateway: ToolGatewayPort | None = None,
+        approval_store: ApprovalStorePort | None = None,
     ) -> None:
         self._settings = settings
-        self._loop_strategy_registry = loop_strategy_registry or LoopStrategyRegistry(
-            [
-                MemoryAugmentedAnswerLoop(
-                    conversation_store=conversation_store,
-                    context_assembler=context_assembler,
-                    model_router=model_router,
-                    event_log=event_log,
-                ),
-            ],
+        self._loop_strategy_registry = loop_strategy_registry or _default_loop_strategy_registry(
+            conversation_store=conversation_store,
+            context_assembler=context_assembler,
+            model_router=model_router,
+            event_log=event_log,
+            tool_gateway=tool_gateway,
+            approval_store=approval_store,
         )
 
     async def run_turn(self, command: RuntimeTurnCommand) -> RuntimeTurnResult:
@@ -127,3 +143,33 @@ class AgentRuntime:
             permission_mode=command.permission_mode,
             metadata=command.metadata,
         )
+
+
+def _default_loop_strategy_registry(
+    *,
+    conversation_store: ConversationStorePort,
+    context_assembler: ContextAssemblerPort,
+    model_router: ModelRouterPort,
+    event_log: EventLogPort,
+    tool_gateway: ToolGatewayPort | None,
+    approval_store: ApprovalStorePort | None,
+) -> LoopStrategyRegistry:
+    gateway = tool_gateway or NoopToolGateway()
+    return LoopStrategyRegistry(
+        [
+            MemoryAugmentedAnswerLoop(
+                conversation_store=conversation_store,
+                context_assembler=context_assembler,
+                model_router=model_router,
+                event_log=event_log,
+            ),
+            ToolReactLoop(
+                conversation_store=conversation_store,
+                context_assembler=context_assembler,
+                model_router=model_router,
+                event_log=event_log,
+                tool_gateway=gateway,
+                approval_store=approval_store,
+            ),
+        ],
+    )

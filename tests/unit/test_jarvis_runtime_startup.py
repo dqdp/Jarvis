@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import importlib.util
 from pathlib import Path
 import sys
 from types import SimpleNamespace
 
 import pytest
+
+from assistant_core.config.settings import ConfigLoader
+from assistant_core.domain.policy import Capability, RiskClass
+from assistant_core.domain.sensitivity import Sensitivity
+from assistant_core.tools.builtin import calculator_tool, daemon_status_tool, datetime_now_tool
+from assistant_core.tools.registry import ToolRegistry
+from assistant_core.tools.shell_read import project_shell_read_tool_from_config
+from assistant_core.tools.system_diagnostics import system_diagnostics_tools_from_config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +51,40 @@ def _config_with_run_dir(runtime, tmp_path):
         port=config.port,
         health_timeout_seconds=config.health_timeout_seconds,
     )
+
+
+def test_runtime_app_validates_request_plan_tools_match_gateway_registry() -> None:
+    from assistant_core.app_factory import _validate_request_plan_tool_surface
+
+    settings = ConfigLoader(PROJECT_ROOT / "config").load("test")
+
+    with pytest.raises(RuntimeError, match="request-plan tool is not registered"):
+        _validate_request_plan_tool_surface(settings, ToolRegistry([]))
+
+
+def test_runtime_app_validates_request_plan_tool_policy_shape_matches_gateway_registry() -> None:
+    from assistant_core.app_factory import _validate_request_plan_tool_surface
+
+    settings = ConfigLoader(PROJECT_ROOT / "config").load("test")
+    adapter = datetime_now_tool()
+    adapter.spec = replace(
+        adapter.spec,
+        capability=Capability.TOOL_SHELL_READ,
+        risk_classes=frozenset({RiskClass.READ_ONLY}),
+        sensitivity_ceiling=Sensitivity.INFRA,
+    )
+    registry = ToolRegistry(
+        [
+            adapter,
+            calculator_tool(),
+            daemon_status_tool(),
+            project_shell_read_tool_from_config(settings.capabilities),
+            *system_diagnostics_tools_from_config(settings.capabilities),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="request-plan tool metadata differs"):
+        _validate_request_plan_tool_surface(settings, registry)
 
 
 def test_jarvis_runtime_defaults_use_canonical_local_paths() -> None:

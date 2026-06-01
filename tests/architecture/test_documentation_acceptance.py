@@ -319,7 +319,7 @@ def test_runtime_substrate_adr_matches_custom_deterministic_mvp() -> None:
     assert "LangGraph is deferred" in adr
 
 
-def test_pm09_docs_gate_on_full_pm08_sequence_through_pm08k() -> None:
+def test_pm09_docs_gate_on_full_pm08_sequence_through_pm08l() -> None:
     docs_text = "\n".join(
         (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
         for relative_path in [
@@ -339,6 +339,7 @@ def test_pm09_docs_gate_on_full_pm08_sequence_through_pm08k() -> None:
         "PM-08i",
         "PM-08j",
         "PM-08k",
+        "PM-08l",
     ]:
         assert slice_name in docs_text
 
@@ -353,6 +354,7 @@ def test_pm09_docs_gate_on_full_pm08_sequence_through_pm08k() -> None:
     assert "dogfood-up" not in docs_text
     assert "PM-08j complete" in docs_text
     assert "PM-08k complete" in docs_text
+    assert "PM-08l complete" in docs_text
 
     assert "ADR-036 Graph runtime adapter" not in docs_text
     assert "ADR-046 Graph runtime adapter" in docs_text
