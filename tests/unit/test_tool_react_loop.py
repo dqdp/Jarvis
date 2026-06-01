@@ -9,6 +9,8 @@ import pytest
 from assistant_core.config.settings import ConfigLoader
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
 from assistant_core.domain.loops import (
+    AgentLoopState,
+    AgentLoopStep,
     LoopBudget,
     LoopExecutionRequest,
     LoopStatus,
@@ -20,6 +22,7 @@ from assistant_core.domain.loops import (
 from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.domain.tools import ToolObservationStatus
+from assistant_core.runtime.loops.failure_policy import LoopFailureDecision
 from assistant_core.runtime.loops.tool_react import TOOL_PROPOSAL_SCHEMA, ToolReactLoop
 
 
@@ -65,6 +68,448 @@ def _tool_plan_metadata(*tool_names: str, policy: str = "available") -> dict:
         "agent_tool_policy": policy,
         "agent_allowed_tool_names": list(tool_names),
     }
+
+
+def test_agent_loop_state_taxonomy_matches_pm08l_contract() -> None:
+    assert [state.value for state in AgentLoopState] == [
+        "idle",
+        "request_started",
+        "context_assembling",
+        "proposing",
+        "tool_validating",
+        "waiting_approval",
+        "tool_running",
+        "observing",
+        "finalizing",
+        "completed",
+        "failed",
+        "cancelled",
+    ]
+    assert [step.value for step in AgentLoopStep] == [
+        "started",
+        "proposal",
+        "tool",
+        "observation",
+        "final",
+        "completed",
+        "failed",
+        "cancelled",
+    ]
+
+
+def test_tool_react_loop_records_pm08l_state_order_for_tool_then_final_answer() -> None:
+    class Gateway:
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            return ToolObservation.empty(
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                sensitivity=request.sensitivity,
+                started_at=now,
+                completed_at=now,
+            )
+
+    async def scenario():
+        event_log = FakeEventLog()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredAndChatRouter(
+                [
+                    {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                    {"action": "final_answer"},
+                ],
+                chat_response="done",
+            ),
+            event_log=event_log,
+            tool_gateway=Gateway(),
+        )
+        result = await loop.run_turn(_request(metadata=_tool_plan_metadata("datetime.now")))
+        return result, event_log.events
+
+    result, events = asyncio.run(scenario())
+
+    assert result.response_text == "done"
+    significant = [
+        (
+            event.event_type.value,
+            event.payload.get("agent_step"),
+            event.payload.get("agent_state"),
+            event.payload.get("purpose"),
+            event.payload.get("action"),
+        )
+        for event in events
+        if event.event_type
+        in {
+            EventType.ASSISTANT_MESSAGE_CREATED,
+            EventType.AGENT_LOOP_STARTED,
+            EventType.CONTEXT_ASSEMBLY_STARTED,
+            EventType.AGENT_STEP_STARTED,
+            EventType.AGENT_STEP_COMPLETED,
+            EventType.AGENT_LOOP_COMPLETED,
+            EventType.MODEL_REQUEST_CREATED,
+            EventType.MODEL_RESPONSE_RECEIVED,
+        }
+        and event.payload.get("agent_state") is not None
+    ]
+    assert _first_state_index(significant, AgentLoopState.CONTEXT_ASSEMBLING) < _first_state_index(
+        significant,
+        AgentLoopState.PROPOSING,
+    )
+    assert _first_state_index(significant, AgentLoopState.PROPOSING) < _first_state_index(
+        significant,
+        AgentLoopState.TOOL_VALIDATING,
+    )
+    assert (
+        EventType.AGENT_STEP_STARTED.value,
+        AgentLoopStep.TOOL.value,
+        AgentLoopState.TOOL_VALIDATING.value,
+        None,
+        "tool_call",
+    ) in significant
+    assert (
+        EventType.AGENT_STEP_STARTED.value,
+        AgentLoopStep.TOOL.value,
+        AgentLoopState.TOOL_RUNNING.value,
+        None,
+        "tool_call",
+    ) in significant
+    state_order = [item[2] for item in significant]
+    assert state_order.index(AgentLoopState.TOOL_VALIDATING.value) < state_order.index(
+        AgentLoopState.TOOL_RUNNING.value,
+    )
+    assert state_order.index(AgentLoopState.TOOL_RUNNING.value) < state_order.index(
+        AgentLoopState.OBSERVING.value,
+    )
+    assert _first_event_index(
+        significant,
+        event_type=EventType.MODEL_REQUEST_CREATED,
+        state=AgentLoopState.FINALIZING,
+    ) < _first_event_index(significant, event_type=EventType.ASSISTANT_MESSAGE_CREATED)
+    assert state_order[-1] == AgentLoopState.COMPLETED.value
+
+
+
+def _first_state_index(significant: list[tuple], state: AgentLoopState) -> int:
+    return next(
+        index
+        for index, item in enumerate(significant)
+        if item[2] == state.value
+    )
+
+
+
+def _first_event_index(
+    significant: list[tuple],
+    *,
+    event_type: EventType,
+    state: AgentLoopState | None = None,
+) -> int:
+    return next(
+        index
+        for index, item in enumerate(significant)
+        if item[0] == event_type.value and (state is None or item[2] == state.value)
+    )
+
+
+def test_tool_react_loop_records_waiting_approval_state() -> None:
+    class ApprovalRequiredGateway:
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            return ToolObservation.empty(
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.APPROVAL_REQUIRED,
+                sensitivity=request.sensitivity,
+                started_at=now,
+                completed_at=now,
+                metadata={"approval_id": "approval-1"},
+                error={"code": "approval_required", "message": "approval required"},
+            )
+
+    async def scenario():
+        event_log = FakeEventLog()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredRouter(
+                [{"action": "tool_call", "tool_name": "datetime.now", "arguments": {}}],
+            ),
+            event_log=event_log,
+            tool_gateway=ApprovalRequiredGateway(),
+        )
+        with pytest.raises(RuntimeError, match="tool_observation_approval_required"):
+            await loop.run_turn(_request(metadata=_tool_plan_metadata("datetime.now")))
+        return event_log.events
+
+    events = asyncio.run(scenario())
+
+    assert any(
+        event.event_type == EventType.AGENT_STEP_STARTED
+        and event.payload.get("agent_step") == AgentLoopStep.TOOL.value
+        and event.payload.get("agent_state") == AgentLoopState.WAITING_APPROVAL.value
+        and event.payload.get("tool_name") == "datetime.now"
+        for event in events
+    )
+
+
+
+def test_tool_react_loop_records_tool_running_again_after_granted_approval() -> None:
+    class Approval:
+        status = type("Status", (), {"value": "granted"})()
+
+    class ApprovalStore:
+        async def expire_stale(self, *, now):
+            return []
+
+        async def get_approval(self, approval_id: str):
+            assert approval_id == "approval-1"
+            return Approval()
+
+        async def cancel_approval(self, approval_id: str, *, actor_id: str | None, reason: str):
+            raise AssertionError("granted approval must not be cancelled")
+
+    class RecordingConversationStore(FakeConversationStore):
+        def __init__(self, trace: list[str]) -> None:
+            self.trace = trace
+
+        async def update_assistant_request_status(self, command):
+            self.trace.append(f"status:{command.status.value}")
+
+    class TracingEventLog(FakeEventLog):
+        def __init__(self, trace: list[str]) -> None:
+            super().__init__()
+            self.trace = trace
+
+        async def append(self, event):
+            state = event.payload.get("agent_state")
+            if state is not None:
+                self.trace.append(f"state:{state}")
+            return await super().append(event)
+
+    class ApprovalGateway:
+        def __init__(self) -> None:
+            self.approval_ids = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.approval_ids.append(request.approval_id)
+            now = datetime.now(UTC)
+            if request.approval_id is None:
+                return ToolObservation.empty(
+                    tool_name=request.tool_name,
+                    status=ToolObservationStatus.APPROVAL_REQUIRED,
+                    sensitivity=request.sensitivity,
+                    started_at=now,
+                    completed_at=now,
+                    metadata={"approval_id": "approval-1"},
+                    error={"code": "approval_required", "message": "approval required"},
+                )
+            return ToolObservation.empty(
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                sensitivity=request.sensitivity,
+                started_at=now,
+                completed_at=now,
+            )
+
+    async def scenario():
+        trace: list[str] = []
+        event_log = TracingEventLog(trace)
+        gateway = ApprovalGateway()
+        loop = ToolReactLoop(
+            conversation_store=RecordingConversationStore(trace),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredAndChatRouter(
+                [
+                    {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                    {"action": "final_answer"},
+                ],
+                chat_response="approved",
+            ),
+            event_log=event_log,
+            tool_gateway=gateway,
+            approval_store=ApprovalStore(),
+        )
+        result = await loop.run_turn(_request(metadata=_tool_plan_metadata("datetime.now")))
+        states = [
+            event.payload.get("agent_state")
+            for event in event_log.events
+            if event.event_type in {EventType.AGENT_STEP_STARTED, EventType.AGENT_STEP_COMPLETED}
+            and event.payload.get("agent_step") in {AgentLoopStep.TOOL.value, AgentLoopStep.OBSERVATION.value}
+        ]
+        return result, gateway.approval_ids, states, trace
+
+    result, approval_ids, states, trace = asyncio.run(scenario())
+
+    assert result.response_text == "approved"
+    assert approval_ids == [None, "approval-1"]
+    assert trace.index("status:waiting_approval") < trace.index("state:waiting_approval")
+    assert states == [
+        AgentLoopState.TOOL_VALIDATING.value,
+        AgentLoopState.TOOL_RUNNING.value,
+        AgentLoopState.WAITING_APPROVAL.value,
+        AgentLoopState.TOOL_RUNNING.value,
+        AgentLoopState.OBSERVING.value,
+    ]
+
+
+def test_tool_react_loop_tools_disabled_uses_final_answer_context_path() -> None:
+    class PurposeContextAssembler(FakeContextAssembler):
+        def __init__(self) -> None:
+            self.purposes: list[str] = []
+
+        async def assemble(self, request):
+            self.purposes.append(request.purpose)
+            return await super().assemble(request)
+
+    async def scenario():
+        assembler = PurposeContextAssembler()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=assembler,
+            model_router=FakeChatRouter("plain answer"),
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        result = await loop.run_turn(_request(metadata={"agent_tool_policy": "disabled"}))
+        return result, assembler.purposes
+
+    result, purposes = asyncio.run(scenario())
+
+    assert result.response_text == "plain answer"
+    assert purposes == ["final_answer"]
+
+
+def test_tool_react_loop_step_failures_use_loop_failure_policy() -> None:
+    class RecordingConversationStore(FakeConversationStore):
+        def __init__(self) -> None:
+            self.status_commands = []
+
+        async def update_assistant_request_status(self, command):
+            self.status_commands.append(command)
+
+    class CustomFailurePolicy:
+        def __init__(self) -> None:
+            self.exceptions: list[Exception] = []
+
+        def decide(self, exc: Exception) -> LoopFailureDecision:
+            self.exceptions.append(exc)
+            return LoopFailureDecision(
+                error_code="custom_failure_code",
+                error_message="custom controlled failure",
+            )
+
+    async def scenario():
+        store = RecordingConversationStore()
+        event_log = FakeEventLog()
+        failure_policy = CustomFailurePolicy()
+        loop = ToolReactLoop(
+            conversation_store=store,
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredRouter(
+                [{"action": "tool_call", "tool_name": "daemon.status", "arguments": {}}],
+            ),
+            event_log=event_log,
+            tool_gateway=object(),
+            failure_policy=failure_policy,
+        )
+        with pytest.raises(RuntimeError, match="tool_not_allowed_by_request_plan"):
+            await loop.run_turn(_request(metadata=_tool_plan_metadata("datetime.now")))
+        failed_event = next(
+            event
+            for event in event_log.events
+            if event.event_type == EventType.REQUEST_PROCESSING_FAILED
+        )
+        return store.status_commands, failed_event, failure_policy.exceptions
+
+    status_commands, failed_event, exceptions = asyncio.run(scenario())
+
+    assert [type(exc).__name__ for exc in exceptions] == ["RuntimeError"]
+    assert status_commands[-1].error_code == "custom_failure_code"
+    assert status_commands[-1].error_message == "custom controlled failure"
+    assert failed_event.payload["error"]["code"] == "custom_failure_code"
+    assert failed_event.payload["error"]["message"] == "custom controlled failure"
+
+
+def test_tool_react_loop_default_failure_policy_sanitizes_unknown_exception_text() -> None:
+    class LeakyContextAssembler(FakeContextAssembler):
+        async def assemble(self, request):
+            raise RuntimeError("tool_observation_secret prompt token /tmp/private/key")
+
+    class RecordingConversationStore(FakeConversationStore):
+        def __init__(self) -> None:
+            self.status_commands = []
+
+        async def update_assistant_request_status(self, command):
+            self.status_commands.append(command)
+
+    async def scenario():
+        store = RecordingConversationStore()
+        event_log = FakeEventLog()
+        loop = ToolReactLoop(
+            conversation_store=store,
+            context_assembler=LeakyContextAssembler(),
+            model_router=FakeChatRouter("unused"),
+            event_log=event_log,
+            tool_gateway=object(),
+        )
+        with pytest.raises(RuntimeError, match="tool_observation_secret prompt token"):
+            await loop.run_turn(_request(metadata={"agent_tool_policy": "disabled"}))
+        failed_event = next(
+            event
+            for event in event_log.events
+            if event.event_type == EventType.REQUEST_PROCESSING_FAILED
+        )
+        return store.status_commands, failed_event
+
+    status_commands, failed_event = asyncio.run(scenario())
+
+    assert status_commands[-1].error_code == "runtime_error"
+    assert "secret" not in status_commands[-1].error_code
+    assert failed_event.payload["error"]["code"] == "runtime_error"
+    assert "secret" not in repr(failed_event.payload["error"])
+
+
+def test_tool_react_loop_final_chat_failure_records_attempted_model_call() -> None:
+    class FailingChatRouter(FakeChatRouter):
+        async def chat(self, request):
+            self.chat_calls += 1
+            raise RuntimeError("final chat failed")
+
+    async def scenario():
+        event_log = FakeEventLog()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FailingChatRouter("unused"),
+            event_log=event_log,
+            tool_gateway=object(),
+        )
+        with pytest.raises(RuntimeError, match="final chat failed"):
+            await loop.run_turn(_request(metadata={"agent_tool_policy": "disabled"}))
+        failed_event = next(
+            event for event in event_log.events if event.event_type == EventType.AGENT_LOOP_FAILED
+        )
+        return failed_event
+
+    failed_event = asyncio.run(scenario())
+
+    assert failed_event.payload["used_model_calls"] == 1
+    assert failed_event.payload["context_manifest_refs"] == ["manifest-tool-react"]
 
 
 def test_tool_react_loop_requires_toolgateway() -> None:
@@ -616,6 +1061,47 @@ def test_tool_react_loop_stops_on_max_tool_calls() -> None:
 
     with pytest.raises(RuntimeError):
         loop.ensure_tool_budget(used_tool_calls=1, budget=replace(_budget(), max_tool_calls=1))
+
+
+
+def test_tool_react_loop_does_not_record_tool_running_when_tool_budget_blocks_execution() -> None:
+    class Gateway:
+        invoked = False
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.invoked = True
+            raise AssertionError("tool gateway must not be invoked after budget failure")
+
+    async def scenario():
+        gateway = Gateway()
+        event_log = FakeEventLog()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredRouter(
+                [{"action": "tool_call", "tool_name": "datetime.now", "arguments": {}}],
+            ),
+            event_log=event_log,
+            tool_gateway=gateway,
+        )
+        with pytest.raises(RuntimeError, match="max_tool_calls_exceeded"):
+            await loop.run_turn(
+                _request(
+                    budget=replace(_budget(), max_tool_calls=0),
+                    metadata=_tool_plan_metadata("datetime.now", policy="required"),
+                ),
+            )
+        states = [event.payload.get("agent_state") for event in event_log.events]
+        return gateway.invoked, states
+
+    invoked, states = asyncio.run(scenario())
+
+    assert invoked is False
+    assert AgentLoopState.TOOL_VALIDATING.value in states
+    assert AgentLoopState.TOOL_RUNNING.value not in states
 
 
 def test_tool_react_loop_does_not_downlabel_tool_call_sensitivity() -> None:

@@ -9,10 +9,18 @@ from assistant_core.domain.tools import ToolCallRequest, ToolObservationStatus
 
 
 class ToolProposalExecutor:
-    def __init__(self, *, tool_gateway, conversation_store, approval_waiter=None) -> None:
+    def __init__(
+        self,
+        *,
+        tool_gateway,
+        conversation_store,
+        approval_waiter=None,
+        state_recorder=None,
+    ) -> None:
         self._tool_gateway = tool_gateway
         self._conversation_store = conversation_store
         self._approval_waiter = approval_waiter
+        self._state_recorder = state_recorder
 
     async def execute(
         self,
@@ -23,10 +31,18 @@ class ToolProposalExecutor:
         causation_event_id: str,
         used_tool_calls: int,
         loop_deadline: float,
+        step_index: int | None = None,
     ) -> ToolObservationRef:
         if proposal.tool_name is None:
             raise ToolProposalParseError("tool_call requires tool_name")
         _ensure_tool_budget(used_tool_calls=used_tool_calls, request=request)
+        await self._record_tool_running(
+            request=request,
+            proposal=proposal,
+            step_id=step_id,
+            step_index=step_index,
+            causation_event_id=causation_event_id,
+        )
         observation = await self._invoke_gateway(
             request,
             proposal,
@@ -38,15 +54,32 @@ class ToolProposalExecutor:
         if observation.status != ToolObservationStatus.APPROVAL_REQUIRED:
             return ToolObservationRef.from_observation(observation)
 
+        observation_ref = ToolObservationRef.from_observation(observation)
         approval_id = observation.metadata.get("approval_id")
         if approval_id is None or self._approval_waiter is None:
-            return ToolObservationRef.from_observation(observation)
+            await self._record_waiting_approval(
+                request=request,
+                proposal=proposal,
+                step_id=step_id,
+                step_index=step_index,
+                causation_event_id=causation_event_id,
+                observation_ref=observation_ref,
+            )
+            return observation_ref
 
         await self._conversation_store.update_assistant_request_status(
             UpdateAssistantRequestStatusCommand(
                 request_id=request.request_id,
                 status=RequestStatus.WAITING_APPROVAL,
             ),
+        )
+        await self._record_waiting_approval(
+            request=request,
+            proposal=proposal,
+            step_id=step_id,
+            step_index=step_index,
+            causation_event_id=causation_event_id,
+            observation_ref=observation_ref,
         )
         await self._approval_waiter.wait(
             approval_id,
@@ -59,6 +92,13 @@ class ToolProposalExecutor:
                 status=RequestStatus.RUNNING,
             ),
         )
+        await self._record_tool_running(
+            request=request,
+            proposal=proposal,
+            step_id=step_id,
+            step_index=step_index,
+            causation_event_id=causation_event_id,
+        )
         observation = await self._invoke_gateway(
             request,
             proposal,
@@ -68,6 +108,48 @@ class ToolProposalExecutor:
             loop_deadline=loop_deadline,
         )
         return ToolObservationRef.from_observation(observation)
+
+    async def _record_waiting_approval(
+        self,
+        *,
+        request: LoopExecutionRequest,
+        proposal: ToolProposal,
+        step_id: str,
+        step_index: int | None,
+        causation_event_id: str,
+        observation_ref: ToolObservationRef,
+    ) -> None:
+        if self._state_recorder is None:
+            return
+        await self._state_recorder(
+            request=request,
+            proposal=proposal,
+            step_id=step_id,
+            step_index=step_index,
+            causation_event_id=causation_event_id,
+            state="waiting_approval",
+            observation_ref=observation_ref,
+        )
+
+    async def _record_tool_running(
+        self,
+        *,
+        request: LoopExecutionRequest,
+        proposal: ToolProposal,
+        step_id: str,
+        step_index: int | None,
+        causation_event_id: str,
+    ) -> None:
+        if self._state_recorder is None:
+            return
+        await self._state_recorder(
+            request=request,
+            proposal=proposal,
+            step_id=step_id,
+            step_index=step_index,
+            causation_event_id=causation_event_id,
+            state="tool_running",
+        )
 
     async def _invoke_gateway(
         self,

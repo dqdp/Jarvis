@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 from assistant_core.domain.context import ContextAssemblyRequest
 from assistant_core.domain.conversations import (
-    CompleteAssistantResponseCommand,
     UpdateAssistantRequestStatusCommand,
 )
-from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
+from assistant_core.domain.events import EventEnvelope, EventType
 from assistant_core.domain.loops import (
+    AgentLoopState,
+    AgentLoopStep,
     LoopBudget,
     LoopExecutionRequest,
     LoopExecutionResult,
@@ -23,7 +23,7 @@ from assistant_core.domain.loops import (
     ToolProposalParseError,
     parse_tool_proposal,
 )
-from assistant_core.domain.models import ChatModelRequest, StructuredModelRequest
+from assistant_core.domain.models import StructuredModelRequest
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.domain.tools import ToolObservationStatus
@@ -34,6 +34,9 @@ from assistant_core.ports.event_log import EventLogPort
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.ports.model_router import ModelRouterPort
 from assistant_core.ports.tools import ToolGatewayPort
+from assistant_core.runtime.loops.event_recorder import LoopEventRecorder
+from assistant_core.runtime.loops.failure_policy import LoopFailureDecision, LoopFailurePolicy
+from assistant_core.runtime.loops.final_answer import FinalAnswerStep, FinalAnswerStepError
 from assistant_core.runtime.loops.tool_approval import ApprovalWaiter
 from assistant_core.runtime.loops.tool_proposal_executor import ToolProposalExecutor
 from assistant_core.runtime.request_streaming import public_stream_data
@@ -74,6 +77,7 @@ class ToolReactLoop:
         event_log: EventLogPort,
         tool_gateway: ToolGatewayPort | None,
         approval_store: ApprovalStorePort | None = None,
+        failure_policy: Any | None = None,
     ) -> None:
         if tool_gateway is None:
             raise ValueError("tool_gateway is required")
@@ -81,12 +85,24 @@ class ToolReactLoop:
         self._context_assembler = context_assembler
         self._model_router = model_router
         self._event_log = event_log
+        self._event_recorder = LoopEventRecorder(
+            event_log=event_log,
+            source_component="tool_react_loop",
+        )
         self._tool_gateway = tool_gateway
         self._approval_store = approval_store
+        self._failure_policy = failure_policy or LoopFailurePolicy()
         self._proposal_executor = ToolProposalExecutor(
             tool_gateway=tool_gateway,
             conversation_store=conversation_store,
             approval_waiter=ApprovalWaiter(approval_store) if approval_store is not None else None,
+            state_recorder=self._record_tool_state,
+        )
+        self._final_answer_step = FinalAnswerStep(
+            conversation_store=conversation_store,
+            context_assembler=context_assembler,
+            model_router=model_router,
+            event_recorder=self._event_recorder,
         )
 
     def validate_budget(self, budget: LoopBudget) -> None:
@@ -111,6 +127,8 @@ class ToolReactLoop:
             EventType.REQUEST_PROCESSING_STARTED,
             request,
             payload={},
+            state=AgentLoopState.REQUEST_STARTED,
+            step=AgentLoopStep.STARTED,
         )
         loop_started = await self._append_event(
             EventType.AGENT_LOOP_STARTED,
@@ -120,6 +138,8 @@ class ToolReactLoop:
                 "budget": _budget_payload(request.budget),
             },
             causation_id=request_started.event_id,
+            state=AgentLoopState.REQUEST_STARTED,
+            step=AgentLoopStep.STARTED,
         )
 
         used_model_calls = 0
@@ -146,13 +166,35 @@ class ToolReactLoop:
                     "used_tool_calls": used_tool_calls,
                 },
                 causation_id=loop_started.event_id,
+                step=AgentLoopStep.STARTED,
             )
             try:
+                if _should_use_final_chat_without_proposal(
+                    request_plan,
+                    used_tool_calls=used_tool_calls,
+                    budget=request.budget,
+                ):
+                    return await self._final_answer_step.run(
+                        request,
+                        step_started=step_started,
+                        used_model_calls=used_model_calls,
+                        used_tool_calls=used_tool_calls,
+                        context_manifest_refs=context_manifest_refs,
+                        tool_observation_refs=tool_observation_refs,
+                        loop_deadline=loop_deadline,
+                    )
+
                 context_started = await self._append_event(
                     EventType.CONTEXT_ASSEMBLY_STARTED,
                     request,
-                    payload={"step_id": step_id, "step_index": step_index},
+                    payload={
+                        "step_id": step_id,
+                        "step_index": step_index,
+                        "purpose": "tool_proposal",
+                    },
                     causation_id=step_started.event_id,
+                    state=AgentLoopState.CONTEXT_ASSEMBLING,
+                    step=AgentLoopStep.PROPOSAL,
                 )
                 context = await asyncio.wait_for(
                     self._context_assembler.assemble(
@@ -170,17 +212,9 @@ class ToolReactLoop:
                             purpose="tool_proposal",
                             permission_mode=request.permission_mode,
                             tool_observation_refs=tuple(tool_observation_refs),
-                            output_contract=(
-                                None
-                                if _should_use_final_chat_without_proposal(
-                                    request_plan,
-                                    used_tool_calls=used_tool_calls,
-                                    budget=request.budget,
-                                )
-                                else _tool_proposal_output_contract(
-                                    request_plan,
-                                    used_tool_calls=used_tool_calls,
-                                )
+                            output_contract=_tool_proposal_output_contract(
+                                request_plan,
+                                used_tool_calls=used_tool_calls,
                             ),
                         ),
                     ),
@@ -192,46 +226,16 @@ class ToolReactLoop:
                 context_manifest_refs.append(context.manifest.context_manifest_id)
                 if used_model_calls >= request.budget.max_model_calls:
                     raise RuntimeError("max_model_calls_exceeded")
+                model_started = await self._append_event(
+                    EventType.MODEL_REQUEST_CREATED,
+                    request,
+                    payload={"context_manifest_id": context.manifest.context_manifest_id},
+                    causation_id=context_started.event_id,
+                    sensitivity=context.manifest.max_sensitivity,
+                    state=AgentLoopState.PROPOSING,
+                    step=AgentLoopStep.PROPOSAL,
+                )
                 used_model_calls += 1
-                if _should_use_final_chat_without_proposal(
-                    request_plan,
-                    used_tool_calls=used_tool_calls,
-                    budget=request.budget,
-                ):
-                    try:
-                        chat_response = await asyncio.wait_for(
-                            self._model_router.chat(
-                                ChatModelRequest(
-                                    profile=request.model_profile,
-                                    messages=context.messages,
-                                    sensitivity=context.manifest.max_sensitivity,
-                                    request_id=request.request_id,
-                                    conversation_id=request.conversation_id,
-                                    context_manifest_id=context.manifest.context_manifest_id,
-                                ),
-                            ),
-                            timeout=_remaining_timeout(
-                                loop_deadline,
-                                request.budget.max_model_call_seconds,
-                            ),
-                        )
-                    except TimeoutError as exc:
-                        if _wall_time_expired(loop_deadline):
-                            raise RuntimeError("max_wall_time_exceeded") from exc
-                        raise
-                    return await self._complete(
-                        request,
-                        ToolProposal(
-                            action="final_answer",
-                            final_answer=chat_response.text,
-                        ),
-                        step_started=step_started,
-                        used_model_calls=used_model_calls,
-                        used_tool_calls=used_tool_calls,
-                        context_manifest_refs=tuple(context_manifest_refs),
-                        tool_observation_refs=tuple(tool_observation_refs),
-                        sensitivity=context.manifest.max_sensitivity,
-                    )
                 try:
                     model_response = await asyncio.wait_for(
                         self._model_router.structured(
@@ -254,6 +258,15 @@ class ToolReactLoop:
                     if _wall_time_expired(loop_deadline):
                         raise RuntimeError("max_wall_time_exceeded") from exc
                     raise
+                await self._append_event(
+                    EventType.MODEL_RESPONSE_RECEIVED,
+                    request,
+                    payload={"context_manifest_id": context.manifest.context_manifest_id},
+                    causation_id=model_started.event_id,
+                    sensitivity=context.manifest.max_sensitivity,
+                    state=AgentLoopState.PROPOSING,
+                    step=AgentLoopStep.PROPOSAL,
+                )
                 try:
                     proposal = parse_tool_proposal(model_response.value)
                 except ToolProposalParseError as exc:
@@ -263,156 +276,43 @@ class ToolReactLoop:
                         used_tool_calls=used_tool_calls,
                     ):
                         raise
-                    if used_model_calls >= request.budget.max_model_calls:
-                        raise RuntimeError("max_model_calls_exceeded") from exc
-                    final_context_started = await self._append_event(
-                        EventType.CONTEXT_ASSEMBLY_STARTED,
-                        request,
-                        payload={
-                            "step_id": step_id,
-                            "step_index": step_index,
-                            "purpose": "final_answer",
-                        },
-                        causation_id=step_started.event_id,
-                    )
-                    final_context = await asyncio.wait_for(
-                        self._context_assembler.assemble(
-                            ContextAssemblyRequest(
-                                request_id=request.request_id,
-                                conversation_id=request.conversation_id,
-                                user_id=request.user_id,
-                                current_user_message=request.user_input,
-                                active_project_namespace=request.active_project_namespace,
-                                loop_strategy=request.strategy_name.value,
-                                model_profile=request.model_profile,
-                                current_message_sensitivity=request.current_message_sensitivity,
-                                current_user_message_id=request.user_message_id,
-                                causation_event_id=final_context_started.event_id,
-                                purpose="final_answer",
-                                permission_mode=request.permission_mode,
-                                tool_observation_refs=tuple(tool_observation_refs),
-                                output_contract=None,
-                            ),
-                        ),
-                        timeout=_remaining_timeout(
-                            loop_deadline,
-                            request.budget.max_context_assembly_seconds,
-                        ),
-                    )
-                    context_manifest_refs.append(final_context.manifest.context_manifest_id)
-                    used_model_calls += 1
                     try:
-                        chat_response = await asyncio.wait_for(
-                            self._model_router.chat(
-                                ChatModelRequest(
-                                    profile=request.model_profile,
-                                    messages=final_context.messages,
-                                    sensitivity=final_context.manifest.max_sensitivity,
-                                    request_id=request.request_id,
-                                    conversation_id=request.conversation_id,
-                                    context_manifest_id=final_context.manifest.context_manifest_id,
-                                ),
-                            ),
-                            timeout=_remaining_timeout(
-                                loop_deadline,
-                                request.budget.max_model_call_seconds,
-                            ),
+                        return await self._final_answer_step.run(
+                            request,
+                            step_started=step_started,
+                            used_model_calls=used_model_calls,
+                            used_tool_calls=used_tool_calls,
+                            context_manifest_refs=context_manifest_refs,
+                            tool_observation_refs=tool_observation_refs,
+                            loop_deadline=loop_deadline,
                         )
-                    except TimeoutError as timeout_exc:
-                        if _wall_time_expired(loop_deadline):
-                            raise RuntimeError("max_wall_time_exceeded") from timeout_exc
+                    except RuntimeError as final_exc:
+                        if str(final_exc) == "max_model_calls_exceeded":
+                            raise RuntimeError("max_model_calls_exceeded") from exc
                         raise
-                    return await self._complete(
-                        request,
-                        ToolProposal(
-                            action="final_answer",
-                            final_answer=chat_response.text,
-                        ),
-                        step_started=step_started,
-                        used_model_calls=used_model_calls,
-                        used_tool_calls=used_tool_calls,
-                        context_manifest_refs=tuple(context_manifest_refs),
-                        tool_observation_refs=tuple(tool_observation_refs),
-                        sensitivity=final_context.manifest.max_sensitivity,
-                    )
                 if proposal.action == "final_answer":
                     _ensure_final_answer_allowed(
                         request_plan,
                         used_tool_calls=used_tool_calls,
                     )
-                    if used_model_calls >= request.budget.max_model_calls:
-                        raise RuntimeError("max_model_calls_exceeded")
-                    final_context_started = await self._append_event(
-                        EventType.CONTEXT_ASSEMBLY_STARTED,
+                    return await self._final_answer_step.run(
                         request,
-                        payload={
-                            "step_id": step_id,
-                            "step_index": step_index,
-                            "purpose": "final_answer",
-                        },
-                        causation_id=step_started.event_id,
-                    )
-                    final_context = await asyncio.wait_for(
-                        self._context_assembler.assemble(
-                            ContextAssemblyRequest(
-                                request_id=request.request_id,
-                                conversation_id=request.conversation_id,
-                                user_id=request.user_id,
-                                current_user_message=request.user_input,
-                                active_project_namespace=request.active_project_namespace,
-                                loop_strategy=request.strategy_name.value,
-                                model_profile=request.model_profile,
-                                current_message_sensitivity=request.current_message_sensitivity,
-                                current_user_message_id=request.user_message_id,
-                                causation_event_id=final_context_started.event_id,
-                                purpose="final_answer",
-                                permission_mode=request.permission_mode,
-                                tool_observation_refs=tuple(tool_observation_refs),
-                                output_contract=None,
-                            ),
-                        ),
-                        timeout=_remaining_timeout(
-                            loop_deadline,
-                            request.budget.max_context_assembly_seconds,
-                        ),
-                    )
-                    context_manifest_refs.append(final_context.manifest.context_manifest_id)
-                    used_model_calls += 1
-                    try:
-                        chat_response = await asyncio.wait_for(
-                            self._model_router.chat(
-                                ChatModelRequest(
-                                    profile=request.model_profile,
-                                    messages=final_context.messages,
-                                    sensitivity=final_context.manifest.max_sensitivity,
-                                    request_id=request.request_id,
-                                    conversation_id=request.conversation_id,
-                                    context_manifest_id=final_context.manifest.context_manifest_id,
-                                ),
-                            ),
-                            timeout=_remaining_timeout(
-                                loop_deadline,
-                                request.budget.max_model_call_seconds,
-                            ),
-                        )
-                    except TimeoutError as exc:
-                        if _wall_time_expired(loop_deadline):
-                            raise RuntimeError("max_wall_time_exceeded") from exc
-                        raise
-                    return await self._complete(
-                        request,
-                        ToolProposal(
-                            action="final_answer",
-                            final_answer=chat_response.text,
-                        ),
                         step_started=step_started,
                         used_model_calls=used_model_calls,
                         used_tool_calls=used_tool_calls,
-                        context_manifest_refs=tuple(context_manifest_refs),
-                        tool_observation_refs=tuple(tool_observation_refs),
-                        sensitivity=final_context.manifest.max_sensitivity,
+                        context_manifest_refs=context_manifest_refs,
+                        tool_observation_refs=tool_observation_refs,
+                        loop_deadline=loop_deadline,
                     )
 
+                await self._record_tool_state(
+                    request=request,
+                    proposal=proposal,
+                    step_id=step_id,
+                    step_index=step_index,
+                    causation_event_id=step_started.event_id,
+                    state=AgentLoopState.TOOL_VALIDATING,
+                )
                 _ensure_tool_call_allowed_by_plan(request_plan, proposal)
                 observation_ref = await self._proposal_executor.execute(
                     request,
@@ -421,6 +321,7 @@ class ToolReactLoop:
                     causation_event_id=step_started.event_id,
                     used_tool_calls=used_tool_calls,
                     loop_deadline=loop_deadline,
+                    step_index=step_index,
                 )
                 used_tool_calls += 1
                 tool_observation_refs.append(observation_ref)
@@ -438,10 +339,17 @@ class ToolReactLoop:
                         "tool_call_id": observation_ref.tool_call_id,
                     },
                     causation_id=step_started.event_id,
+                    state=AgentLoopState.OBSERVING,
+                    step=AgentLoopStep.OBSERVATION,
                 )
                 consecutive_failures = 0
             except Exception as exc:
                 consecutive_failures += 1
+                failure_exc = exc
+                if isinstance(exc, FinalAnswerStepError):
+                    used_model_calls = exc.used_model_calls
+                    failure_exc = exc.cause
+                failure_decision = self._failure_policy.decide(failure_exc)
                 await self._append_event(
                     EventType.AGENT_STEP_FAILED,
                     request,
@@ -449,28 +357,33 @@ class ToolReactLoop:
                         "strategy_name": request.strategy_name.value,
                         "step_id": step_id,
                         "step_index": step_index,
-                        "error_code": _error_code(exc),
-                        "error_type": type(exc).__name__,
+                        "error_code": failure_decision.error_code,
+                        "error_type": type(failure_exc).__name__,
                     },
                     causation_id=step_started.event_id,
+                    state=AgentLoopState.FAILED,
+                    step=AgentLoopStep.FAILED,
                 )
                 await self._fail(
                     request,
-                    exc,
+                    failure_exc,
+                    decision=failure_decision,
                     causation_id=step_started.event_id,
                     used_model_calls=used_model_calls,
                     used_tool_calls=used_tool_calls,
                     context_manifest_refs=tuple(context_manifest_refs),
                     tool_observation_refs=tuple(tool_observation_refs),
                 )
-                raise
+                raise failure_exc
             if consecutive_failures > request.budget.max_consecutive_failures:
                 break
 
         exc = RuntimeError("max_steps_exceeded")
+        failure_decision = self._failure_policy.decide(exc)
         await self._fail(
             request,
             exc,
+            decision=failure_decision,
             causation_id=loop_started.event_id,
             used_model_calls=used_model_calls,
             used_tool_calls=used_tool_calls,
@@ -562,81 +475,37 @@ class ToolReactLoop:
                 ),
             )
 
-    async def _complete(
+    async def _record_tool_state(
         self,
+        *,
         request: LoopExecutionRequest,
         proposal: ToolProposal,
-        *,
-        step_started: EventEnvelope,
-        used_model_calls: int,
-        used_tool_calls: int,
-        context_manifest_refs: tuple[str, ...],
-        tool_observation_refs: tuple[ToolObservationRef, ...],
-        sensitivity: Sensitivity,
-    ) -> LoopExecutionResult:
-        assert proposal.final_answer is not None
-        completion = await self._conversation_store.complete_assistant_response(
-            CompleteAssistantResponseCommand(
-                conversation_id=request.conversation_id,
-                request_id=request.request_id,
-                content=proposal.final_answer,
-                sensitivity=sensitivity,
-            ),
-        )
-        assistant_event = await self._append_event(
-            EventType.ASSISTANT_MESSAGE_CREATED,
-            request,
-            payload={
-                "message_id": completion.message.message_id,
-                "content_hash": completion.message.content_hash,
-            },
-            causation_id=step_started.event_id,
-            sensitivity=sensitivity,
-        )
+        step_id: str,
+        step_index: int | None,
+        causation_event_id: str,
+        state: AgentLoopState | str,
+        observation_ref: ToolObservationRef | None = None,
+    ) -> None:
+        if isinstance(state, str):
+            state = AgentLoopState(state)
+        payload: dict[str, Any] = {
+            "strategy_name": request.strategy_name.value,
+            "step_id": step_id,
+            "action": "tool_call",
+            "tool_name": proposal.tool_name,
+        }
+        if step_index is not None:
+            payload["step_index"] = step_index
+        if observation_ref is not None:
+            payload["tool_call_id"] = observation_ref.tool_call_id
+            payload["observation_status"] = observation_ref.status.value
         await self._append_event(
-            EventType.AGENT_STEP_COMPLETED,
+            EventType.AGENT_STEP_STARTED,
             request,
-            payload={
-                "strategy_name": request.strategy_name.value,
-                "step_id": step_started.payload["step_id"],
-                "step_index": step_started.payload["step_index"],
-                "action": "final_answer",
-            },
-            causation_id=step_started.event_id,
-            sensitivity=sensitivity,
-        )
-        loop_completed = await self._append_event(
-            EventType.AGENT_LOOP_COMPLETED,
-            request,
-            payload={
-                "strategy_name": request.strategy_name.value,
-                "status": LoopStatus.COMPLETED.value,
-                "used_model_calls": used_model_calls,
-                "used_tool_calls": used_tool_calls,
-                "context_manifest_refs": list(context_manifest_refs),
-                "tool_observation_refs": [
-                    ref.tool_call_id for ref in tool_observation_refs
-                ],
-            },
-            causation_id=assistant_event.event_id,
-            sensitivity=sensitivity,
-        )
-        await self._append_event(
-            EventType.REQUEST_PROCESSING_COMPLETED,
-            request,
-            payload={"assistant_message_id": completion.message.message_id},
-            causation_id=loop_completed.event_id,
-            sensitivity=sensitivity,
-        )
-        return LoopExecutionResult(
-            status=LoopStatus.COMPLETED,
-            response_text=proposal.final_answer,
-            assistant_message=completion.message,
-            used_model_calls=used_model_calls,
-            used_tool_calls=used_tool_calls,
-            context_manifest_refs=context_manifest_refs,
-            tool_observation_refs=tool_observation_refs,
-            degraded=False,
+            payload=payload,
+            causation_id=causation_event_id,
+            state=state,
+            step=AgentLoopStep.TOOL,
         )
 
     async def _fail(
@@ -644,6 +513,7 @@ class ToolReactLoop:
         request: LoopExecutionRequest,
         exc: Exception,
         *,
+        decision: LoopFailureDecision,
         causation_id: str | None,
         used_model_calls: int,
         used_tool_calls: int,
@@ -654,8 +524,8 @@ class ToolReactLoop:
             UpdateAssistantRequestStatusCommand(
                 request_id=request.request_id,
                 status=RequestStatus.FAILED,
-                error_code=_error_code(exc),
-                error_message="tool loop failed",
+                error_code=decision.error_code,
+                error_message=decision.error_message,
             ),
         )
         loop_failed = await self._append_event(
@@ -664,7 +534,7 @@ class ToolReactLoop:
             payload={
                 "strategy_name": request.strategy_name.value,
                 "status": LoopStatus.FAILED.value,
-                "error_code": _error_code(exc),
+                "error_code": decision.error_code,
                 "error_type": type(exc).__name__,
                 "used_model_calls": used_model_calls,
                 "used_tool_calls": used_tool_calls,
@@ -674,21 +544,25 @@ class ToolReactLoop:
                 ],
             },
             causation_id=causation_id,
+            state=AgentLoopState.FAILED,
+            step=AgentLoopStep.FAILED,
         )
         await self._append_event(
             EventType.REQUEST_PROCESSING_FAILED,
             request,
             payload={
                 "error_type": type(exc).__name__,
-                "error_code": _error_code(exc),
+                "error_code": decision.error_code,
                 "error": {
-                    "code": _error_code(exc),
-                    "message": "tool loop failed",
+                    "code": decision.error_code,
+                    "message": decision.error_message,
                     "request_id": request.request_id,
-                    "details": {},
+                    "details": decision.details,
                 },
             },
             causation_id=loop_failed.event_id,
+            state=AgentLoopState.FAILED,
+            step=AgentLoopStep.FAILED,
         )
 
     async def _append_event(
@@ -699,31 +573,17 @@ class ToolReactLoop:
         payload: dict[str, Any],
         causation_id: str | None = None,
         sensitivity: Sensitivity = Sensitivity.PROJECT,
+        state: AgentLoopState | None = None,
+        step: AgentLoopStep | None = None,
     ) -> EventEnvelope:
-        now = datetime.now(UTC)
-        return await self._event_log.append(
-            EventEnvelope(
-                event_id=str(uuid4()),
-                event_seq=0,
-                event_type=event_type,
-                event_version=1,
-                occurred_at=now,
-                recorded_at=now,
-                conversation_id=request.conversation_id,
-                request_id=request.request_id,
-                correlation_id=request.correlation_id or request.request_id,
-                causation_id=causation_id,
-                parent_event_id=None,
-                actor_type=ActorType.SYSTEM,
-                actor_id=None,
-                source_component="tool_react_loop",
-                source_node=None,
-                sensitivity=sensitivity,
-                visibility=EventVisibility.INTERNAL,
-                idempotency_key=None,
-                payload=payload,
-                metadata={},
-            ),
+        return await self._event_recorder.append(
+            event_type,
+            request,
+            payload=payload,
+            causation_id=causation_id,
+            sensitivity=sensitivity,
+            state=state,
+            step=step,
         )
 
 
@@ -880,12 +740,6 @@ def _ensure_tool_call_allowed_by_plan(
             raise ToolProposalParseError("tool_call requires tool_name")
         if allowed is not None and proposal.tool_name not in allowed:
             raise RuntimeError("tool_not_allowed_by_request_plan")
-
-
-def _error_code(exc: Exception) -> str:
-    if isinstance(exc, ToolProposalParseError):
-        return "malformed_tool_proposal"
-    return str(exc) or type(exc).__name__
 
 
 def _failed_stream_payload(

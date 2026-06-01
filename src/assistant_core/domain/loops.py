@@ -26,6 +26,32 @@ class LoopStepStatus(StrEnum):
     FAILED = "failed"
 
 
+class AgentLoopState(StrEnum):
+    IDLE = "idle"
+    REQUEST_STARTED = "request_started"
+    CONTEXT_ASSEMBLING = "context_assembling"
+    PROPOSING = "proposing"
+    TOOL_VALIDATING = "tool_validating"
+    WAITING_APPROVAL = "waiting_approval"
+    TOOL_RUNNING = "tool_running"
+    OBSERVING = "observing"
+    FINALIZING = "finalizing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class AgentLoopStep(StrEnum):
+    STARTED = "started"
+    PROPOSAL = "proposal"
+    TOOL = "tool"
+    OBSERVATION = "observation"
+    FINAL = "final"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class UnknownLoopStrategy(ValueError):
     """Raised when a requested loop strategy is not registered."""
 
