@@ -4451,6 +4451,8 @@ runtime composition:
     ToolGatewayPort path
 
 verification:
+  PM-08l uses five commit gates: contract freeze, state/finalization,
+    auto-tools/recovery, streaming/replay and final pre-PM09
   each PM-08l milestone requires a verification gate and two read-only review
     agents from scratch after tests are green
   PM-09 entry requires the final DB-enabled gates, not only bare pytest:

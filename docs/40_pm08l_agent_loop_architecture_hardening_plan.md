@@ -216,6 +216,16 @@ operability, missing integration/e2e coverage and facade isolation.
 Report P0/P1/P2/P3 with file/line references.
 ```
 
+PM-08l uses five commit gates:
+
+```text
+Milestone 0: contract freeze
+Milestone 1: state machine and final answer unification
+Milestone 2: auto/tools semantics and observation recovery
+Milestone 3: streaming and event semantics
+Milestone 4: final pre-PM09 gate
+```
+
 ## Milestone 0 — Contract Freeze
 
 Goal: align documentation and architecture guardrails around the PM-08l contract
@@ -242,10 +252,10 @@ Gate:
 make test-architecture
 ```
 
-## Milestone 1 — State Machine Extraction
+## Milestone 1 — State Machine and Final Answer Unification
 
-Goal: make loop transitions explicit without changing externally visible
-behavior.
+Goal: make loop transitions explicit and route every final answer through one
+shared finalization path.
 
 Tests first:
 
@@ -253,27 +263,7 @@ Tests first:
   final -> completed`;
 - canonical loop state names match the PM-08l state taxonomy;
 - step failures pass through `LoopFailurePolicy`;
-- the loop does not complete or fail outside the event recorder/failure policy.
-
-Implementation:
-
-- introduce `AgentLoopState` and `AgentLoopStep` domain/runtime-internal types;
-- extract event recording into `LoopEventRecorder`;
-- keep `ToolReactLoop` as the thin orchestrator.
-
-Gate:
-
-```text
-make test-unit
-make test-architecture
-```
-
-## Milestone 2 — Final Answer Unification
-
-Goal: make all final answers pass through one finalization path.
-
-Tests first:
-
+- the loop does not complete or fail outside the event recorder/failure policy;
 - tools disabled uses the same finalizer;
 - structured `final_answer` proposal uses the same finalizer;
 - tool-budget exhausted after completed observations uses the same finalizer;
@@ -283,8 +273,11 @@ Tests first:
 
 Implementation:
 
+- introduce `AgentLoopState` and `AgentLoopStep` domain/runtime-internal types;
+- extract event recording into `LoopEventRecorder`;
 - introduce `FinalAnswerStep`;
 - remove duplicated final-chat branches from the loop;
+- keep `ToolReactLoop` as the thin orchestrator;
 - keep final answers on the main chat model/profile.
 
 Gate:
@@ -296,9 +289,10 @@ make test-golden
 make test-architecture
 ```
 
-## Milestone 3 — Robust Auto Mode
+## Milestone 2 — Auto/Tools Semantics and Observation Recovery
 
-Goal: make ordinary chat resilient when tools are merely available.
+Goal: make ordinary chat resilient when tools are merely available and stop
+treating every non-completed observation as the same generic loop failure.
 
 Tests first:
 
@@ -320,32 +314,7 @@ Tests first:
 - policy denial before the first valid observation fails closed or asks
   clarification;
 - `APPROVAL_REQUIRED` enters `waiting_approval` and does not count as a completed
-  observation.
-
-Implementation:
-
-- make proposal parsing and fallback policy explicit;
-- preserve strict behavior for explicit malformed tool calls and required-tool
-  mode;
-- ensure no deterministic semantic router is introduced.
-
-Gate:
-
-```text
-make test-unit
-make test-contract
-make test-e2e
-make test-golden
-make test-architecture
-```
-
-## Milestone 4 — Tool Observation Recovery
-
-Goal: stop treating every non-completed observation as the same generic loop
-failure.
-
-Tests first:
-
+  observation;
 - denied tool observations produce a controlled terminal state or clarification
   path with a typed reason;
 - unavailable tool observations preserve the tool name, request id and safe
@@ -361,6 +330,10 @@ Tests first:
 
 Implementation:
 
+- make proposal parsing and fallback policy explicit;
+- preserve strict behavior for explicit malformed tool calls and required-tool
+  mode;
+- ensure no deterministic semantic router is introduced;
 - introduce `ToolObservationRecoveryPolicy`;
 - encode `COMPLETED`, `DENIED`, `UNAVAILABLE`, `FAILED`,
   `APPROVAL_REQUIRED`, `APPROVAL_DENIED`, `APPROVAL_EXPIRED` and
@@ -373,10 +346,11 @@ Gate:
 make test-unit
 make test-contract
 make test-e2e
+make test-golden
 make test-architecture
 ```
 
-## Milestone 5 — Streaming and Event Semantics
+## Milestone 3 — Streaming and Event Semantics
 
 Goal: make lifecycle streaming stable enough for CLI and future voice clients.
 
@@ -410,7 +384,7 @@ make test-e2e
 make test-architecture
 ```
 
-## Milestone 6 — Final Pre-PM09 Gate
+## Milestone 4 — Final Pre-PM09 Gate
 
 Goal: prove the hardened loop is ready for voice to sit on top of it.
 
