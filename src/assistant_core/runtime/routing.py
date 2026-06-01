@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from assistant_core.config.settings import Settings
-from assistant_core.domain.loop_selection import (
-    CapabilityCandidate,
-    IntentClassification,
-    IntentFamily,
-)
 from assistant_core.domain.policy import Capability, RiskClass
 from assistant_core.domain.sensitivity import Sensitivity
+
+
+class IntentFamily(StrEnum):
+    SAFE_BUILTIN_TOOL = "safe_builtin_tool"
+    PROJECT_INSPECTION = "project_inspection"
+    SYSTEM_DIAGNOSTICS = "system_diagnostics"
 
 
 @dataclass(frozen=True)
@@ -40,22 +42,11 @@ class RoutingToolDescriptor:
         }
 
 
-@dataclass(frozen=True)
-class DirectScenarioDescriptor:
-    scenario: str
-    tool_names: tuple[str, ...]
-    capabilities: tuple[Capability, ...]
-    intent_family: IntentFamily
-    scope_hint: str | None
-    requires_argument_extractor: str | None = None
-
-
 class CapabilityRoutingRegistry:
     def __init__(
         self,
         descriptors: tuple[RoutingToolDescriptor, ...] | None = None,
         *,
-        direct_scenarios: tuple[DirectScenarioDescriptor, ...] | None = None,
         enabled_tool_names: frozenset[str] | None = None,
     ) -> None:
         descriptors = descriptors or _DEFAULT_TOOL_DESCRIPTORS
@@ -65,7 +56,6 @@ class CapabilityRoutingRegistry:
                 raise ValueError(f"duplicate routing tool name: {descriptor.tool_name}")
             by_name[descriptor.tool_name] = descriptor
         self._descriptors = by_name
-        self._direct_scenarios = direct_scenarios or _DEFAULT_DIRECT_SCENARIOS
         self._enabled_tool_names = enabled_tool_names or frozenset(by_name)
 
     @classmethod
@@ -123,56 +113,6 @@ class CapabilityRoutingRegistry:
         if tool_name not in self._enabled_tool_names:
             return None
         return self._descriptors.get(tool_name)
-
-    def direct_scenarios(self) -> tuple[DirectScenarioDescriptor, ...]:
-        return self._direct_scenarios
-
-    def direct_scenario_for_candidate(
-        self,
-        candidate: CapabilityCandidate,
-    ) -> DirectScenarioDescriptor | None:
-        valid_names = self.valid_tool_names(candidate.capability, candidate.tool_names)
-        for scenario in self._direct_scenarios:
-            if scenario.intent_family is not candidate.intent_family:
-                continue
-            if scenario.scope_hint != candidate.scope_hint:
-                continue
-            if scenario.capabilities != (candidate.capability,):
-                continue
-            if scenario.tool_names == valid_names:
-                return scenario
-        return None
-
-
-def classification_has_registry_direct_scope(
-    classification: IntentClassification,
-    available_tools_summary: tuple[Any, ...],
-) -> bool:
-    registry = CapabilityRoutingRegistry.from_available_tools_summary(available_tools_summary)
-    scenarios = _scenario_set_for_classification(classification, registry)
-    return scenarios is not None
-
-
-def _scenario_set_for_classification(
-    classification: IntentClassification,
-    registry: CapabilityRoutingRegistry,
-) -> tuple[DirectScenarioDescriptor, ...] | None:
-    scenarios = tuple(
-        scenario
-        for candidate in classification.candidate_capabilities
-        if (scenario := registry.direct_scenario_for_candidate(candidate)) is not None
-    )
-    if not scenarios or len(scenarios) != len(classification.candidate_capabilities):
-        return None
-    if len(scenarios) == 1:
-        return scenarios
-    if {scenario.scenario for scenario in scenarios} == {"cpu_overview"} and {
-        tool_name
-        for scenario in scenarios
-        for tool_name in scenario.tool_names
-    } == {"tool.system.read.hardware", "tool.system.read.resources"}:
-        return scenarios
-    return None
 
 
 _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
@@ -279,87 +219,5 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         risk_classes=frozenset({RiskClass.READ_ONLY}),
         sensitivity_ceiling=Sensitivity.INFRA,
         system_family="sensors",
-    ),
-)
-
-
-_DEFAULT_DIRECT_SCENARIOS: tuple[DirectScenarioDescriptor, ...] = (
-    DirectScenarioDescriptor(
-        scenario="current_time",
-        tool_names=("datetime.now",),
-        capabilities=(Capability.TOOL_SAFE,),
-        intent_family=IntentFamily.SAFE_BUILTIN_TOOL,
-        scope_hint=None,
-    ),
-    DirectScenarioDescriptor(
-        scenario="christmas_countdown",
-        tool_names=("datetime.now",),
-        capabilities=(Capability.TOOL_SAFE,),
-        intent_family=IntentFamily.SAFE_BUILTIN_TOOL,
-        scope_hint="christmas_countdown",
-    ),
-    DirectScenarioDescriptor(
-        scenario="sensor_temperature",
-        tool_names=("tool.system.read.sensors",),
-        capabilities=(Capability.TOOL_SYSTEM_READ_SENSORS,),
-        intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-        scope_hint=None,
-    ),
-    DirectScenarioDescriptor(
-        scenario="memory_overview",
-        tool_names=("tool.system.read.resources",),
-        capabilities=(Capability.TOOL_SYSTEM_READ_RESOURCES,),
-        intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-        scope_hint=None,
-    ),
-    DirectScenarioDescriptor(
-        scenario="disk_free",
-        tool_names=("tool.system.read.resources",),
-        capabilities=(Capability.TOOL_SYSTEM_READ_RESOURCES,),
-        intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-        scope_hint="disk_free",
-    ),
-    DirectScenarioDescriptor(
-        scenario="battery_charge",
-        tool_names=("tool.system.read.hardware",),
-        capabilities=(Capability.TOOL_SYSTEM_READ_HARDWARE,),
-        intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-        scope_hint="battery_charge",
-    ),
-    DirectScenarioDescriptor(
-        scenario="os_version",
-        tool_names=("tool.system.read.hardware",),
-        capabilities=(Capability.TOOL_SYSTEM_READ_HARDWARE,),
-        intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-        scope_hint="os_version",
-    ),
-    DirectScenarioDescriptor(
-        scenario="process_name_search",
-        tool_names=("tool.system.read.process",),
-        capabilities=(Capability.TOOL_SYSTEM_READ_PROCESS,),
-        intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-        scope_hint="process_name_search",
-        requires_argument_extractor="process_name_search_pattern",
-    ),
-    DirectScenarioDescriptor(
-        scenario="vpn_status",
-        tool_names=("tool.system.read.network",),
-        capabilities=(Capability.TOOL_SYSTEM_READ_NETWORK,),
-        intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-        scope_hint="vpn_status",
-    ),
-    DirectScenarioDescriptor(
-        scenario="cpu_overview",
-        tool_names=("tool.system.read.hardware",),
-        capabilities=(Capability.TOOL_SYSTEM_READ_HARDWARE,),
-        intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-        scope_hint="cpu_overview",
-    ),
-    DirectScenarioDescriptor(
-        scenario="cpu_overview",
-        tool_names=("tool.system.read.resources",),
-        capabilities=(Capability.TOOL_SYSTEM_READ_RESOURCES,),
-        intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-        scope_hint="cpu_overview",
     ),
 )

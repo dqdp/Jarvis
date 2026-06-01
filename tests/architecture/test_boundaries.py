@@ -423,9 +423,12 @@ def test_request_metadata_does_not_call_tool_adapters() -> None:
 
 def test_request_metadata_does_not_import_intent_classifier_or_loop_selector() -> None:
     imported = _imported_modules(SRC_ROOT / "runtime" / "request_metadata.py")
+    source = (SRC_ROOT / "runtime" / "request_metadata.py").read_text(encoding="utf-8")
 
     assert "assistant_core.ports.intent_classifier" not in imported
     assert "assistant_core.runtime.loop_selection" not in imported
+    assert "intent_classifier" not in source
+    assert "def resolve_loop_strategy" not in source
 
 
 def test_production_runtime_does_not_import_direct_tool_planner() -> None:
@@ -449,68 +452,34 @@ def test_request_metadata_does_not_define_tool_registry_literals() -> None:
     assert "loop_selection_direct_tool_name" not in source
 
 
-def test_loop_selector_does_not_import_direct_tool_planner() -> None:
-    imported = _imported_modules(SRC_ROOT / "runtime" / "loop_selection.py")
+def test_classifier_era_runtime_modules_are_removed() -> None:
+    removed_paths = [
+        SRC_ROOT / "runtime" / "request_resolver.py",
+        SRC_ROOT / "runtime" / "model_intent_classifier.py",
+        SRC_ROOT / "runtime" / "loop_selection.py",
+        SRC_ROOT / "runtime" / "direct_tools.py",
+        SRC_ROOT / "ports" / "intent_classifier.py",
+    ]
 
-    assert "assistant_core.runtime.direct_tools" not in imported
-
-
-def test_direct_tool_planner_does_not_execute_tools() -> None:
-    planner_path = SRC_ROOT / "runtime" / "direct_tools.py"
-    imported = _imported_modules(planner_path)
-    source = planner_path.read_text(encoding="utf-8")
-
-    assert "assistant_core.tools.gateway" not in imported
-    assert "assistant_core.ports.tools" not in imported
-    assert ".invoke(" not in source
+    assert [path.relative_to(PROJECT_ROOT) for path in removed_paths if path.exists()] == []
 
 
-def test_model_intent_classifier_does_not_own_direct_execution_allowlist() -> None:
-    source = (SRC_ROOT / "runtime" / "model_intent_classifier.py").read_text(encoding="utf-8")
+def test_runtime_config_has_no_classifier_thresholds() -> None:
+    settings_source = (SRC_ROOT / "config" / "settings.py").read_text(encoding="utf-8")
+    config_source = (PROJECT_ROOT / "config" / "default.yaml").read_text(encoding="utf-8")
 
-    assert "_DIRECT_SINGLE_CANDIDATES" not in source
-    assert "_DIRECT_CPU_CANDIDATES" not in source
-    assert "tool.system.read.hardware" not in source
-
-
-def test_model_facing_route_schema_does_not_expose_policy_or_tool_execution_fields() -> None:
-    source = (SRC_ROOT / "runtime" / "request_resolver.py").read_text(encoding="utf-8")
-    schema_block = source.split("MODEL_ROUTE_SCHEMA", 1)[1].split("@dataclass", 1)[0]
-
-    forbidden_fields = {
-        "capability",
-        "tool_names",
-        "risk_classes",
-        "fallback_preference",
-        "approval_possible",
-        "direct_tool_plan",
-        "provider_request",
-    }
-
-    assert sorted(field for field in forbidden_fields if field in schema_block) == []
+    assert "LoopSelectionConfig" not in settings_source
+    assert "deterministic_fast_path_threshold" not in settings_source
+    assert "\nloop_selection:" not in config_source
+    assert "deterministic_fast_path_threshold" not in config_source
 
 
-def test_route_registry_depends_on_capability_metadata_not_tool_adapters() -> None:
-    imported = _imported_modules(SRC_ROOT / "runtime" / "request_resolver.py")
+def test_routing_registry_has_no_direct_scenario_catalog() -> None:
+    source = (SRC_ROOT / "runtime" / "routing.py").read_text(encoding="utf-8")
 
-    assert "assistant_core.tools" not in imported
-    assert "assistant_core.ports.tools" not in imported
-    assert "assistant_core.tools.gateway" not in imported
-
-
-def test_model_route_classifier_depends_on_model_router_port_not_provider_adapters() -> None:
-    _assert_no_import_prefixes(
-        [SRC_ROOT / "runtime" / "request_resolver.py"],
-        {
-            "assistant_core.models.local_openai",
-            "assistant_core.models.ollama",
-            "assistant_core.models.fake_provider",
-            "openai",
-            "ollama",
-            "vllm",
-            "httpx",
-        },
-    )
+    assert "DirectScenarioDescriptor" not in source
+    assert "direct_scenario" not in source
+    assert "classification_has_registry_direct_scope" not in source
 
 
 def test_cli_does_not_import_route_registry_or_classifier_implementation() -> None:
@@ -523,15 +492,36 @@ def test_cli_does_not_import_route_registry_or_classifier_implementation() -> No
     )
 
 
-def test_rejected_routing_modules_are_recorded_for_follow_up() -> None:
-    source = (PROJECT_ROOT / "docs" / "37_post_mvp_tdd_slices_plan.md").read_text(
-        encoding="utf-8"
-    )
+def test_classifier_era_unit_tests_do_not_gate_pm09() -> None:
+    removed_tests = [
+        PROJECT_ROOT / "tests" / "unit" / "test_request_resolver.py",
+        PROJECT_ROOT / "tests" / "unit" / "test_model_intent_classifier.py",
+        PROJECT_ROOT / "tests" / "unit" / "test_loop_selection.py",
+        PROJECT_ROOT / "tests" / "unit" / "test_direct_tool_planner.py",
+        PROJECT_ROOT / "tests" / "unit" / "test_intent_routing_corpus.py",
+        PROJECT_ROOT / "tests" / "evaluation" / "test_tool_intent_routing_corpus_eval.py",
+    ]
 
-    assert "remove rejected routing modules follow-up" in source
-    assert "RequestResolver, route registry, model-route parser" in source
-    assert "classifier, threshold, `RequestResolver` and\n`RouteDecision` artifacts" in source
-    assert "They are not a\nPM-09 gate" in source
+    assert [path.relative_to(PROJECT_ROOT) for path in removed_tests if path.exists()] == []
+
+
+def test_classifier_era_fixtures_are_historical_not_pm09_gates() -> None:
+    import json
+
+    fixture_root = PROJECT_ROOT / "tests" / "fixtures" / "intent_routing"
+    pre_voice = json.loads(
+        (fixture_root / "pre_voice_local_model_eval_report.json").read_text(encoding="utf-8")
+    )
+    corpus = json.loads((fixture_root / "tool_intent_corpus.json").read_text(encoding="utf-8"))
+    pre_voice_text = json.dumps(pre_voice, ensure_ascii=False)
+
+    assert pre_voice["historical_only"] is True
+    assert pre_voice["pm09_gate"] is False
+    assert pre_voice["voice_ready_for_pm09"] is None
+    assert "PM-09 voice work starts" not in pre_voice_text
+    assert corpus["historical_only"] is True
+    assert corpus["pm09_gate"] is False
+    assert "historical" in corpus["description"].lower()
 
 
 def test_tool_react_loop_does_not_consume_direct_tool_plan_metadata() -> None:
@@ -681,103 +671,6 @@ def test_memory_augmented_answer_loop_does_not_import_toolgateway() -> None:
         {
             "assistant_core.tools",
             "assistant_core.ports.tools",
-        },
-    )
-
-
-def test_loop_selector_depends_on_intent_classifier_port_not_model_provider() -> None:
-    selector_path = SRC_ROOT / "runtime" / "loop_selection.py"
-    assert selector_path.is_file()
-    imported = _imported_modules(selector_path)
-
-    assert "assistant_core.ports.intent_classifier" in imported
-    _assert_no_import_prefixes(
-        [selector_path],
-        {
-            "assistant_core.models",
-            "assistant_core.ports.model_provider",
-            "assistant_core.ports.model_router",
-            "openai",
-            "ollama",
-            "vllm",
-            "httpx",
-        },
-    )
-
-
-def test_model_backed_intent_classifier_depends_on_model_router_port_not_provider_adapters() -> None:
-    classifier_path = SRC_ROOT / "runtime" / "model_intent_classifier.py"
-    assert classifier_path.is_file()
-    imported = _imported_modules(classifier_path)
-
-    assert "assistant_core.ports.model_router" in imported
-    _assert_no_import_prefixes(
-        [classifier_path],
-        {
-            "assistant_core.models",
-            "assistant_core.ports.model_provider",
-            "assistant_core.tools",
-            "assistant_core.ports.tools",
-            "assistant_core.storage",
-            "openai",
-            "ollama",
-            "vllm",
-            "httpx",
-            "subprocess",
-        },
-    )
-
-
-def test_loop_selector_does_not_import_tool_adapters() -> None:
-    selector_path = SRC_ROOT / "runtime" / "loop_selection.py"
-    assert selector_path.is_file()
-    _assert_no_import_prefixes(
-        [selector_path],
-        {
-            "assistant_core.tools",
-            "assistant_core.ports.tools",
-            "subprocess",
-        },
-    )
-
-
-def test_loop_selector_does_not_import_storage_adapters() -> None:
-    selector_path = SRC_ROOT / "runtime" / "loop_selection.py"
-    assert selector_path.is_file()
-    _assert_no_import_prefixes(
-        [selector_path],
-        {
-            "assistant_core.storage",
-            "sqlalchemy",
-            "pgvector",
-        },
-    )
-
-
-def test_loop_selector_does_not_import_context_assembler_implementation() -> None:
-    selector_path = SRC_ROOT / "runtime" / "loop_selection.py"
-    assert selector_path.is_file()
-    _assert_no_import_prefixes(
-        [selector_path],
-        {
-            "assistant_core.context_assembly",
-            "assistant_core.ports.context_assembler",
-        },
-    )
-
-
-def test_intent_classifier_port_does_not_import_tool_adapters() -> None:
-    port_path = SRC_ROOT / "ports" / "intent_classifier.py"
-    assert port_path.is_file()
-    _assert_no_import_prefixes(
-        [port_path],
-        {
-            "assistant_core.tools",
-            "assistant_core.ports.tools",
-            "assistant_core.models",
-            "openai",
-            "ollama",
-            "vllm",
         },
     )
 

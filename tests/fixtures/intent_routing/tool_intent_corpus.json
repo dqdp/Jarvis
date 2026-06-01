@@ -1,6 +1,9 @@
 {
   "version": 1,
-  "description": "Multilingual corpus for tool-intent routing. CI validates schema and a deterministic/guardrail baseline; opt-in evaluation can run the full corpus against a local model.",
+  "historical_only": true,
+  "pm09_gate": false,
+  "status": "historical_classifier_era_fixture",
+  "description": "Historical multilingual corpus from the classifier-era tool-intent routing path. Retained for postmortem comparison only; PM-08k removes it from PM-09 readiness gates.",
   "cases": [
     {
       "id": "time.ru.001",

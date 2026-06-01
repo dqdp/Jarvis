@@ -45,16 +45,8 @@ def _request_record(*, status: RequestStatus = RequestStatus.RUNNING) -> Assista
             "model_profile": "local_small",
             "loop_strategy": "tool_react_loop",
             "working_directory": "/tmp/jarvis-project",
-            "loop_selection_direct_tool_plan": {
-                "version": 1,
-                "scenario": "current_time",
-                "tool_names": ["datetime.now"],
-                "capabilities": ["tool.safe"],
-                "scope_hint": None,
-                "classification_source": "deterministic",
-                "provenance": ["unit_fixture"],
-                "required_arguments": {},
-            },
+            "agent_tool_policy": "available",
+            "agent_allowed_tool_names": ["datetime.now"],
         },
     )
 
@@ -437,7 +429,7 @@ def test_runtime_turn_command_builder_uses_request_metadata_and_user_message() -
     assert command.model_profile == "local_small"
     assert command.loop_strategy == "tool_react_loop"
     assert command.working_directory == "/tmp/jarvis-project"
-    assert command.metadata["loop_selection_direct_tool_plan"]["tool_names"] == ["datetime.now"]
+    assert command.metadata["agent_allowed_tool_names"] == ["datetime.now"]
 
 
 def test_request_lifecycle_service_marks_failure_and_publishes_terminal_event() -> None:

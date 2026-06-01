@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 
 from assistant_core.config.settings import ConfigLoader
-from assistant_core.domain.loop_selection import IntentFamily
 from assistant_core.domain.policy import Capability
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.runtime.routing import (
     CapabilityRoutingRegistry,
+    IntentFamily,
     RoutingToolDescriptor,
 )
 

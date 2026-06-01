@@ -1,11 +1,13 @@
 {
   "version": 1,
   "slice": "PM-08h",
+  "historical_only": true,
+  "pm09_gate": false,
   "corpus_version": 1,
   "model": "qwen3.5:2b",
-  "status": "not_run_in_sandbox",
-  "voice_ready_for_pm09": false,
-  "blocking_reason": "local_model_eval_not_run",
+  "status": "historical_classifier_era_fixture",
+  "voice_ready_for_pm09": null,
+  "blocking_reason": "historical_classifier_eval_no_longer_blocks_pm09",
   "summary": {
     "evaluated_cases": 0,
     "failure_count": 0,
@@ -15,8 +17,8 @@
   },
   "failures": [],
   "notes": [
-    "CI uses deterministic and fake-router corpus gates only.",
-    "Run JARVIS_RUN_INTENT_ROUTING_CORPUS_EVAL=1 before PM-09 voice work starts to replace this sandbox report with a local-model result.",
-    "PM-08i keeps qwen3.5:2b as the structured default; qwen3.5:0.8b remains a candidate until local evaluation quality is acceptable."
+    "Historical PM-08h classifier-era evidence retained for postmortem comparison only.",
+    "PM-08k replaces classifier-first routing with the bounded agent loop and this report is not a PM-09 readiness gate.",
+    "Do not use this fixture to choose or calibrate a production request classifier."
   ]
 }

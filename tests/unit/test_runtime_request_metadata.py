@@ -478,6 +478,42 @@ def test_calendar_event_request_has_no_pre_router_guess() -> None:
     assert "loop_selection_direct_tool_plan" not in resolution.metadata
 
 
+def test_voice_transcript_uses_same_agent_request_plan_shape() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+
+    async def resolve(content: str):
+        return await runtime_request_metadata(
+            SimpleNamespace(
+                content=content,
+                input_channel="voice_transcript",
+                transcript_id="transcript-1",
+                sensitivity=Sensitivity.PROJECT,
+                loop_strategy=None,
+                model_profile=None,
+                working_directory=str(Path.cwd()),
+            ),
+            settings,
+            request_id="request-1",
+            conversation_id="conversation-1",
+            user_id="user-1",
+            active_project_namespace="project.personal_assistant",
+            working_directory=str(Path.cwd()),
+            policy=ConfigPolicyEngine(settings),
+        )
+
+    typed = asyncio.run(resolve("Сколько времени?"))
+    transcript = asyncio.run(resolve("Джарвис, сколько времени?"))
+
+    assert transcript.metadata["requested_loop_mode"] == typed.metadata["requested_loop_mode"]
+    assert transcript.metadata["selected_loop_strategy"] == typed.metadata["selected_loop_strategy"]
+    assert transcript.metadata["loop_strategy"] == "tool_react_loop"
+    assert transcript.metadata["model_profile"] == "local_main"
+    assert transcript.agent_request_plan.tool_policy is AgentToolPolicy.AVAILABLE
+    assert transcript.agent_request_plan.allowed_tool_names == typed.agent_request_plan.allowed_tool_names
+    assert "loop_selection_direct_tool_plan" not in transcript.metadata
+    assert "loop_selection_classification_source" not in transcript.metadata
+
+
 async def _resolve_tool_metadata(settings):
     return await runtime_request_metadata(
         SimpleNamespace(

@@ -87,9 +87,8 @@ async def runtime_request_metadata(
     working_directory: str | None,
     policy: PolicyPort | None,
     event_log: EventLogPort | None = None,
-    intent_classifier: Any | None = None,
 ) -> RuntimeRequestMetadataResolution:
-    del event_log, intent_classifier
+    del event_log
     routing_registry = CapabilityRoutingRegistry.from_settings(settings)
     try:
         requested_mode = resolve_loop_selection_mode(body.loop_strategy)
@@ -260,17 +259,12 @@ def _agent_loop_decision(request: LoopSelectionRequest) -> LoopSelectionDecision
         requested_mode=request.requested_mode,
         selected_loop_strategy=LoopStrategyName.TOOL_REACT_LOOP,
         selected_model_profile=None,
-        intent_family="unknown",
         reason_code=_agent_loop_reason_code(request.requested_mode),
-        confidence=1.0,
-        candidate_capabilities=(),
         requires_tools=request.requested_mode is LoopSelectionMode.TOOLS,
-        requires_live_state=False,
         policy_outcome=None,
         approval_possible=False,
         fallback_behavior="fail_unavailable",
         decision_status=SelectionDecisionStatus.SELECTED,
-        classification_source="request_plan",
     )
 
 
@@ -412,8 +406,6 @@ def _request_plan_reason_code(decision: LoopSelectionDecision) -> str:
         return "request_plan_tools_unavailable"
     if decision.decision_status is SelectionDecisionStatus.INVALID_OVERRIDE:
         return "request_plan_invalid_override"
-    if decision.decision_status is SelectionDecisionStatus.CLASSIFIER_UNAVAILABLE:
-        return "request_plan_intent_resolver_unavailable"
     return "request_plan_unknown"
 
 
@@ -460,12 +452,8 @@ def _invalid_override_decision(requested_mode: LoopSelectionMode) -> LoopSelecti
         requested_mode=requested_mode,
         selected_loop_strategy=None,
         selected_model_profile=None,
-        intent_family="unknown",
         reason_code="invalid_loop_selection_mode",
-        confidence=1.0,
-        candidate_capabilities=(),
         requires_tools=False,
-        requires_live_state=False,
         policy_outcome=None,
         approval_possible=False,
         fallback_behavior="fail_unavailable",
@@ -555,22 +543,6 @@ def _selected_loop_budget_error(
             "selected_tool_loop_budget_unavailable",
         )
     return None
-
-
-def resolve_loop_strategy(
-    requested: str | None,
-    settings: Settings,
-) -> LoopStrategyName:
-    mode = resolve_loop_selection_mode(requested)
-    if mode is LoopSelectionMode.TOOLS:
-        loop_strategy = LoopStrategyName.TOOL_REACT_LOOP
-    else:
-        loop_strategy = LoopStrategyName.MEMORY_AUGMENTED_ANSWER
-    if loop_strategy.value not in settings.runtime_budgets:
-        raise ValueError("loop strategy is not configured")
-    if loop_strategy is LoopStrategyName.TOOL_REACT_LOOP and not settings.policy.tools_enabled:
-        raise ValueError("tool loop is disabled by policy")
-    return loop_strategy
 
 
 def resolve_model_profile(
@@ -741,8 +713,6 @@ def _loop_selection_event(
 def _selection_error_message(decision: LoopSelectionDecision) -> str:
     if decision.reason_code == "tools_disabled_for_tool_intent":
         return "tool loop is disabled by policy"
-    if decision.decision_status is SelectionDecisionStatus.CLASSIFIER_UNAVAILABLE:
-        return "loop selector is unavailable"
     if decision.decision_status is SelectionDecisionStatus.CLARIFICATION_REQUIRED:
         return "request needs clarification"
     if decision.decision_status is SelectionDecisionStatus.REJECTED_BY_POLICY:
@@ -754,21 +724,3 @@ def _loop_strategy_value(loop_strategy: LoopStrategyName | str | None) -> str | 
     if loop_strategy is None:
         return None
     return loop_strategy.value if isinstance(loop_strategy, LoopStrategyName) else str(loop_strategy)
-
-
-def _policy_outcome_value(outcome: PolicyDecisionOutcome | str | None) -> str | None:
-    if outcome is None:
-        return None
-    return outcome.value if isinstance(outcome, PolicyDecisionOutcome) else str(outcome)
-
-
-def _decision_tool_names(
-    decision: LoopSelectionDecision,
-    routing_registry: CapabilityRoutingRegistry,
-) -> list[str]:
-    names: list[str] = []
-    for candidate in decision.candidate_capabilities:
-        for tool_name in routing_registry.valid_tool_names(candidate.capability, candidate.tool_names):
-            if tool_name not in names:
-                names.append(tool_name)
-    return names
