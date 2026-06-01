@@ -19,7 +19,6 @@ from assistant_core.domain.policy import Capability, PermissionMode, RiskClass
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.runtime.loop_selection import DeterministicIntentClassifier
 from assistant_core.runtime.model_intent_classifier import ModelBackedIntentClassifier
-from assistant_core.runtime.request_resolver import RequestResolverIntentClassifier
 from assistant_core.runtime.routing import CapabilityRoutingRegistry
 
 
@@ -508,26 +507,14 @@ def test_model_backed_classifier_does_not_short_circuit_at_fast_path_threshold()
     assert classification.intent_family is IntentFamily.PROJECT_INSPECTION
 
 
-def test_app_factory_uses_request_resolver_as_runtime_default(monkeypatch) -> None:
-    monkeypatch.setenv(
-        "JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD",
-        "0.91",
-    )
-    from assistant_core.app_factory import build_intent_classifier
+def test_app_factory_no_longer_exports_runtime_default_intent_classifier() -> None:
+    import assistant_core.app_factory as app_factory
 
-    settings = ConfigLoader(Path("config")).load("test")
-    classifier = build_intent_classifier(
-        settings=settings,
-        router=FakeStructuredRouter(RuntimeError("model should not be called")),
-    )
+    source = Path(app_factory.__file__).read_text(encoding="utf-8")
 
-    classification = asyncio.run(
-        classifier.classify(_request(user_input="Расскажи, как решаются кубические уравнения."))
-    )
-
-    assert isinstance(classifier, RequestResolverIntentClassifier)
-    assert classification.intent_family is IntentFamily.ORDINARY_CHAT
-    assert classification.classification_source == "request_resolver"
+    assert not hasattr(app_factory, "build_intent_classifier")
+    assert "runtime.request_resolver" not in source
+    assert "RequestResolverIntentClassifier" not in source
 
 
 def test_model_backed_classifier_does_not_short_circuit_generic_fallback_tool_hint() -> None:

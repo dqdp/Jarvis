@@ -377,6 +377,21 @@ def test_prompt_contract_guides_language_and_local_model_behavior() -> None:
     assert "Do not add generic safety disclaimers" in prompt_text
 
 
+def test_context_assembler_uses_output_contract_override() -> None:
+    context = asyncio.run(
+        _assembler().assemble(
+            _request(output_contract="Return only a JSON object for the agent loop."),
+        ),
+    )
+
+    output_contract = _section(context, "output_contract")
+    prompt_text = context.messages[0].content[0].text
+
+    assert output_contract.content == "Return only a JSON object for the agent loop."
+    assert "Return only a JSON object for the agent loop." in prompt_text
+    assert "Return a direct, useful answer" not in prompt_text
+
+
 def test_context_messages_include_prompt_sections_before_conversation() -> None:
     context = asyncio.run(
         _assembler(memories=[MemoryHit(memory=_memory("project"), score=0.9)]).assemble(

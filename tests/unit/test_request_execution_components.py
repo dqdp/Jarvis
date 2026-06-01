@@ -333,8 +333,9 @@ def test_request_execution_stream_preserves_started_first_then_replays_pre_start
                     EventType.LOOP_SELECTION_COMPLETED,
                     {
                         "requested_mode": "auto",
-                        "selected_loop_strategy": "memory_augmented_answer",
-                        "decision_status": "selected",
+                        "selected_loop_strategy": "tool_react_loop",
+                        "request_plan_status": "selected",
+                        "request_plan_reason_code": "request_plan_auto_agent_loop",
                         "raw_prompt": "must not stream",
                     },
                 ),

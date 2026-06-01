@@ -359,7 +359,7 @@ def test_tool_intent_corpus_exact_ci_baseline_matches_expected_tools(
     ],
     ids=lambda case: case["id"],
 )
-def test_tool_intent_corpus_direct_plan_expectations(case: dict[str, Any]) -> None:
+def test_tool_intent_corpus_metadata_does_not_emit_direct_tool_plan(case: dict[str, Any]) -> None:
     settings = ConfigLoader(Path("config")).load("test")
     request = _request(case["text"])
     decision = asyncio.run(
@@ -376,14 +376,9 @@ def test_tool_intent_corpus_direct_plan_expectations(case: dict[str, Any]) -> No
         model_profile="local_structured",
         routing_registry=CapabilityRoutingRegistry.from_settings(settings),
     )
-    expected = case["expected"]["direct_plan"]
-    direct_plan = metadata.get("loop_selection_direct_tool_plan")
-    if expected["expected"]:
-        assert direct_plan is not None, case["id"]
-        assert direct_plan["scenario"] == expected["scenario"], case["id"]
-        assert direct_plan["tool_names"] == expected["tool_names"], case["id"]
-    else:
-        assert direct_plan is None, case["id"]
+    assert "loop_selection_direct_tool_plan" not in metadata, case["id"]
+    assert "loop_selection_tool_names" not in metadata, case["id"]
+    assert "loop_selection_confidence" not in metadata, case["id"]
 
 
 @pytest.mark.parametrize(

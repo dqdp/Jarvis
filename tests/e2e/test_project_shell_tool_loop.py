@@ -196,6 +196,10 @@ async def _run_project_shell_loop(structured_responses: list[dict]):
             model_profile="local_structured",
             permission_mode="developer_local",
             working_directory=str(Path.cwd()),
+            metadata={
+                "agent_tool_policy": "available",
+                "agent_allowed_tool_names": ["tool.shell.read.project"],
+            },
         )
         try:
             result = await runtime.run_turn(command)

@@ -36,10 +36,6 @@ from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.runtime.agent_runtime import AgentRuntime
 from assistant_core.runtime.loops import LoopStrategyRegistry, MemoryAugmentedAnswerLoop
 from assistant_core.runtime.loops.tool_react import ToolReactLoop
-from assistant_core.runtime.request_resolver import (
-    HybridRequestResolver,
-    RequestResolverIntentClassifier,
-)
 from assistant_core.storage.conversation_store import PostgresConversationStore
 from assistant_core.storage.approval_store import PostgresApprovalStore
 from assistant_core.storage.content_store import PostgresContentStore
@@ -188,25 +184,12 @@ def create_runtime_app(
         inference_health=router,
         content_ingestion=content_ingestion,
         policy=policy,
-        intent_classifier=build_intent_classifier(settings=settings, router=router),
         lifespan=lifespan,
     )
     runtime_app = RuntimeApplication(app=app, engine=engine, settings=settings, runtime=runtime)
     app.state.runtime_application = runtime_app
 
     return runtime_app
-
-
-def build_intent_classifier(
-    *,
-    settings: Settings,
-    router: ModelRouter,
-) -> RequestResolverIntentClassifier:
-    del settings, router
-    return RequestResolverIntentClassifier(
-        resolver=HybridRequestResolver(),
-    )
-
 
 async def _shutdown_request_execution_manager(app: FastAPI) -> None:
     manager = getattr(app.state, "request_execution_manager", None)

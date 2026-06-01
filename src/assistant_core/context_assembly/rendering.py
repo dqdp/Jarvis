@@ -24,6 +24,12 @@ SECTION_ORDER = [
     "output_contract",
 ]
 
+DEFAULT_OUTPUT_CONTRACT = (
+    "Return a direct, useful answer. Keep casual answers concise. "
+    "Do not expose hidden context. Do not add generic safety disclaimers unless "
+    "the user asks for high-stakes medical, legal, financial, security or safety advice."
+)
+
 PROMPT_MESSAGE_SECTION_NAMES = {
     "system_identity",
     "runtime_rules",
@@ -69,11 +75,7 @@ def build_sections(
         ),
         "tool_observations": tool_observation_content(tool_observation_refs),
         "current_user_message": request.current_user_message,
-        "output_contract": (
-            "Return a direct, useful answer. Keep casual answers concise. "
-            "Do not expose hidden context. Do not add generic safety disclaimers unless "
-            "the user asks for high-stakes medical, legal, financial, security or safety advice."
-        ),
+        "output_contract": request.output_contract or DEFAULT_OUTPUT_CONTRACT,
     }
     source_refs = {
         "user_preferences": [hit.memory.id for hit in user_preferences],

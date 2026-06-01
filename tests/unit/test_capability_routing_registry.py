@@ -8,6 +8,7 @@ import pytest
 from assistant_core.config.settings import ConfigLoader
 from assistant_core.domain.loop_selection import IntentFamily
 from assistant_core.domain.policy import Capability
+from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.runtime.routing import (
     CapabilityRoutingRegistry,
     RoutingToolDescriptor,
@@ -60,6 +61,7 @@ def test_capability_routing_registry_rejects_duplicate_tool_names() -> None:
         requires_execution=True,
         requires_write=False,
         risk_classes=frozenset(),
+        sensitivity_ceiling=Sensitivity.PROJECT,
     )
 
     with pytest.raises(ValueError, match="duplicate routing tool name"):

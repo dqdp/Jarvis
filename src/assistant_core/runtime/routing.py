@@ -10,6 +10,7 @@ from assistant_core.domain.loop_selection import (
     IntentFamily,
 )
 from assistant_core.domain.policy import Capability, RiskClass
+from assistant_core.domain.sensitivity import Sensitivity
 
 
 @dataclass(frozen=True)
@@ -22,12 +23,14 @@ class RoutingToolDescriptor:
     requires_execution: bool
     requires_write: bool
     risk_classes: frozenset[RiskClass]
+    sensitivity_ceiling: Sensitivity
     system_family: str | None = None
 
     def summary(self) -> dict[str, Any]:
         return {
             "tool_name": self.tool_name,
             "capability": self.capability.value,
+            "sensitivity_ceiling": self.sensitivity_ceiling.value,
             "intent_families": sorted(intent.value for intent in self.intent_families),
             "description": self.description,
             "requires_live_state": self.requires_live_state,
@@ -182,6 +185,7 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         requires_execution=True,
         requires_write=False,
         risk_classes=frozenset({RiskClass.SAFE}),
+        sensitivity_ceiling=Sensitivity.PROJECT,
     ),
     RoutingToolDescriptor(
         tool_name="calculator.evaluate",
@@ -192,6 +196,7 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         requires_execution=True,
         requires_write=False,
         risk_classes=frozenset({RiskClass.SAFE}),
+        sensitivity_ceiling=Sensitivity.PUBLIC,
     ),
     RoutingToolDescriptor(
         tool_name="daemon.status",
@@ -202,6 +207,7 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         requires_execution=True,
         requires_write=False,
         risk_classes=frozenset({RiskClass.SAFE}),
+        sensitivity_ceiling=Sensitivity.PUBLIC,
     ),
     RoutingToolDescriptor(
         tool_name="tool.shell.read.project",
@@ -212,6 +218,7 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         requires_execution=True,
         requires_write=False,
         risk_classes=frozenset({RiskClass.READ_ONLY}),
+        sensitivity_ceiling=Sensitivity.PROJECT,
     ),
     RoutingToolDescriptor(
         tool_name="tool.system.read.process",
@@ -222,6 +229,7 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         requires_execution=True,
         requires_write=False,
         risk_classes=frozenset({RiskClass.READ_ONLY}),
+        sensitivity_ceiling=Sensitivity.INFRA,
         system_family="process",
     ),
     RoutingToolDescriptor(
@@ -233,6 +241,7 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         requires_execution=True,
         requires_write=False,
         risk_classes=frozenset({RiskClass.READ_ONLY}),
+        sensitivity_ceiling=Sensitivity.INFRA,
         system_family="resources",
     ),
     RoutingToolDescriptor(
@@ -244,6 +253,7 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         requires_execution=True,
         requires_write=False,
         risk_classes=frozenset({RiskClass.READ_ONLY}),
+        sensitivity_ceiling=Sensitivity.INFRA,
         system_family="hardware",
     ),
     RoutingToolDescriptor(
@@ -255,6 +265,7 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         requires_execution=True,
         requires_write=False,
         risk_classes=frozenset({RiskClass.READ_ONLY}),
+        sensitivity_ceiling=Sensitivity.INFRA,
         system_family="network",
     ),
     RoutingToolDescriptor(
@@ -266,6 +277,7 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         requires_execution=True,
         requires_write=False,
         risk_classes=frozenset({RiskClass.READ_ONLY}),
+        sensitivity_ceiling=Sensitivity.INFRA,
         system_family="sensors",
     ),
 )

@@ -42,6 +42,7 @@ def _request(
     *,
     budget: LoopBudget | None = None,
     permission_mode: PermissionMode | None = None,
+    metadata: dict | None = None,
 ) -> LoopExecutionRequest:
     return LoopExecutionRequest(
         request_id="request-tool-react",
@@ -55,7 +56,15 @@ def _request(
         strategy_name=LoopStrategyName.TOOL_REACT_LOOP,
         budget=budget or _budget(),
         permission_mode=permission_mode,
+        metadata=metadata or {},
     )
+
+
+def _tool_plan_metadata(*tool_names: str, policy: str = "available") -> dict:
+    return {
+        "agent_tool_policy": policy,
+        "agent_allowed_tool_names": list(tool_names),
+    }
 
 
 def test_tool_react_loop_requires_toolgateway() -> None:
@@ -69,7 +78,7 @@ def test_tool_react_loop_requires_toolgateway() -> None:
         )
 
 
-def test_tool_react_loop_budget_requires_positive_step_and_tool_limits() -> None:
+def test_tool_react_loop_budget_requires_positive_step_and_model_limits() -> None:
     loop = ToolReactLoop(
         conversation_store=object(),
         context_assembler=object(),
@@ -81,7 +90,247 @@ def test_tool_react_loop_budget_requires_positive_step_and_tool_limits() -> None
     with pytest.raises(ValueError):
         loop.validate_budget(replace(_budget(), max_steps=0))
     with pytest.raises(ValueError):
-        loop.validate_budget(replace(_budget(), max_tool_calls=0))
+        loop.validate_budget(replace(_budget(), max_model_calls=0))
+
+
+def test_tool_react_loop_allows_final_answer_when_tools_are_disabled_by_plan() -> None:
+    async def scenario():
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredRouter(
+                [{"action": "final_answer", "final_answer": "chat answer"}],
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        return await loop.run_turn(
+            _request(
+                budget=replace(_budget(), max_tool_calls=0),
+                metadata={"agent_tool_policy": "disabled"},
+            )
+        )
+
+    result = asyncio.run(scenario())
+
+    assert result.response_text == "chat answer"
+    assert result.used_tool_calls == 0
+
+
+def test_tool_react_loop_ignores_legacy_direct_plan_when_tools_disabled_by_plan() -> None:
+    class Gateway:
+        invoked = False
+
+        async def invoke(self, request):
+            self.invoked = True
+            raise AssertionError("legacy direct plan must not bypass agent request plan")
+
+    async def scenario():
+        gateway = Gateway()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredRouter(
+                [{"action": "final_answer", "final_answer": "chat answer"}],
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            _request(
+                metadata={
+                    "agent_tool_policy": "disabled",
+                    "loop_selection_direct_tool_plan": {
+                        "version": 1,
+                        "scenario": "current_time",
+                        "tool_names": ["datetime.now"],
+                        "capabilities": ["tool.safe"],
+                        "classification_source": "deterministic",
+                        "provenance": ["legacy_fixture"],
+                        "required_arguments": {},
+                    },
+                },
+            ),
+        )
+        return result, gateway.invoked
+
+    result, invoked = asyncio.run(scenario())
+
+    assert result.response_text == "chat answer"
+    assert invoked is False
+
+
+def test_tool_react_loop_blocks_tool_call_when_tools_are_disabled_by_plan() -> None:
+    class Gateway:
+        invoked = False
+
+        async def invoke(self, request):
+            self.invoked = True
+            raise AssertionError("disabled tools must not reach gateway")
+
+    async def scenario():
+        gateway = Gateway()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredRouter(
+                [{"action": "tool_call", "tool_name": "datetime.now", "arguments": {}}],
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        with pytest.raises(RuntimeError, match="tool_policy_disabled"):
+            await loop.run_turn(_request(metadata={"agent_tool_policy": "disabled"}))
+        return gateway.invoked
+
+    assert asyncio.run(scenario()) is False
+
+
+def test_tool_react_loop_blocks_tool_call_when_request_plan_metadata_is_missing() -> None:
+    class Gateway:
+        invoked = False
+
+        async def invoke(self, request):
+            self.invoked = True
+            raise AssertionError("missing request plan must not reach gateway")
+
+    async def scenario():
+        gateway = Gateway()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredRouter(
+                [{"action": "tool_call", "tool_name": "datetime.now", "arguments": {}}],
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        with pytest.raises(RuntimeError, match="request_plan_missing_tool_policy"):
+            await loop.run_turn(_request(metadata={}))
+        return gateway.invoked
+
+    assert asyncio.run(scenario()) is False
+
+
+def test_tool_react_loop_blocks_tool_call_when_request_plan_policy_is_invalid() -> None:
+    class Gateway:
+        invoked = False
+
+        async def invoke(self, request):
+            self.invoked = True
+            raise AssertionError("invalid request plan must not reach gateway")
+
+    async def scenario():
+        gateway = Gateway()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredRouter(
+                [{"action": "tool_call", "tool_name": "datetime.now", "arguments": {}}],
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        with pytest.raises(RuntimeError, match="request_plan_invalid_tool_policy"):
+            await loop.run_turn(_request(metadata={"agent_tool_policy": "legacy"}))
+        return gateway.invoked
+
+    assert asyncio.run(scenario()) is False
+
+
+def test_tool_react_loop_blocks_tool_call_outside_request_plan_allowlist() -> None:
+    class Gateway:
+        invoked = False
+
+        async def invoke(self, request):
+            self.invoked = True
+            raise AssertionError("disallowed tools must not reach gateway")
+
+    async def scenario():
+        gateway = Gateway()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredRouter(
+                [{"action": "tool_call", "tool_name": "daemon.status", "arguments": {}}],
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        with pytest.raises(RuntimeError, match="tool_not_allowed_by_request_plan"):
+            await loop.run_turn(
+                _request(
+                    metadata={
+                        "agent_tool_policy": "available",
+                        "agent_allowed_tool_names": ["datetime.now"],
+                    },
+                )
+            )
+        return gateway.invoked
+
+    assert asyncio.run(scenario()) is False
+
+
+def test_tool_react_loop_requires_tool_call_for_required_tool_policy() -> None:
+    async def scenario():
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredRouter(
+                [{"action": "final_answer", "final_answer": "not enough"}],
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        with pytest.raises(RuntimeError, match="required_tool_call_missing"):
+            await loop.run_turn(
+                _request(
+                    metadata={
+                        "agent_tool_policy": "required",
+                        "agent_allowed_tool_names": ["datetime.now"],
+                    },
+                )
+            )
+
+    asyncio.run(scenario())
+
+
+def test_tool_react_loop_passes_tool_proposal_contract_to_context_assembler() -> None:
+    class ContractContextAssembler(FakeContextAssembler):
+        seen_contract: str | None = None
+
+        async def assemble(self, request):
+            self.seen_contract = getattr(request, "output_contract", None)
+            return await super().assemble(request)
+
+    async def scenario():
+        assembler = ContractContextAssembler()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=assembler,
+            model_router=FakeStructuredRouter(
+                [{"action": "final_answer", "final_answer": "done"}],
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        result = await loop.run_turn(
+            _request(
+                metadata={
+                    "agent_tool_policy": "available",
+                    "agent_allowed_tool_names": ["datetime.now"],
+                },
+            )
+        )
+        return result, assembler.seen_contract
+
+    result, contract = asyncio.run(scenario())
+
+    assert result.response_text == "done"
+    assert contract is not None
+    assert "Return only a JSON object" in contract
+    assert "datetime.now" in contract
+    assert "Do not wrap the JSON in markdown" in contract
 
 
 def test_parse_tool_proposal_accepts_tool_call_and_final_answer() -> None:
@@ -139,7 +388,7 @@ def test_tool_react_loop_rejects_unknown_tool_name() -> None:
             tool_gateway=gateway,
         )
         with pytest.raises(RuntimeError, match="tool_observation_failed"):
-            await loop.run_turn(_request())
+            await loop.run_turn(_request(metadata=_tool_plan_metadata("missing.tool")))
         return gateway.invoked
 
     assert asyncio.run(scenario()) is True
@@ -209,7 +458,7 @@ def test_tool_react_loop_does_not_downlabel_tool_call_sensitivity() -> None:
             tool_gateway=gateway,
         )
         with pytest.raises(RuntimeError):
-            await loop.run_turn(_request())
+            await loop.run_turn(_request(metadata=_tool_plan_metadata("public.safe")))
         return gateway.seen_sensitivity
 
     assert asyncio.run(scenario()) == Sensitivity.PROJECT
@@ -249,7 +498,12 @@ def test_tool_react_loop_passes_permission_mode_to_tool_gateway() -> None:
             tool_gateway=gateway,
         )
         with pytest.raises(RuntimeError):
-            await loop.run_turn(_request(permission_mode=PermissionMode.LOCKED_DOWN))
+            await loop.run_turn(
+                _request(
+                    permission_mode=PermissionMode.LOCKED_DOWN,
+                    metadata=_tool_plan_metadata("fake.echo"),
+                )
+            )
         return gateway.seen_permission_mode
 
     assert asyncio.run(scenario()) == PermissionMode.LOCKED_DOWN
@@ -289,7 +543,7 @@ def test_tool_react_loop_passes_step_event_causation_to_tool_gateway() -> None:
             tool_gateway=gateway,
         )
         with pytest.raises(RuntimeError):
-            await loop.run_turn(_request())
+            await loop.run_turn(_request(metadata=_tool_plan_metadata("fake.echo")))
         return gateway.seen_causation_event_id
 
     assert asyncio.run(scenario()) == "event-agent.step.started"
@@ -334,7 +588,12 @@ def test_tool_react_loop_streams_final_answer_token_and_terminal_event() -> None
             event_log=FakeEventLog(),
             tool_gateway=object(),
         )
-        return [event async for event in loop.stream_turn(_request())]
+        return [
+            event
+            async for event in loop.stream_turn(
+                _request(metadata=_tool_plan_metadata("tool.shell.read.project"))
+            )
+        ]
 
     events = asyncio.run(scenario())
 
@@ -411,7 +670,12 @@ def test_tool_react_loop_streams_public_tool_lifecycle_events() -> None:
             event_log=event_log,
             tool_gateway=Gateway(event_log),
         )
-        return [event async for event in loop.stream_turn(_request())]
+        return [
+            event
+            async for event in loop.stream_turn(
+                _request(metadata=_tool_plan_metadata("tool.shell.read.project"))
+            )
+        ]
 
     events = asyncio.run(scenario())
     tool_events = [event for event in events if event.event_type == EventType.TOOL_SHELL_STARTED.value]

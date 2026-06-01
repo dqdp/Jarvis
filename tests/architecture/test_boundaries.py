@@ -421,6 +421,26 @@ def test_request_metadata_does_not_call_tool_adapters() -> None:
     )
 
 
+def test_request_metadata_does_not_import_intent_classifier_or_loop_selector() -> None:
+    imported = _imported_modules(SRC_ROOT / "runtime" / "request_metadata.py")
+
+    assert "assistant_core.ports.intent_classifier" not in imported
+    assert "assistant_core.runtime.loop_selection" not in imported
+
+
+def test_production_runtime_does_not_import_direct_tool_planner() -> None:
+    imported = _imported_modules(SRC_ROOT / "runtime" / "request_metadata.py")
+
+    assert "assistant_core.runtime.direct_tools" not in imported
+
+
+def test_app_factory_does_not_import_request_resolver_or_model_intent_classifier() -> None:
+    imported = _imported_modules(SRC_ROOT / "app_factory.py")
+
+    assert "assistant_core.runtime.request_resolver" not in imported
+    assert "assistant_core.runtime.model_intent_classifier" not in imported
+
+
 def test_request_metadata_does_not_define_tool_registry_literals() -> None:
     source = (SRC_ROOT / "runtime" / "request_metadata.py").read_text(encoding="utf-8")
 
@@ -514,10 +534,14 @@ def test_rejected_routing_modules_are_recorded_for_follow_up() -> None:
     assert "They are not a\nPM-09 gate" in source
 
 
-def test_tool_react_loop_consumes_direct_tool_plan_not_loose_tool_name_metadata() -> None:
-    source = (SRC_ROOT / "runtime" / "loops" / "tool_react.py").read_text(encoding="utf-8")
+def test_tool_react_loop_does_not_consume_direct_tool_plan_metadata() -> None:
+    loop_path = SRC_ROOT / "runtime" / "loops" / "tool_react.py"
+    imported = _imported_modules(loop_path)
+    source = loop_path.read_text(encoding="utf-8")
 
-    assert "direct_tool_plan_from_metadata" in source
+    assert "assistant_core.runtime.direct_tools" not in imported
+    assert "direct_tool_plan_from_metadata" not in source
+    assert "loop_selection_direct_tool_plan" not in source
     assert "loop_selection_direct_tool_name" not in source
     assert "loop_selection_direct_tool_names" not in source
     assert "loop_selection_direct_scenario" not in source

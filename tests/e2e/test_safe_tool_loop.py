@@ -156,6 +156,10 @@ async def _run_tool_loop(structured_responses: list[dict]):
             active_project_namespace="project.personal_assistant",
             loop_strategy="tool_react_loop",
             model_profile="local_structured",
+            metadata={
+                "agent_tool_policy": "available",
+                "agent_allowed_tool_names": ["fake.echo"],
+            },
         )
         try:
             result = await runtime.run_turn(command)

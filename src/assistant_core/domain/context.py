@@ -25,6 +25,7 @@ class ContextAssemblyRequest:
     max_messages: int | None = None
     max_input_tokens: int | None = None
     tool_observation_refs: tuple[ToolObservationRef, ...] = ()
+    output_contract: str | None = None
 
     def __post_init__(self) -> None:
         if self.permission_mode is not None and not isinstance(

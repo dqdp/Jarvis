@@ -8,56 +8,19 @@ from types import SimpleNamespace
 import pytest
 
 from assistant_core.config.settings import ConfigLoader
-from assistant_core.domain.loop_selection import (
-    CapabilityCandidate,
-    IntentClassification,
-    IntentFamily,
-    SelectionDecisionStatus,
-    SelectionFallbackPreference,
-)
+from assistant_core.domain.loop_selection import SelectionDecisionStatus
 from assistant_core.domain.loops import LoopStrategyName
-from assistant_core.domain.policy import Capability, RiskClass
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.app_factory import build_intent_classifier
 from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.runtime.request_metadata import (
     AgentToolPolicy,
     LoopSelectionError,
+    emit_loop_selection_failure,
     runtime_request_metadata,
-)
-from assistant_core.runtime.request_resolver import (
-    RequestResolverIntentClassifier,
-    Unavailable,
 )
 
 
 pytestmark = pytest.mark.unit
-
-
-def _assert_direct_plan(
-    metadata: dict,
-    *,
-    scenario: str,
-    tool_names: list[str],
-    capabilities: list[str],
-    scope_hint: str | None = None,
-    classification_source: str = "deterministic",
-    required_arguments: dict[str, str] | None = None,
-    provenance_contains: tuple[str, ...] = (),
-) -> None:
-    plan = metadata["loop_selection_direct_tool_plan"]
-    assert plan["version"] == 1
-    assert plan["scenario"] == scenario
-    assert plan["tool_names"] == tool_names
-    assert plan["capabilities"] == capabilities
-    assert plan["scope_hint"] == scope_hint
-    assert plan["classification_source"] == classification_source
-    assert plan["required_arguments"] == (required_arguments or {})
-    for evidence_code in provenance_contains:
-        assert evidence_code in plan["provenance"]
-    assert "loop_selection_direct_tool_name" not in metadata
-    assert "loop_selection_direct_tool_names" not in metadata
-    assert "loop_selection_direct_scenario" not in metadata
 
 
 def test_request_metadata_rejects_tool_loop_when_budget_disallows_tool_calls() -> None:
@@ -108,6 +71,7 @@ def test_agent_request_plan_records_chat_mode_with_tools_disabled() -> None:
 
     plan = resolution.agent_request_plan
     assert plan.requested_mode == "chat"
+    assert plan.selected_loop_strategy == "tool_react_loop"
     assert plan.tool_policy is AgentToolPolicy.DISABLED
     assert plan.allowed_tool_names == ()
     assert plan.redacted_metadata()["agent_tool_policy"] == "disabled"
@@ -122,6 +86,7 @@ def test_agent_request_plan_records_tools_mode_with_required_tools() -> None:
 
     plan = resolution.agent_request_plan
     assert plan.requested_mode == "tools"
+    assert plan.selected_loop_strategy == "tool_react_loop"
     assert plan.tool_policy is AgentToolPolicy.REQUIRED
     assert plan.allowed_tool_names
     assert resolution.metadata["agent_tool_policy"] == "required"
@@ -196,7 +161,6 @@ def test_agent_request_plan_disables_tools_when_tool_budget_cannot_execute_tools
     assert resolution.agent_request_plan.allowed_tool_names == ()
     assert resolution.metadata["agent_tool_policy"] == "disabled"
     assert resolution.metadata["agent_allowed_tool_count"] == 0
-    assert "agent_allowed_tool_names" not in resolution.metadata
 
 
 def test_agent_request_plan_filters_allowed_tools_through_request_policy() -> None:
@@ -228,6 +192,36 @@ def test_agent_request_plan_filters_allowed_tools_through_request_policy() -> No
     assert "agent_allowed_tool_names" not in resolution.metadata
 
 
+def test_agent_request_plan_filters_allowed_tools_by_sensitivity_ceiling() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+
+    resolution = asyncio.run(
+        runtime_request_metadata(
+            SimpleNamespace(
+                content="Проверь локальную систему",
+                sensitivity=Sensitivity.PERSONAL,
+                loop_strategy=None,
+                model_profile=None,
+                working_directory=str(Path.cwd()),
+            ),
+            settings,
+            request_id="request-1",
+            conversation_id="conversation-1",
+            user_id="user-1",
+            active_project_namespace="project.personal_assistant",
+            working_directory=str(Path.cwd()),
+            policy=ConfigPolicyEngine(settings),
+        )
+    )
+
+    allowed = set(resolution.agent_request_plan.allowed_tool_names)
+    assert "calculator.evaluate" not in allowed
+    assert "daemon.status" not in allowed
+    assert "datetime.now" not in allowed
+    assert "tool.shell.read.project" not in allowed
+    assert "tool.system.read.resources" in allowed
+
+
 def test_agent_request_plan_uses_request_plan_reason_namespace() -> None:
     settings = ConfigLoader(Path("config")).load("test")
 
@@ -250,30 +244,22 @@ def test_agent_request_plan_uses_request_plan_reason_namespace() -> None:
         )
     )
 
-    assert resolution.decision.reason_code == "tool_intent_safe_builtin"
-    assert resolution.agent_request_plan.request_plan_reason_code == "request_plan_tools_selected"
-    assert resolution.metadata["request_plan_reason_code"] == "request_plan_tools_selected"
+    assert resolution.decision.reason_code == "request_plan_auto_agent_loop"
+    assert resolution.agent_request_plan.request_plan_reason_code == "request_plan_auto_agent_loop"
+    assert resolution.metadata["request_plan_reason_code"] == "request_plan_auto_agent_loop"
     assert not resolution.agent_request_plan.request_plan_reason_code.startswith("tool_intent_")
     assert not resolution.agent_request_plan.request_plan_reason_code.startswith("classifier_")
 
 
-def test_agent_request_plan_chat_fallback_reason_does_not_copy_classifier_reason() -> None:
+def test_agent_request_plan_chat_reason_does_not_copy_classifier_reason() -> None:
     settings = ConfigLoader(Path("config")).load("test")
-    classifier = StaticIntentClassifier(
-        IntentClassification(
-            intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-            confidence=0.1,
-            reason_code="classifier_low_confidence",
-            fallback_preference=SelectionFallbackPreference.CHAT,
-        )
-    )
 
     resolution = asyncio.run(
         runtime_request_metadata(
             SimpleNamespace(
                 content="Проверь состояние системы",
                 sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
+                loop_strategy="chat",
                 model_profile=None,
                 working_directory=str(Path.cwd()),
             ),
@@ -284,13 +270,12 @@ def test_agent_request_plan_chat_fallback_reason_does_not_copy_classifier_reason
             active_project_namespace="project.personal_assistant",
             working_directory=str(Path.cwd()),
             policy=ConfigPolicyEngine(settings),
-            intent_classifier=classifier,
         )
     )
 
-    assert resolution.decision.reason_code == "classifier_low_confidence"
-    assert resolution.agent_request_plan.request_plan_reason_code == "request_plan_chat_fallback"
-    assert resolution.metadata["request_plan_reason_code"] == "request_plan_chat_fallback"
+    assert resolution.decision.reason_code == "request_plan_chat_agent_loop"
+    assert resolution.agent_request_plan.request_plan_reason_code == "request_plan_chat_agent_loop"
+    assert resolution.metadata["request_plan_reason_code"] == "request_plan_chat_agent_loop"
 
 
 def test_agent_request_plan_metadata_excludes_classifier_fields() -> None:
@@ -326,6 +311,10 @@ def test_agent_request_plan_metadata_excludes_classifier_fields() -> None:
     assert "loop_selection_classification_source" not in plan_metadata
     assert "direct_tool_plan" not in plan_metadata
     assert "loop_selection_direct_tool_plan" not in plan_metadata
+    assert "loop_selection_intent_family" not in resolution.metadata
+    assert "loop_selection_confidence" not in resolution.metadata
+    assert "loop_selection_classification_source" not in resolution.metadata
+    assert "loop_selection_direct_tool_plan" not in resolution.metadata
 
 
 def test_request_metadata_rejects_tool_loop_when_budget_is_missing() -> None:
@@ -349,7 +338,54 @@ def test_request_metadata_rejects_tool_loop_when_budget_is_missing() -> None:
     assert exc_info.value.decision.decision_status is SelectionDecisionStatus.TOOLS_UNAVAILABLE
 
 
-def test_request_metadata_records_direct_safe_builtin_tool_hint() -> None:
+def test_model_profile_selection_failure_event_preserves_specific_reason() -> None:
+    class FakeEventLog:
+        def __init__(self) -> None:
+            self.events = []
+
+        async def append(self, event):
+            self.events.append(event)
+            return event
+
+    async def scenario():
+        settings = ConfigLoader(Path("config")).load("test")
+        try:
+            await runtime_request_metadata(
+                SimpleNamespace(
+                    content="hello",
+                    sensitivity=Sensitivity.PROJECT,
+                    loop_strategy=None,
+                    model_profile="local_embedding",
+                    working_directory=str(Path.cwd()),
+                ),
+                settings,
+                request_id="request-1",
+                conversation_id="conversation-1",
+                user_id="user-1",
+                active_project_namespace="project.personal_assistant",
+                working_directory=str(Path.cwd()),
+                policy=ConfigPolicyEngine(settings),
+            )
+        except LoopSelectionError as exc:
+            event_log = FakeEventLog()
+            await emit_loop_selection_failure(event_log, exc)
+            return exc, event_log.events
+        raise AssertionError("model profile selection must fail")
+
+    error, events = asyncio.run(scenario())
+
+    assert error.decision is not None
+    assert error.decision.reason_code == "model_profile_invalid_for_selected_loop"
+    failed = next(
+        event for event in events if event.event_type.value == "request.loop_selection.failed"
+    )
+    assert (
+        failed.payload["request_plan_reason_code"]
+        == "request_plan_model_profile_invalid_for_selected_loop"
+    )
+
+
+def test_default_auto_request_builds_agent_loop_plan_without_classifier() -> None:
     settings = ConfigLoader(Path("config")).load("test")
 
     resolution = asyncio.run(
@@ -371,565 +407,26 @@ def test_request_metadata_records_direct_safe_builtin_tool_hint() -> None:
         )
     )
 
+    assert resolution.metadata["requested_loop_mode"] == "auto"
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_tool_names"] == ["datetime.now"]
-    _assert_direct_plan(
-        resolution.metadata,
-        scenario="current_time",
-        tool_names=["datetime.now"],
-        capabilities=["tool.safe"],
-        provenance_contains=("safe_builtin_request",),
-    )
-
-
-def test_request_metadata_records_direct_plan_with_runtime_default_request_resolver() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-
-    resolution = asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content="Сколько время?",
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-            intent_classifier=build_intent_classifier(settings=settings, router=object()),
-        )
-    )
-
-    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_tool_names"] == ["datetime.now"]
-    _assert_direct_plan(
-        resolution.metadata,
-        scenario="current_time",
-        tool_names=["datetime.now"],
-        capabilities=["tool.safe"],
-        classification_source="request_resolver",
-        provenance_contains=("safe_builtin_request",),
-    )
-
-
-def test_request_metadata_surfaces_request_resolver_clarification() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-
-    with pytest.raises(LoopSelectionError) as exc_info:
-        asyncio.run(
-            runtime_request_metadata(
-                SimpleNamespace(
-                    content="память?",
-                    sensitivity=Sensitivity.PROJECT,
-                    loop_strategy=None,
-                    model_profile=None,
-                    working_directory=str(Path.cwd()),
-                ),
-                settings,
-                request_id="request-1",
-                conversation_id="conversation-1",
-                user_id="user-1",
-                active_project_namespace="project.personal_assistant",
-                working_directory=str(Path.cwd()),
-                policy=ConfigPolicyEngine(settings),
-                intent_classifier=build_intent_classifier(settings=settings, router=object()),
-            )
-        )
-
-    assert str(exc_info.value) == "request needs clarification"
-    assert exc_info.value.decision is not None
-    assert exc_info.value.decision.selected_loop_strategy is None
-    assert exc_info.value.decision.decision_status is (
-        SelectionDecisionStatus.CLARIFICATION_REQUIRED
-    )
-
-
-def test_request_metadata_surfaces_request_resolver_unavailable() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-
-    with pytest.raises(LoopSelectionError) as exc_info:
-        asyncio.run(
-            runtime_request_metadata(
-                SimpleNamespace(
-                    content="проверь недоступный маршрут",
-                    sensitivity=Sensitivity.PROJECT,
-                    loop_strategy=None,
-                    model_profile=None,
-                    working_directory=str(Path.cwd()),
-                ),
-                settings,
-                request_id="request-1",
-                conversation_id="conversation-1",
-                user_id="user-1",
-                active_project_namespace="project.personal_assistant",
-                working_directory=str(Path.cwd()),
-                policy=ConfigPolicyEngine(settings),
-                intent_classifier=RequestResolverIntentClassifier(
-                    resolver=StaticResolver(Unavailable(reason_code="route_unavailable"))
-                ),
-            )
-        )
-
-    assert str(exc_info.value) == "tool loop is unavailable for request"
-    assert exc_info.value.decision is not None
-    assert exc_info.value.decision.selected_loop_strategy is None
-    assert exc_info.value.decision.decision_status is SelectionDecisionStatus.TOOLS_UNAVAILABLE
-    assert exc_info.value.decision.reason_code == "route_unavailable"
-
-
-def test_request_metadata_records_direct_christmas_countdown_scenario() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-
-    resolution = asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content="через сколько дней Рождество?",
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-        )
-    )
-
-    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_tool_names"] == ["datetime.now"]
-    _assert_direct_plan(
-        resolution.metadata,
-        scenario="christmas_countdown",
-        tool_names=["datetime.now"],
-        capabilities=["tool.safe"],
-        scope_hint="christmas_countdown",
-    )
-
-
-def test_request_metadata_records_direct_system_sensors_tool_hint() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-
-    resolution = asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content="Текущая температура процессора.",
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-        )
-    )
-
-    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.sensors"]
-    _assert_direct_plan(
-        resolution.metadata,
-        scenario="sensor_temperature",
-        tool_names=["tool.system.read.sensors"],
-        capabilities=["tool.system.read.sensors"],
-    )
-
-
-def test_request_metadata_records_direct_system_resources_tool_hint_for_free_memory() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-
-    resolution = asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content="Сколько памяти сейчас свободно в системе?",
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-        )
-    )
-
-    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.resources"]
-    _assert_direct_plan(
-        resolution.metadata,
-        scenario="memory_overview",
-        tool_names=["tool.system.read.resources"],
-        capabilities=["tool.system.read.resources"],
-    )
-
-
-def test_request_metadata_records_direct_disk_free_scenario() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-
-    resolution = asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content="Сколько свободного места на диске?",
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-        )
-    )
-
-    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.resources"]
-    _assert_direct_plan(
-        resolution.metadata,
-        scenario="disk_free",
-        tool_names=["tool.system.read.resources"],
-        capabilities=["tool.system.read.resources"],
-        scope_hint="disk_free",
-    )
-
-
-def test_request_metadata_records_direct_battery_charge_scenario() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-
-    resolution = asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content="Сколько процентов заряда аккумулятора осталось на макбуке?",
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-        )
-    )
-
-    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.hardware"]
-    _assert_direct_plan(
-        resolution.metadata,
-        scenario="battery_charge",
-        tool_names=["tool.system.read.hardware"],
-        capabilities=["tool.system.read.hardware"],
-        scope_hint="battery_charge",
-    )
-
-
-def test_request_metadata_records_direct_cpu_overview_tool_plan() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-
-    resolution = asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content="Сколько ядер у центрального процессора и на сколько они загружены?",
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-        )
-    )
-
-    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_tool_names"] == [
-        "tool.system.read.hardware",
-        "tool.system.read.resources",
-    ]
-    _assert_direct_plan(
-        resolution.metadata,
-        scenario="cpu_overview",
-        tool_names=["tool.system.read.hardware", "tool.system.read.resources"],
-        capabilities=["tool.system.read.hardware", "tool.system.read.resources"],
-        scope_hint="cpu_overview",
-    )
-
-
-def test_request_metadata_records_direct_os_version_scenario() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-
-    resolution = asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content="Какая версия операционной системы?",
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-        )
-    )
-
-    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.hardware"]
-    _assert_direct_plan(
-        resolution.metadata,
-        scenario="os_version",
-        tool_names=["tool.system.read.hardware"],
-        capabilities=["tool.system.read.hardware"],
-        scope_hint="os_version",
-    )
-
-
-def test_request_metadata_records_direct_process_name_search_scenario() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-
-    resolution = asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content='Запущен ли сейчас процесс, в имени которого есть "HFT"?',
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-        )
-    )
-
-    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.process"]
-    _assert_direct_plan(
-        resolution.metadata,
-        scenario="process_name_search",
-        tool_names=["tool.system.read.process"],
-        capabilities=["tool.system.read.process"],
-        scope_hint="process_name_search",
-        required_arguments={"process_pattern": "HFT"},
-        provenance_contains=("process_name_search_pattern",),
-    )
-
-
-def test_request_metadata_records_direct_vpn_status_scenario() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-
-    resolution = asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content="Включен ли VPN сейчас?",
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-        )
-    )
-
-    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.network"]
-    _assert_direct_plan(
-        resolution.metadata,
-        scenario="vpn_status",
-        tool_names=["tool.system.read.network"],
-        capabilities=["tool.system.read.network"],
-        scope_hint="vpn_status",
-    )
-
-
-def test_request_metadata_accepts_injected_intent_classifier() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-    classifier = StaticIntentClassifier(
-        IntentClassification(
-            intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-            confidence=0.88,
-            candidate_capabilities=(
-                CapabilityCandidate(
-                    capability=Capability.TOOL_SYSTEM_READ_HARDWARE,
-                    intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-                    confidence=0.88,
-                    requires_live_state=True,
-                    requires_execution=True,
-                    requires_write=False,
-                    tool_names=("tool.system.read.hardware",),
-                    risk_classes=frozenset({RiskClass.READ_ONLY}),
-                    scope_hint="os_version",
-                    evidence_codes=("model_os_version_request",),
-                ),
-            ),
-            requires_live_state=True,
-            requires_execution=True,
-            answer_without_tools_would_be_misleading=True,
-            reason_code="model_system_diagnostics",
-            classification_source="deterministic",
-            fallback_preference=SelectionFallbackPreference.FAIL_UNAVAILABLE,
-        )
-    )
-
-    resolution = asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content="Покажи данные о системе",
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-            intent_classifier=classifier,
-        )
-    )
-
-    assert classifier.calls == 1
-    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.hardware"]
-    _assert_direct_plan(
-        resolution.metadata,
-        scenario="os_version",
-        tool_names=["tool.system.read.hardware"],
-        capabilities=["tool.system.read.hardware"],
-        scope_hint="os_version",
-    )
-
-
-def test_request_metadata_does_not_direct_execute_model_source_tool_hints() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-    classifier = StaticIntentClassifier(
-        IntentClassification(
-            intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-            confidence=0.91,
-            candidate_capabilities=(
-                CapabilityCandidate(
-                    capability=Capability.TOOL_SYSTEM_READ_RESOURCES,
-                    intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-                    confidence=0.91,
-                    requires_live_state=True,
-                    requires_execution=True,
-                    requires_write=False,
-                    tool_names=("tool.system.read.resources",),
-                    risk_classes=frozenset({RiskClass.READ_ONLY}),
-                    scope_hint="disk_free",
-                    evidence_codes=("model_disk_free_request",),
-                ),
-            ),
-            requires_live_state=True,
-            requires_execution=True,
-            answer_without_tools_would_be_misleading=True,
-            reason_code="model_system_diagnostics",
-            classification_source="model",
-            fallback_preference=SelectionFallbackPreference.FAIL_UNAVAILABLE,
-        )
-    )
-
-    resolution = asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content="Сколько свободного места на диске?",
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-            intent_classifier=classifier,
-        )
-    )
-
-    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert resolution.metadata["loop_selection_classification_source"] == "model"
-    assert resolution.metadata["loop_selection_tool_names"] == ["tool.system.read.resources"]
+    assert resolution.metadata["loop_strategy"] == "tool_react_loop"
+    assert resolution.metadata["selected_model_profile"] == "local_main"
+    assert resolution.metadata["model_profile"] == "local_main"
+    assert resolution.agent_request_plan.tool_policy is AgentToolPolicy.AVAILABLE
+    assert "loop_selection_confidence" not in resolution.metadata
+    assert "loop_selection_intent_family" not in resolution.metadata
+    assert "loop_selection_classification_source" not in resolution.metadata
     assert "loop_selection_direct_tool_plan" not in resolution.metadata
+    assert "loop_selection_tool_names" not in resolution.metadata
 
 
-def test_request_metadata_rejects_mismatched_direct_tool_hint() -> None:
+def test_natural_language_calculator_request_has_no_direct_plan() -> None:
     settings = ConfigLoader(Path("config")).load("test")
-    classifier = StaticIntentClassifier(
-        IntentClassification(
-            intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-            confidence=0.88,
-            candidate_capabilities=(
-                CapabilityCandidate(
-                    capability=Capability.TOOL_SYSTEM_READ_NETWORK,
-                    intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
-                    confidence=0.88,
-                    requires_live_state=True,
-                    requires_execution=True,
-                    requires_write=False,
-                    tool_names=("tool.system.read.hardware",),
-                    risk_classes=frozenset({RiskClass.READ_ONLY}),
-                    scope_hint="vpn_status",
-                    evidence_codes=("bad_tool_hint",),
-                ),
-            ),
-            requires_live_state=True,
-            requires_execution=True,
-            answer_without_tools_would_be_misleading=True,
-            reason_code="system_diagnostics_hint",
-            fallback_preference=SelectionFallbackPreference.FAIL_UNAVAILABLE,
-        )
-    )
 
     resolution = asyncio.run(
         runtime_request_metadata(
             SimpleNamespace(
-                content="Включен ли VPN сейчас?",
+                content="Сколько будет четырнадцать умножить на сорок восемь?",
                 sensitivity=Sensitivity.PROJECT,
                 loop_strategy=None,
                 model_profile=None,
@@ -942,55 +439,43 @@ def test_request_metadata_rejects_mismatched_direct_tool_hint() -> None:
             active_project_namespace="project.personal_assistant",
             working_directory=str(Path.cwd()),
             policy=ConfigPolicyEngine(settings),
-            intent_classifier=classifier,
         )
     )
 
+    assert resolution.metadata["requested_loop_mode"] == "auto"
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
+    assert resolution.metadata["agent_tool_policy"] == "available"
+    assert "loop_selection_direct_tool_plan" not in resolution.metadata
+    assert "direct_tool_plan" not in resolution.agent_request_plan.redacted_metadata()
+
+
+def test_calendar_event_request_has_no_pre_router_guess() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+
+    resolution = asyncio.run(
+        runtime_request_metadata(
+            SimpleNamespace(
+                content="Когда в 2026 году будет День благодарения?",
+                sensitivity=Sensitivity.PROJECT,
+                loop_strategy=None,
+                model_profile=None,
+                working_directory=str(Path.cwd()),
+            ),
+            settings,
+            request_id="request-1",
+            conversation_id="conversation-1",
+            user_id="user-1",
+            active_project_namespace="project.personal_assistant",
+            working_directory=str(Path.cwd()),
+            policy=ConfigPolicyEngine(settings),
+        )
+    )
+
+    assert resolution.metadata["requested_loop_mode"] == "auto"
+    assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
+    assert resolution.metadata["agent_tool_policy"] == "available"
     assert "loop_selection_tool_names" not in resolution.metadata
     assert "loop_selection_direct_tool_plan" not in resolution.metadata
-
-
-def test_request_metadata_provides_tool_routing_summary_to_classifier() -> None:
-    settings = ConfigLoader(Path("config")).load("test")
-    classifier = RecordingIntentClassifier(
-        IntentClassification(
-            intent_family=IntentFamily.ORDINARY_CHAT,
-            confidence=0.9,
-            reason_code="ordinary_chat",
-            fallback_preference=SelectionFallbackPreference.CHAT,
-        )
-    )
-
-    asyncio.run(
-        runtime_request_metadata(
-            SimpleNamespace(
-                content="hello",
-                sensitivity=Sensitivity.PROJECT,
-                loop_strategy=None,
-                model_profile=None,
-                working_directory=str(Path.cwd()),
-            ),
-            settings,
-            request_id="request-1",
-            conversation_id="conversation-1",
-            user_id="user-1",
-            active_project_namespace="project.personal_assistant",
-            working_directory=str(Path.cwd()),
-            policy=ConfigPolicyEngine(settings),
-            intent_classifier=classifier,
-        )
-    )
-
-    assert classifier.requests
-    tool_names = {
-        item["tool_name"]
-        for item in classifier.requests[0].available_tools_summary
-        if isinstance(item, dict)
-    }
-    assert "datetime.now" in tool_names
-    assert "tool.system.read.hardware" in tool_names
-    assert "tool.system.read.resources" in tool_names
 
 
 async def _resolve_tool_metadata(settings):
@@ -1010,31 +495,3 @@ async def _resolve_tool_metadata(settings):
         working_directory=str(Path.cwd()),
         policy=ConfigPolicyEngine(settings),
     )
-
-
-class StaticIntentClassifier:
-    def __init__(self, classification: IntentClassification) -> None:
-        self.classification = classification
-        self.calls = 0
-
-    async def classify(self, request):
-        self.calls += 1
-        return self.classification
-
-
-class RecordingIntentClassifier(StaticIntentClassifier):
-    def __init__(self, classification: IntentClassification) -> None:
-        super().__init__(classification)
-        self.requests = []
-
-    async def classify(self, request):
-        self.requests.append(request)
-        return await super().classify(request)
-
-
-class StaticResolver:
-    def __init__(self, result) -> None:
-        self._result = result
-
-    async def resolve(self, request):
-        return self._result

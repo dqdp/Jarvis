@@ -81,6 +81,13 @@ def _sse_event_payloads(raw: str) -> list[tuple[str, dict[str, Any]]]:
     return events
 
 
+def _tool_plan_metadata(*tool_names: str, policy: str = "available") -> dict[str, Any]:
+    return {
+        "agent_tool_policy": policy,
+        "agent_allowed_tool_names": list(tool_names),
+    }
+
+
 class BlockingStreamModelProvider(FakeModelProvider):
     def __init__(self) -> None:
         super().__init__(stream_tokens=["unreachable"])
@@ -441,8 +448,8 @@ def test_runtime_app_factory_registers_tool_react_loop() -> None:
                         json.dumps(
                             {
                                 "action": "tool_call",
-                                "tool_name": "fake.echo",
-                                "arguments": {"message": "factory"},
+                                "tool_name": "datetime.now",
+                                "arguments": {},
                             },
                         ),
                         json.dumps({"action": "final_answer", "final_answer": "factory"}),
@@ -479,6 +486,7 @@ def test_runtime_app_factory_registers_tool_react_loop() -> None:
                     active_project_namespace=conversation.active_project_namespace,
                     model_profile="local_structured",
                     loop_strategy=LoopStrategyName.TOOL_REACT_LOOP.value,
+                    metadata=_tool_plan_metadata("datetime.now"),
                 ),
             )
             events = await event_log.query(EventFilter(request_id=submission.request.request_id))
@@ -555,6 +563,7 @@ def test_runtime_app_factory_registers_project_shell_read_tool() -> None:
                     loop_strategy=LoopStrategyName.TOOL_REACT_LOOP.value,
                     permission_mode="developer_local",
                     working_directory=str(Path.cwd()),
+                    metadata=_tool_plan_metadata("tool.shell.read.project"),
                 ),
             )
             events = await event_log.query(EventFilter(request_id=submission.request.request_id))
@@ -696,8 +705,8 @@ def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
                 json.dumps(
                     {
                         "action": "tool_call",
-                        "tool_name": "fake.echo",
-                        "arguments": {"message": "api"},
+                        "tool_name": "datetime.now",
+                        "arguments": {},
                     },
                 ),
                 json.dumps({"action": "final_answer", "final_answer": "api"}),
@@ -707,7 +716,8 @@ def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
             database_url=database_url,
             settings=settings,
             providers={
-                "local_structured": structured_provider,
+                "local_main": structured_provider,
+                "local_structured": FakeModelProvider(),
                 "local_embedding": FakeEmbeddingProvider(),
             },
         )
@@ -726,7 +736,7 @@ def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
                 f"/v1/conversations/{conversation['conversation_id']}/messages",
                 {
                     "client_message_id": "client-factory-api-tool-loop",
-                    "content": "use fake echo",
+                    "content": "what time is it?",
                     "sensitivity": "project",
                     "loop_strategy": LoopStrategyName.TOOL_REACT_LOOP.value,
                 },
@@ -760,7 +770,7 @@ def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
     assert structured_calls == 2
 
 
-def test_runtime_app_factory_api_uses_direct_plan_for_request_resolver_safe_route() -> None:
+def test_runtime_app_factory_api_runs_safe_route_through_agent_loop() -> None:
     database_url = _database_url()
     assert_test_database_url(database_url)
     run_migrations(database_url)
@@ -770,12 +780,24 @@ def test_runtime_app_factory_api_uses_direct_plan_for_request_resolver_safe_rout
 
         await _truncate_runtime_app(database_url)
         settings = ConfigLoader(Path("config")).load("test")
-        structured_provider = FakeModelProvider()
+        structured_provider = FakeModelProvider(
+            structured_text_responses=[
+                json.dumps(
+                    {
+                        "action": "tool_call",
+                        "tool_name": "datetime.now",
+                        "arguments": {},
+                    },
+                ),
+                json.dumps({"action": "final_answer", "final_answer": "time"}),
+            ],
+        )
         runtime_app = create_runtime_app(
             database_url=database_url,
             settings=settings,
             providers={
-                "local_structured": structured_provider,
+                "local_main": structured_provider,
+                "local_structured": FakeModelProvider(),
                 "local_embedding": FakeEmbeddingProvider(),
             },
         )
@@ -829,4 +851,4 @@ def test_runtime_app_factory_api_uses_direct_plan_for_request_resolver_safe_rout
     assert stream_events[-1] == "request.processing.completed"
     assert request_payload["status"] == "completed"
     assert EventType.TOOL_CALL_COMPLETED in event_types
-    assert structured_calls == 0
+    assert structured_calls == 2

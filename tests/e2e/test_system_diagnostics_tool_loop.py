@@ -231,6 +231,13 @@ async def _run_system_diagnostics_loop(
             model_profile="local_structured",
             permission_mode="developer_local",
             working_directory=str(Path.cwd()),
+            metadata={
+                "agent_tool_policy": "available",
+                "agent_allowed_tool_names": [
+                    "tool.system.read.process",
+                    "tool.system.read.sensors",
+                ],
+            },
         )
         try:
             result = await runtime.run_turn(command)

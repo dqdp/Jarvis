@@ -119,20 +119,26 @@ async def _create_conversation(app):
     return payload
 
 
-def _assert_direct_plan(
+def _assert_agent_loop_request_metadata(
     metadata: dict,
     *,
-    scenario: str,
-    tool_names: list[str],
-    capabilities: list[str],
-    scope_hint: str | None = None,
+    requested_mode: str = "auto",
+    tool_policy: str = "available",
 ) -> None:
-    plan = metadata["loop_selection_direct_tool_plan"]
-    assert plan["version"] == 1
-    assert plan["scenario"] == scenario
-    assert plan["tool_names"] == tool_names
-    assert plan["capabilities"] == capabilities
-    assert plan["scope_hint"] == scope_hint
+    assert metadata["requested_loop_mode"] == requested_mode
+    assert metadata["selected_loop_strategy"] == "tool_react_loop"
+    assert metadata["loop_strategy"] == "tool_react_loop"
+    assert metadata["selected_model_profile"] == "local_main"
+    assert metadata["model_profile"] == "local_main"
+    assert metadata["agent_tool_policy"] == tool_policy
+    assert metadata["request_plan_reason_code"].startswith("request_plan_")
+    assert "loop_selection_status" not in metadata
+    assert "loop_selection_reason_code" not in metadata
+    assert "loop_selection_classification_source" not in metadata
+    assert "loop_selection_confidence" not in metadata
+    assert "loop_selection_intent_family" not in metadata
+    assert "loop_selection_tool_names" not in metadata
+    assert "loop_selection_direct_tool_plan" not in metadata
     assert "loop_selection_direct_tool_name" not in metadata
     assert "loop_selection_direct_tool_names" not in metadata
     assert "loop_selection_direct_scenario" not in metadata
@@ -557,10 +563,7 @@ def test_message_without_loop_strategy_uses_auto_mode(app_parts) -> None:
     status, payload = asyncio.run(scenario())
 
     assert status == 200
-    assert payload["metadata"]["requested_loop_mode"] == "auto"
-    assert payload["metadata"]["selected_loop_strategy"] == "memory_augmented_answer"
-    assert payload["metadata"]["loop_strategy"] == "memory_augmented_answer"
-    assert payload["metadata"]["model_profile"] == "local_main"
+    _assert_agent_loop_request_metadata(payload["metadata"])
 
 
 def test_auto_mode_persists_requested_mode_and_selected_loop_metadata(app_parts) -> None:
@@ -584,14 +587,7 @@ def test_auto_mode_persists_requested_mode_and_selected_loop_metadata(app_parts)
     status, payload = asyncio.run(scenario())
 
     assert status == 200
-    metadata = payload["metadata"]
-    assert metadata["requested_loop_mode"] == "auto"
-    assert metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert metadata["loop_strategy"] == "tool_react_loop"
-    assert metadata["selected_model_profile"] == "local_structured"
-    assert metadata["model_profile"] == "local_structured"
-    assert metadata["loop_selection_status"] == "selected"
-    assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
+    _assert_agent_loop_request_metadata(payload["metadata"])
 
 
 def test_auto_mode_routes_current_time_question_to_safe_builtin_tool_loop(app_parts) -> None:
@@ -614,11 +610,7 @@ def test_auto_mode_routes_current_time_question_to_safe_builtin_tool_loop(app_pa
     status, payload = asyncio.run(scenario())
 
     assert status == 200
-    metadata = payload["metadata"]
-    assert metadata["requested_loop_mode"] == "auto"
-    assert metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert metadata["selected_model_profile"] == "local_structured"
-    assert metadata["loop_selection_reason_code"] == "tool_intent_safe_builtin"
+    _assert_agent_loop_request_metadata(payload["metadata"])
 
 
 def test_auto_mode_routes_russian_cpu_temperature_to_system_sensors(app_parts) -> None:
@@ -641,18 +633,7 @@ def test_auto_mode_routes_russian_cpu_temperature_to_system_sensors(app_parts) -
     status, payload = asyncio.run(scenario())
 
     assert status == 200
-    metadata = payload["metadata"]
-    assert metadata["requested_loop_mode"] == "auto"
-    assert metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert metadata["selected_model_profile"] == "local_structured"
-    assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
-    assert metadata["loop_selection_tool_names"] == ["tool.system.read.sensors"]
-    _assert_direct_plan(
-        metadata,
-        scenario="sensor_temperature",
-        tool_names=["tool.system.read.sensors"],
-        capabilities=["tool.system.read.sensors"],
-    )
+    _assert_agent_loop_request_metadata(payload["metadata"])
 
 
 def test_auto_mode_routes_russian_free_memory_to_system_resources(app_parts) -> None:
@@ -675,18 +656,7 @@ def test_auto_mode_routes_russian_free_memory_to_system_resources(app_parts) -> 
     status, payload = asyncio.run(scenario())
 
     assert status == 200
-    metadata = payload["metadata"]
-    assert metadata["requested_loop_mode"] == "auto"
-    assert metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert metadata["selected_model_profile"] == "local_structured"
-    assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
-    assert metadata["loop_selection_tool_names"] == ["tool.system.read.resources"]
-    _assert_direct_plan(
-        metadata,
-        scenario="memory_overview",
-        tool_names=["tool.system.read.resources"],
-        capabilities=["tool.system.read.resources"],
-    )
+    _assert_agent_loop_request_metadata(payload["metadata"])
 
 
 def test_auto_mode_routes_russian_cpu_cores_and_load_to_cpu_overview_plan(app_parts) -> None:
@@ -709,28 +679,7 @@ def test_auto_mode_routes_russian_cpu_cores_and_load_to_cpu_overview_plan(app_pa
     status, payload = asyncio.run(scenario())
 
     assert status == 200
-    metadata = payload["metadata"]
-    assert metadata["requested_loop_mode"] == "auto"
-    assert metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert metadata["selected_model_profile"] == "local_structured"
-    assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
-    assert metadata["loop_selection_tool_names"] == [
-        "tool.system.read.hardware",
-        "tool.system.read.resources",
-    ]
-    _assert_direct_plan(
-        metadata,
-        scenario="cpu_overview",
-        tool_names=[
-            "tool.system.read.hardware",
-            "tool.system.read.resources",
-        ],
-        capabilities=[
-            "tool.system.read.hardware",
-            "tool.system.read.resources",
-        ],
-        scope_hint="cpu_overview",
-    )
+    _assert_agent_loop_request_metadata(payload["metadata"])
 
 
 def test_auto_mode_routes_russian_os_version_to_hardware_tool(app_parts) -> None:
@@ -753,19 +702,7 @@ def test_auto_mode_routes_russian_os_version_to_hardware_tool(app_parts) -> None
     status, payload = asyncio.run(scenario())
 
     assert status == 200
-    metadata = payload["metadata"]
-    assert metadata["requested_loop_mode"] == "auto"
-    assert metadata["selected_loop_strategy"] == "tool_react_loop"
-    assert metadata["selected_model_profile"] == "local_structured"
-    assert metadata["loop_selection_reason_code"] == "tool_intent_system_diagnostics"
-    assert metadata["loop_selection_tool_names"] == ["tool.system.read.hardware"]
-    _assert_direct_plan(
-        metadata,
-        scenario="os_version",
-        tool_names=["tool.system.read.hardware"],
-        capabilities=["tool.system.read.hardware"],
-        scope_hint="os_version",
-    )
+    _assert_agent_loop_request_metadata(payload["metadata"])
 
 
 def test_auto_mode_emits_loop_selection_event(app_parts) -> None:
@@ -813,6 +750,10 @@ def test_auto_mode_emits_loop_selection_event(app_parts) -> None:
     )
     assert completed.payload["request_id"] == accepted["request_id"]
     assert completed.payload["selected_loop_strategy"] == "tool_react_loop"
+    assert completed.payload["request_plan_reason_code"] == "request_plan_auto_agent_loop"
+    assert "intent_family" not in completed.payload
+    assert "classification_source" not in completed.payload
+    assert "confidence" not in completed.payload
     assert "check cpu temperature" not in json.dumps(completed.payload)
     assert "user_input" not in completed.payload
     assert "prompt" not in completed.payload
@@ -902,7 +843,7 @@ def test_model_profile_selection_failure_emits_loop_selection_failed_event(app_p
                 "client_message_id": "client-selection-profile-failed-event",
                 "content": "what is listening on port 8080?",
                 "sensitivity": "project",
-                "model_profile": "local_main",
+                "model_profile": "local_embedding",
                 "working_directory": str(Path.cwd()),
             },
         )
@@ -918,8 +859,11 @@ def test_model_profile_selection_failure_emits_loop_selection_failed_event(app_p
     assert EventType.LOOP_SELECTION_FAILED in [event.event_type for event in events]
     assert EventType.LOOP_SELECTION_COMPLETED not in [event.event_type for event in events]
     failed = next(event for event in events if event.event_type is EventType.LOOP_SELECTION_FAILED)
-    assert failed.payload["decision_status"] == "invalid_override"
-    assert failed.payload["reason_code"] == "model_profile_invalid_for_selected_loop"
+    assert failed.payload["request_plan_status"] == "invalid_override"
+    assert (
+        failed.payload["request_plan_reason_code"]
+        == "request_plan_model_profile_invalid_for_selected_loop"
+    )
 
 
 def test_invalid_loop_strategy_emits_loop_selection_failed_event(app_parts) -> None:
@@ -951,7 +895,8 @@ def test_invalid_loop_strategy_emits_loop_selection_failed_event(app_parts) -> N
     failed = next(event for event in events if event.event_type is EventType.LOOP_SELECTION_FAILED)
     assert started.payload["requested_mode"] == "invalid_override"
     assert failed.payload["requested_mode"] == "invalid_override"
-    assert failed.payload["decision_status"] == "invalid_override"
+    assert failed.payload["request_plan_status"] == "invalid_override"
+    assert failed.payload["request_plan_reason_code"] == "request_plan_invalid_override"
 
 
 def test_failed_pre_submit_selection_does_not_collide_with_later_accepted_request(
@@ -968,6 +913,7 @@ def test_failed_pre_submit_selection_does_not_collide_with_later_accepted_reques
                 "client_message_id": "client-retry-after-selection-failure",
                 "content": "show cpu usage",
                 "sensitivity": "project",
+                "model_profile": "local_embedding",
             },
         )
         assert status == 400
@@ -1018,9 +964,7 @@ def test_model_profile_matches_selected_loop(app_parts) -> None:
     status, payload = asyncio.run(scenario())
 
     assert status == 200
-    assert payload["metadata"]["selected_loop_strategy"] == "tool_react_loop"
-    assert payload["metadata"]["selected_model_profile"] == "local_structured"
-    assert payload["metadata"]["model_profile"] == "local_structured"
+    _assert_agent_loop_request_metadata(payload["metadata"])
 
 
 def test_tools_disabled_does_not_silently_fallback_to_chat(app_parts) -> None:
@@ -1042,7 +986,7 @@ def test_tools_disabled_does_not_silently_fallback_to_chat(app_parts) -> None:
             settings=disabled_settings,
         )
         conversation = await _create_conversation(app)
-        return await _request(
+        status, accepted = await _request(
             app,
             "POST",
             f"/v1/conversations/{conversation['conversation_id']}/messages",
@@ -1052,12 +996,13 @@ def test_tools_disabled_does_not_silently_fallback_to_chat(app_parts) -> None:
                 "sensitivity": "project",
             },
         )
+        assert status == 202
+        return await _request(app, "GET", f"/v1/requests/{accepted['request_id']}")
 
     status, payload = asyncio.run(scenario())
 
-    assert status == 400
-    assert payload["error"]["code"] == "invalid_request"
-    assert payload["error"]["message"] == "tool loop is disabled by policy"
+    assert status == 200
+    _assert_agent_loop_request_metadata(payload["metadata"], tool_policy="disabled")
 
 
 def test_tool_loop_budget_without_tool_calls_rejects_before_request_persistence(app_parts) -> None:
@@ -1086,7 +1031,7 @@ def test_tool_loop_budget_without_tool_calls_rejects_before_request_persistence(
             policy=policy,
         )
         conversation = await _create_conversation(app)
-        status, payload = await _request(
+        status, accepted = await _request(
             app,
             "POST",
             f"/v1/conversations/{conversation['conversation_id']}/messages",
@@ -1097,26 +1042,26 @@ def test_tool_loop_budget_without_tool_calls_rejects_before_request_persistence(
                 "working_directory": str(Path.cwd()),
             },
         )
-        request = await conversation_store.get_assistant_request(payload["error"]["request_id"])
-        events = await event_log.query(EventFilter(request_id=payload["error"]["request_id"]))
-        return status, payload, request, events
+        assert status == 202
+        request = await conversation_store.get_assistant_request(accepted["request_id"])
+        events = await event_log.query(EventFilter(request_id=accepted["request_id"]))
+        return status, accepted, request, events
 
     status, payload, request, events = asyncio.run(scenario())
 
-    assert status == 400
-    assert payload["error"]["code"] == "invalid_request"
-    assert payload["error"]["message"] == "tool loop is not executable by runtime budget"
-    assert request is None
+    assert status == 202
+    assert payload["request_id"]
+    assert request is not None
+    assert request.metadata["agent_tool_policy"] == "disabled"
     assert EventType.LOOP_SELECTION_STARTED in [event.event_type for event in events]
-    assert EventType.LOOP_SELECTION_FAILED in [event.event_type for event in events]
-    failed = next(event for event in events if event.event_type is EventType.LOOP_SELECTION_FAILED)
-    assert failed.payload["reason_code"] == "selected_tool_loop_budget_unavailable"
+    assert EventType.LOOP_SELECTION_COMPLETED in [event.event_type for event in events]
+    assert EventType.LOOP_SELECTION_FAILED not in [event.event_type for event in events]
 
 
-def test_tool_auto_requires_explicit_working_directory_scope(app_parts) -> None:
+def test_tool_auto_without_working_directory_filters_scope_bound_tools(app_parts) -> None:
     async def scenario():
         conversation = await _create_conversation(app_parts)
-        return await _request(
+        status, accepted = await _request(
             app_parts,
             "POST",
             f"/v1/conversations/{conversation['conversation_id']}/messages",
@@ -1126,13 +1071,15 @@ def test_tool_auto_requires_explicit_working_directory_scope(app_parts) -> None:
                 "sensitivity": "project",
             },
         )
+        assert status == 202
+        return await _request(app_parts, "GET", f"/v1/requests/{accepted['request_id']}")
 
     status, payload = asyncio.run(scenario())
 
-    assert status == 400
-    assert payload["error"]["code"] == "invalid_request"
-    assert payload["error"]["message"] == "tool loop is rejected by policy"
-    assert payload["error"]["request_id"]
+    assert status == 200
+    _assert_agent_loop_request_metadata(payload["metadata"])
+    assert "datetime.now" in payload["metadata"]["agent_allowed_tool_names"]
+    assert "tool.system.read.resources" not in payload["metadata"]["agent_allowed_tool_names"]
 
 
 def test_explicit_tools_mode_is_rejected_when_tools_disabled(app_parts) -> None:
@@ -1173,12 +1120,12 @@ def test_explicit_tools_mode_is_rejected_when_tools_disabled(app_parts) -> None:
     assert payload["error"]["message"] == "tool loop is disabled by policy"
 
 
-def test_request_metadata_keeps_selected_model_profile_resolution_after_loop_selection(
+def test_request_metadata_uses_main_model_profile_for_agent_loop(
     app_parts,
 ) -> None:
     async def scenario():
         conversation = await _create_conversation(app_parts)
-        return await _request(
+        status, accepted = await _request(
             app_parts,
             "POST",
             f"/v1/conversations/{conversation['conversation_id']}/messages",
@@ -1190,12 +1137,13 @@ def test_request_metadata_keeps_selected_model_profile_resolution_after_loop_sel
                 "working_directory": str(Path.cwd()),
             },
         )
+        assert status == 202
+        return await _request(app_parts, "GET", f"/v1/requests/{accepted['request_id']}")
 
     status, payload = asyncio.run(scenario())
 
-    assert status == 400
-    assert payload["error"]["code"] == "invalid_request"
-    assert payload["error"]["message"] == "model profile purpose is not valid for selected loop"
+    assert status == 200
+    _assert_agent_loop_request_metadata(payload["metadata"])
 
 
 def test_conflicting_client_message_id_returns_409(app_parts) -> None:
