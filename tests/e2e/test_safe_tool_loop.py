@@ -203,7 +203,7 @@ def test_safe_tool_loop_malformed_tool_request_fails_safely() -> None:
     assert EventType.TOOL_CALL_STARTED not in [event.event_type for event in events]
 
 
-def test_safe_tool_loop_budget_exhaustion_fails_safely() -> None:
+def test_safe_tool_loop_budget_exhaustion_finishes_with_final_chat() -> None:
     result, request, events = asyncio.run(
         _run_tool_loop(
             [
@@ -226,9 +226,11 @@ def test_safe_tool_loop_budget_exhaustion_fails_safely() -> None:
         ),
     )
 
-    assert isinstance(result, Exception)
-    assert request.status == RequestStatus.FAILED
+    assert not isinstance(result, Exception)
+    assert request.status == RequestStatus.COMPLETED
+    assert result.response_text == "fake response"
     completed_tool_calls = [
         event for event in events if event.event_type == EventType.TOOL_CALL_COMPLETED
     ]
     assert len(completed_tool_calls) == 2
+    assert EventType.REQUEST_PROCESSING_COMPLETED in [event.event_type for event in events]

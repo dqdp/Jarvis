@@ -443,6 +443,78 @@ def test_tool_react_loop_uses_chat_model_for_final_answer_after_proposal() -> No
     assert assembler.seen_contracts[1] is None
 
 
+def test_tool_react_loop_uses_final_chat_when_tool_budget_is_exhausted() -> None:
+    class Gateway:
+        calls = 0
+
+        async def invoke(self, request):
+            from datetime import UTC, datetime
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls += 1
+            now = datetime.now(UTC)
+            return ToolObservation.empty(
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                sensitivity=request.sensitivity,
+                started_at=now,
+                completed_at=now,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [{"action": "tool_call", "tool_name": "datetime.now", "arguments": {}}],
+            chat_response="final after budget",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            _request(
+                budget=replace(_budget(), max_tool_calls=1),
+                metadata=_tool_plan_metadata("datetime.now"),
+            )
+        )
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "final after budget"
+    assert result.used_tool_calls == 1
+    assert gateway.calls == 1
+    assert router.structured_calls == 1
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_falls_back_to_chat_when_available_proposal_is_non_tool_shape() -> None:
+    async def scenario():
+        router = FakeStructuredAndChatRouter(
+            [{"answer": "not a tool proposal"}],
+            chat_response="plain joke",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        result = await loop.run_turn(_request(metadata=_tool_plan_metadata("datetime.now")))
+        return result, router
+
+    result, router = asyncio.run(scenario())
+
+    assert result.response_text == "plain joke"
+    assert result.used_tool_calls == 0
+    assert router.structured_calls == 1
+    assert router.chat_calls == 1
+
+
 def test_parse_tool_proposal_accepts_tool_call_and_final_answer() -> None:
     tool_call = parse_tool_proposal(
         {"action": "tool_call", "tool_name": "fake.echo", "arguments": {"message": "hi"}},

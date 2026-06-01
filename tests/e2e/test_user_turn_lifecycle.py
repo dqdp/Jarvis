@@ -306,3 +306,25 @@ def test_transcript_like_tool_turn_uses_toolgateway() -> None:
     )
     assert loop_completed.payload["used_tool_calls"] == 1
     assert len(invocations) == 3
+
+
+def test_transcript_like_tool_turn_falls_back_to_final_chat_after_tool_budget() -> None:
+    _, stream_events, request_status, messages, events, invocations = _run_user_turn_lifecycle(
+        content="Джарвис, сколько времени?",
+        client_message_id="client-transcript-tool-budget",
+        chat_response="budget fallback OK",
+        structured_text_responses=[
+            '{"action":"tool_call","tool_name":"datetime.now","arguments":{}}',
+            '{"action":"tool_call","tool_name":"datetime.now","arguments":{}}',
+        ],
+        tool_adapters=[datetime_now_tool()],
+    )
+
+    assert stream_events[-1] == "request.processing.completed"
+    assert request_status["status"] == "completed"
+    assert messages["messages"][-1]["content"] == "budget fallback OK"
+    loop_completed = next(
+        event for event in events if event.event_type == EventType.AGENT_LOOP_COMPLETED
+    )
+    assert loop_completed.payload["used_tool_calls"] == 2
+    assert len(invocations) == 3

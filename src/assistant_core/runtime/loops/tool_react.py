@@ -172,7 +172,11 @@ class ToolReactLoop:
                             tool_observation_refs=tuple(tool_observation_refs),
                             output_contract=(
                                 None
-                                if request_plan[0] == "disabled"
+                                if _should_use_final_chat_without_proposal(
+                                    request_plan,
+                                    used_tool_calls=used_tool_calls,
+                                    budget=request.budget,
+                                )
                                 else _tool_proposal_output_contract(
                                     request_plan,
                                     used_tool_calls=used_tool_calls,
@@ -189,7 +193,11 @@ class ToolReactLoop:
                 if used_model_calls >= request.budget.max_model_calls:
                     raise RuntimeError("max_model_calls_exceeded")
                 used_model_calls += 1
-                if request_plan[0] == "disabled":
+                if _should_use_final_chat_without_proposal(
+                    request_plan,
+                    used_tool_calls=used_tool_calls,
+                    budget=request.budget,
+                ):
                     try:
                         chat_response = await asyncio.wait_for(
                             self._model_router.chat(
@@ -246,7 +254,87 @@ class ToolReactLoop:
                     if _wall_time_expired(loop_deadline):
                         raise RuntimeError("max_wall_time_exceeded") from exc
                     raise
-                proposal = parse_tool_proposal(model_response.value)
+                try:
+                    proposal = parse_tool_proposal(model_response.value)
+                except ToolProposalParseError as exc:
+                    if not _should_fallback_to_final_chat_after_malformed_proposal(
+                        model_response.value,
+                        request_plan,
+                        used_tool_calls=used_tool_calls,
+                    ):
+                        raise
+                    if used_model_calls >= request.budget.max_model_calls:
+                        raise RuntimeError("max_model_calls_exceeded") from exc
+                    final_context_started = await self._append_event(
+                        EventType.CONTEXT_ASSEMBLY_STARTED,
+                        request,
+                        payload={
+                            "step_id": step_id,
+                            "step_index": step_index,
+                            "purpose": "final_answer",
+                        },
+                        causation_id=step_started.event_id,
+                    )
+                    final_context = await asyncio.wait_for(
+                        self._context_assembler.assemble(
+                            ContextAssemblyRequest(
+                                request_id=request.request_id,
+                                conversation_id=request.conversation_id,
+                                user_id=request.user_id,
+                                current_user_message=request.user_input,
+                                active_project_namespace=request.active_project_namespace,
+                                loop_strategy=request.strategy_name.value,
+                                model_profile=request.model_profile,
+                                current_message_sensitivity=request.current_message_sensitivity,
+                                current_user_message_id=request.user_message_id,
+                                causation_event_id=final_context_started.event_id,
+                                purpose="final_answer",
+                                permission_mode=request.permission_mode,
+                                tool_observation_refs=tuple(tool_observation_refs),
+                                output_contract=None,
+                            ),
+                        ),
+                        timeout=_remaining_timeout(
+                            loop_deadline,
+                            request.budget.max_context_assembly_seconds,
+                        ),
+                    )
+                    context_manifest_refs.append(final_context.manifest.context_manifest_id)
+                    used_model_calls += 1
+                    try:
+                        chat_response = await asyncio.wait_for(
+                            self._model_router.chat(
+                                ChatModelRequest(
+                                    profile=request.model_profile,
+                                    messages=final_context.messages,
+                                    sensitivity=final_context.manifest.max_sensitivity,
+                                    request_id=request.request_id,
+                                    conversation_id=request.conversation_id,
+                                    context_manifest_id=final_context.manifest.context_manifest_id,
+                                ),
+                            ),
+                            timeout=_remaining_timeout(
+                                loop_deadline,
+                                request.budget.max_model_call_seconds,
+                            ),
+                        )
+                    except TimeoutError as timeout_exc:
+                        if _wall_time_expired(loop_deadline):
+                            raise RuntimeError("max_wall_time_exceeded") from timeout_exc
+                        raise
+                    return await self._complete(
+                        request,
+                        ToolProposal(
+                            action="final_answer",
+                            final_answer=chat_response.text,
+                        ),
+                        step_started=step_started,
+                        used_model_calls=used_model_calls,
+                        used_tool_calls=used_tool_calls,
+                        context_manifest_refs=tuple(context_manifest_refs),
+                        tool_observation_refs=tuple(tool_observation_refs),
+                        sensitivity=final_context.manifest.max_sensitivity,
+                    )
                 if proposal.action == "final_answer":
                     _ensure_final_answer_allowed(
                         request_plan,
@@ -734,6 +822,36 @@ def _tool_proposal_output_contract(
     if policy == "required" and used_tool_calls <= 0:
         lines.append("A tool call is required before the final answer.")
     return " ".join(lines)
+
+
+def _should_use_final_chat_without_proposal(
+    request_plan: tuple[str | None, frozenset[str] | None],
+    *,
+    used_tool_calls: int,
+    budget: LoopBudget,
+) -> bool:
+    policy, _allowed = request_plan
+    if policy == "disabled":
+        return True
+    if used_tool_calls < budget.max_tool_calls:
+        return False
+    return not (policy == "required" and used_tool_calls <= 0)
+
+
+def _should_fallback_to_final_chat_after_malformed_proposal(
+    value: Any,
+    request_plan: tuple[str | None, frozenset[str] | None],
+    *,
+    used_tool_calls: int,
+) -> bool:
+    policy, _allowed = request_plan
+    if policy not in {"available", "required"}:
+        return False
+    if policy == "required" and used_tool_calls <= 0:
+        return False
+    if isinstance(value, dict) and value.get("action") == "tool_call":
+        return False
+    return True
 
 
 def _ensure_final_answer_allowed(
