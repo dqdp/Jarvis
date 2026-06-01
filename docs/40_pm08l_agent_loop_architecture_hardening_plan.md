@@ -398,6 +398,16 @@ Tests first:
 - request-plan tool availability cannot drift from the actual ToolGateway
   registry.
 
+Evidence targets:
+
+- `test_runtime_app_factory_api_no_tool_turn_persists_transcript`;
+- `test_runtime_app_factory_api_tool_turn_replays_after_new_app_instance`;
+- `test_runtime_app_factory_api_unavailable_tool_turn_replays_after_new_app_instance`;
+- `test_runtime_app_factory_api_denied_approval_finishes_controlled`;
+- `test_default_runtime_can_execute_default_agent_loop_without_tool_registry`;
+- request-plan drift guard tests for missing gateway tools and metadata
+  mismatches.
+
 Implementation:
 
 - update PM-09 entry docs to depend on the hardened PM-08l agent loop;

@@ -290,6 +290,7 @@ class ToolGateway:
                     spec,
                     policy_decision_id=decision.decision_id,
                     error_code=tool_classification.code,
+                    policy_outcome=decision.outcome.value,
                 ),
             )
             await self._audit.record_observation(

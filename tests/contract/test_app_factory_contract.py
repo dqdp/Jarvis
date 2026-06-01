@@ -15,7 +15,9 @@ from assistant_core.config.settings import ConfigLoader
 from assistant_core.domain.conversations import CreateConversationCommand, MessageSubmissionCommand
 from assistant_core.domain.events import EventType
 from assistant_core.domain.loops import LoopStrategyName
+from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
+from assistant_core.domain.system_diagnostics import SensorSnapshot, SystemDiagnosticsFamily
 from assistant_core.models.fake_provider import FakeEmbeddingProvider, FakeModelProvider
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.runtime.agent_runtime import RuntimeTurnCommand
@@ -23,6 +25,7 @@ from assistant_core.storage.conversation_store import PostgresConversationStore
 from assistant_core.storage.event_log import PostgresEventLog
 from assistant_core.storage.database import assert_test_database_url, create_database_engine
 from assistant_core.storage.migrations import run_migrations
+from assistant_core.tools.system_diagnostics import SystemDiagnosticsTool
 
 
 pytestmark = [pytest.mark.contract, pytest.mark.db]
@@ -43,7 +46,7 @@ async def _truncate_runtime_app(database_url: str) -> None:
             await connection.execute(text("set local jarvis.allow_events_truncate = 'on'"))
             await connection.execute(
                 text(
-                    "truncate table content_embeddings, content_chunks, content_sources, "
+                    "truncate table approvals, content_embeddings, content_chunks, content_sources, "
                     "memory_embeddings, memory_candidates, memories, "
                     "model_invocations, assistant_requests, messages, conversations, events "
                     "restart identity cascade",
@@ -81,6 +84,16 @@ def _sse_event_payloads(raw: str) -> list[tuple[str, dict[str, Any]]]:
     return events
 
 
+async def _wait_request_status(app, request_id: str, status: str, *, attempts: int = 100):
+    for _ in range(attempts):
+        _, request_raw = await _request(app, "GET", f"/v1/requests/{request_id}")
+        request_payload = json.loads(request_raw)
+        if request_payload["status"] == status:
+            return request_payload
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"request {request_id} did not reach status {status}")
+
+
 def _tool_plan_metadata(*tool_names: str, policy: str = "available") -> dict[str, Any]:
     return {
         "agent_tool_policy": policy,
@@ -107,6 +120,15 @@ class BlockingStreamModelProvider(FakeModelProvider):
         self.started.set()
         await asyncio.Event().wait()
         yield "unreachable"
+
+
+class FakeUnavailableSensorProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def snapshot_temperatures(self) -> SensorSnapshot:
+        self.calls += 1
+        return SensorSnapshot.unavailable(source="thermal-sysfs", reason="not available")
 
 
 def test_runtime_app_factory_builds_dogfood_app_with_fake_providers() -> None:
@@ -886,3 +908,450 @@ def test_runtime_app_factory_api_runs_safe_route_through_agent_loop() -> None:
     assert request_payload["status"] == "completed"
     assert EventType.TOOL_CALL_COMPLETED in event_types
     assert structured_calls == 2
+
+
+def test_runtime_app_factory_api_no_tool_turn_persists_transcript() -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        provider = FakeModelProvider(
+            chat_response="plain transcript answer",
+            structured_text_responses=[json.dumps({"action": "final_answer"})],
+        )
+        runtime_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            providers={
+                "local_main": provider,
+                "local_structured": FakeModelProvider(),
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        try:
+            app = runtime_app.app
+            _, conversation_raw = await _request(
+                app,
+                "POST",
+                "/v1/conversations",
+                {"title": "factory transcript", "active_project_namespace": "project.personal_assistant"},
+            )
+            conversation = json.loads(conversation_raw)
+            status_code, message_raw = await _request(
+                app,
+                "POST",
+                f"/v1/conversations/{conversation['conversation_id']}/messages",
+                {
+                    "client_message_id": "client-factory-transcript-no-tool",
+                    "content": "Расскажи короткий факт.",
+                    "sensitivity": "project",
+                },
+            )
+            submitted = json.loads(message_raw)
+            _, stream_raw = await _request(
+                app,
+                "GET",
+                f"/v1/requests/{submitted['request_id']}/stream",
+            )
+            _, messages_raw = await _request(
+                app,
+                "GET",
+                f"/v1/conversations/{conversation['conversation_id']}/messages",
+            )
+            return status_code, _sse_events(stream_raw), json.loads(messages_raw), provider
+        finally:
+            await runtime_app.dispose()
+
+    status_code, stream_events, messages, provider = asyncio.run(scenario())
+
+    assert status_code == 202
+    assert stream_events[-1] == EventType.REQUEST_PROCESSING_COMPLETED.value
+    assert [message["role"] for message in messages["messages"]] == ["user", "assistant"]
+    assert messages["messages"][0]["content"] == "Расскажи короткий факт."
+    assert messages["messages"][1]["content"] == "plain transcript answer"
+    assert provider.structured_calls == 1
+    assert provider.chat_calls == 1
+
+
+def test_runtime_app_factory_api_tool_turn_replays_after_new_app_instance() -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        first_provider = FakeModelProvider(
+            chat_response="tool transcript answer",
+            structured_text_responses=[
+                json.dumps(
+                    {
+                        "action": "tool_call",
+                        "tool_name": "datetime.now",
+                        "arguments": {},
+                    },
+                ),
+                json.dumps({"action": "final_answer"}),
+            ],
+        )
+        first_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            providers={
+                "local_main": first_provider,
+                "local_structured": FakeModelProvider(),
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        first_disposed = False
+        try:
+            _, conversation_raw = await _request(
+                first_app.app,
+                "POST",
+                "/v1/conversations",
+                {"title": "factory tool transcript", "active_project_namespace": "project.personal_assistant"},
+            )
+            conversation = json.loads(conversation_raw)
+            _, message_raw = await _request(
+                first_app.app,
+                "POST",
+                f"/v1/conversations/{conversation['conversation_id']}/messages",
+                {
+                    "client_message_id": "client-factory-tool-replay",
+                    "content": "Сколько времени?",
+                    "sensitivity": "project",
+                },
+            )
+            submitted = json.loads(message_raw)
+            _, first_stream_raw = await _request(
+                first_app.app,
+                "GET",
+                f"/v1/requests/{submitted['request_id']}/stream",
+            )
+            await first_app.dispose()
+            first_disposed = True
+
+            second_provider = FakeModelProvider(
+                chat_response="should not run",
+                structured_text_responses=[json.dumps({"action": "final_answer"})],
+            )
+            second_app = create_runtime_app(
+                database_url=database_url,
+                settings=settings,
+                providers={
+                    "local_main": second_provider,
+                    "local_structured": FakeModelProvider(),
+                    "local_embedding": FakeEmbeddingProvider(),
+                },
+            )
+            try:
+                _, replay_raw = await _request(
+                    second_app.app,
+                    "GET",
+                    f"/v1/requests/{submitted['request_id']}/stream",
+                )
+                _, messages_raw = await _request(
+                    second_app.app,
+                    "GET",
+                    f"/v1/conversations/{conversation['conversation_id']}/messages",
+                )
+                return (
+                    _sse_events(first_stream_raw),
+                    _sse_events(replay_raw),
+                    json.loads(messages_raw),
+                    first_provider,
+                    second_provider,
+                )
+            finally:
+                await second_app.dispose()
+        finally:
+            if not first_disposed:
+                await first_app.dispose()
+
+    first_events, replay_events, messages, first_provider, second_provider = asyncio.run(scenario())
+
+    assert first_events[-1] == EventType.REQUEST_PROCESSING_COMPLETED.value
+    assert EventType.TOOL_CALL_COMPLETED.value in first_events
+    assert replay_events[-1] == EventType.REQUEST_PROCESSING_COMPLETED.value
+    assert EventType.TOOL_CALL_COMPLETED.value in replay_events
+    assert messages["messages"][-1]["content"] == "tool transcript answer"
+    assert first_provider.structured_calls == 2
+    assert first_provider.chat_calls == 1
+    assert second_provider.structured_calls == 0
+    assert second_provider.chat_calls == 0
+
+
+def test_runtime_app_factory_api_unavailable_tool_turn_replays_after_new_app_instance(
+    monkeypatch,
+) -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+
+    async def scenario():
+        from assistant_core import app_factory
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        capabilities = {
+            **settings.capabilities,
+            "tool.system.read": {
+                **settings.capabilities["tool.system.read"],
+                "enabled_families": ["sensors"],
+            },
+        }
+        settings = replace(settings, capabilities=capabilities)
+        sensor_provider = FakeUnavailableSensorProvider()
+
+        def fake_system_diagnostics_tools_from_config(_capabilities):
+            return [
+                SystemDiagnosticsTool(
+                    family=SystemDiagnosticsFamily.SENSORS,
+                    allowed_roots=[Path.cwd()],
+                    sensor_provider=sensor_provider,
+                    timeout_seconds=1.0,
+                    platform="linux",
+                ),
+            ]
+
+        monkeypatch.setattr(
+            app_factory,
+            "system_diagnostics_tools_from_config",
+            fake_system_diagnostics_tools_from_config,
+        )
+        first_provider = FakeModelProvider(
+            chat_response="Temperature backend is unavailable.",
+            structured_text_responses=[
+                json.dumps(
+                    {
+                        "action": "tool_call",
+                        "tool_name": "tool.system.read.sensors",
+                        "arguments": {
+                            "argv": ["thermal-sysfs"],
+                            "cwd": str(Path.cwd()),
+                        },
+                    },
+                ),
+                json.dumps({"action": "final_answer"}),
+            ],
+        )
+        first_app = app_factory.create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            providers={
+                "local_main": first_provider,
+                "local_structured": FakeModelProvider(),
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        first_disposed = False
+        try:
+            _, conversation_raw = await _request(
+                first_app.app,
+                "POST",
+                "/v1/conversations",
+                {"title": "factory unavailable", "active_project_namespace": "project.personal_assistant"},
+            )
+            conversation = json.loads(conversation_raw)
+            _, message_raw = await _request(
+                first_app.app,
+                "POST",
+                f"/v1/conversations/{conversation['conversation_id']}/messages",
+                {
+                    "client_message_id": "client-factory-unavailable-replay",
+                    "content": "температура процессора",
+                    "sensitivity": "infra",
+                    "working_directory": str(Path.cwd()),
+                },
+            )
+            submitted = json.loads(message_raw)
+            _, first_stream_raw = await _request(
+                first_app.app,
+                "GET",
+                f"/v1/requests/{submitted['request_id']}/stream",
+            )
+            first_event_log = PostgresEventLog(first_app.engine)
+            first_events = await first_event_log.query(EventFilter(request_id=submitted["request_id"]))
+            await first_app.dispose()
+            first_disposed = True
+
+            second_provider = FakeModelProvider(
+                chat_response="should not run",
+                structured_text_responses=[json.dumps({"action": "final_answer"})],
+            )
+            second_app = app_factory.create_runtime_app(
+                database_url=database_url,
+                settings=settings,
+                providers={
+                    "local_main": second_provider,
+                    "local_structured": FakeModelProvider(),
+                    "local_embedding": FakeEmbeddingProvider(),
+                },
+            )
+            try:
+                _, replay_raw = await _request(
+                    second_app.app,
+                    "GET",
+                    f"/v1/requests/{submitted['request_id']}/stream",
+                )
+                _, messages_raw = await _request(
+                    second_app.app,
+                    "GET",
+                    f"/v1/conversations/{conversation['conversation_id']}/messages",
+                )
+                return (
+                    _sse_events(first_stream_raw),
+                    _sse_events(replay_raw),
+                    json.loads(messages_raw),
+                    [event.event_type for event in first_events],
+                    sensor_provider,
+                    first_provider,
+                    second_provider,
+                )
+            finally:
+                await second_app.dispose()
+        finally:
+            if not first_disposed:
+                await first_app.dispose()
+
+    (
+        first_events,
+        replay_events,
+        messages,
+        persisted_event_types,
+        sensor_provider,
+        first_provider,
+        second_provider,
+    ) = asyncio.run(scenario())
+
+    assert first_events[-1] == EventType.REQUEST_PROCESSING_COMPLETED.value
+    assert EventType.TOOL_SYSTEM_DIAGNOSTICS_UNAVAILABLE.value in first_events
+    assert replay_events[-1] == EventType.REQUEST_PROCESSING_COMPLETED.value
+    assert EventType.TOOL_SYSTEM_DIAGNOSTICS_UNAVAILABLE.value in replay_events
+    assert messages["messages"][-1]["content"] == "Temperature backend is unavailable."
+    assert EventType.TOOL_SYSTEM_DIAGNOSTICS_UNAVAILABLE in persisted_event_types
+    assert sensor_provider.calls == 1
+    assert first_provider.structured_calls == 2
+    assert first_provider.chat_calls == 1
+    assert second_provider.structured_calls == 0
+    assert second_provider.chat_calls == 0
+
+
+def test_runtime_app_factory_api_denied_approval_finishes_controlled() -> None:
+    database_url = _database_url()
+    assert_test_database_url(database_url)
+    run_migrations(database_url)
+
+    async def scenario():
+        from assistant_core.app_factory import create_runtime_app
+
+        await _truncate_runtime_app(database_url)
+        settings = ConfigLoader(Path("config")).load("test")
+        settings = replace(
+            settings,
+            permissions=replace(settings.permissions, mode=PermissionMode.LOCKED_DOWN),
+        )
+        provider = FakeModelProvider(
+            chat_response="should not reach final answer",
+            structured_text_responses=[
+                json.dumps(
+                    {
+                        "action": "tool_call",
+                        "tool_name": "tool.system.read.process",
+                        "arguments": {
+                            "argv": ["ps", "-Ao", "pid,comm,command"],
+                            "cwd": str(Path.cwd()),
+                        },
+                    },
+                ),
+            ],
+        )
+        runtime_app = create_runtime_app(
+            database_url=database_url,
+            settings=settings,
+            providers={
+                "local_main": provider,
+                "local_structured": FakeModelProvider(),
+                "local_embedding": FakeEmbeddingProvider(),
+            },
+        )
+        try:
+            app = runtime_app.app
+            _, conversation_raw = await _request(
+                app,
+                "POST",
+                "/v1/conversations",
+                {"title": "factory approval", "active_project_namespace": "project.personal_assistant"},
+            )
+            conversation = json.loads(conversation_raw)
+            status_code, message_raw = await _request(
+                app,
+                "POST",
+                f"/v1/conversations/{conversation['conversation_id']}/messages",
+                {
+                    "client_message_id": "client-factory-approval-denied",
+                    "content": "покажи процессы",
+                    "sensitivity": "infra",
+                    "loop_strategy": LoopStrategyName.TOOL_REACT_LOOP.value,
+                    "working_directory": str(Path.cwd()),
+                },
+            )
+            submitted = json.loads(message_raw)
+            waiting = await _wait_request_status(app, submitted["request_id"], "waiting_approval")
+            event_log = PostgresEventLog(runtime_app.engine)
+            approval_event = next(
+                event
+                for event in await event_log.query(EventFilter(request_id=submitted["request_id"]))
+                if event.event_type == EventType.APPROVAL_REQUIRED
+            )
+            approval_id = approval_event.payload["approval_id"]
+            deny_status, deny_raw = await _request(
+                app,
+                "POST",
+                f"/v1/approvals/{approval_id}/deny",
+                {"reason": "contract test denial"},
+            )
+            failed = await _wait_request_status(app, submitted["request_id"], "failed")
+            _, stream_raw = await _request(
+                app,
+                "GET",
+                f"/v1/requests/{submitted['request_id']}/stream",
+            )
+            return (
+                status_code,
+                waiting,
+                deny_status,
+                json.loads(deny_raw),
+                failed,
+                _sse_events(stream_raw),
+                provider,
+            )
+        finally:
+            await runtime_app.dispose()
+
+    (
+        status_code,
+        waiting,
+        deny_status,
+        denied_approval,
+        failed,
+        stream_events,
+        provider,
+    ) = asyncio.run(scenario())
+
+    assert status_code == 202
+    assert waiting["status"] == "waiting_approval"
+    assert deny_status == 200
+    assert denied_approval["status"] == "denied"
+    assert failed["status"] == "failed"
+    assert failed["error"]["code"] == "approval_denied"
+    assert stream_events[-1] == EventType.REQUEST_PROCESSING_FAILED.value
+    assert EventType.APPROVAL_DENIED.value in stream_events
+    assert provider.structured_calls == 1

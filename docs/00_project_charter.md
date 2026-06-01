@@ -162,10 +162,12 @@ Phase 1 не предназначена для:
     direct-answer hardening, request-quality gates and Codex-like interactive
     CLI shell UX, followed by canonical Jarvis runtime startup and PM-08k request
     handling cleanup. PM-08k makes the bounded agent loop the default
-    natural-language path and removes classifier-first routing before PM-09 voice
-    gateway foundation starts. PM-08l then hardens the agent-loop state machine,
-    finalization and tool-observation recovery contracts before voice. LangGraph
-    remains a follow-up for later durable workflows.
+    natural-language path and removes classifier-first routing before voice.
+    PM-08l then hardens the agent-loop state machine, finalization,
+    tool-observation recovery and DB-backed transcript-like API evidence. PM-09
+    voice gateway foundation remains blocked until the final PM-08l
+    verification/review gate is green. LangGraph remains a follow-up for later
+    durable workflows.
 11. Redis/NATS не вводятся как обязательная зависимость Phase 1.
 12. SSE — primary streaming transport.
 13. RuntimeStreamEvent schema transport-agnostic.

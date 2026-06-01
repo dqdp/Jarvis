@@ -205,10 +205,11 @@ Decision:
   direct-answer hardening, request-quality gates and Codex-like interactive CLI
   shell UX, followed by canonical Jarvis runtime startup and PM-08k request
   handling cleanup. PM-08k makes the bounded agent loop the default
-  natural-language path and removes classifier-first routing before PM-09 voice
-  gateway foundation follows. PM-08l hardens the agent-loop state machine,
-  finalization and tool-observation recovery contracts before voice. LangGraph
-  remains a follow-up for later durable workflows.
+  natural-language path and removes classifier-first routing before voice.
+  PM-08l hardens the agent-loop state machine, finalization, tool-observation
+  recovery and DB-backed transcript-like API evidence. PM-09 voice gateway
+  foundation remains blocked until the final PM-08l verification/review gate is
+  green. LangGraph remains a follow-up for later durable workflows.
 - All future loop strategies must define budgets, stopping conditions, policy hooks and emitted events.
 
 ## 9. Extension Points

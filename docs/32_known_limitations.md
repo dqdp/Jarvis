@@ -57,12 +57,13 @@ Completed PM-08 Alpha sequence so far:
 - PM-08h Historical tool-intent corpus evidence;
 - PM-08i interactive CLI shell UX hardening;
 - PM-08j canonical Jarvis runtime startup;
-- PM-08k agentic-loop-first request handling cleanup.
+- PM-08k agentic-loop-first request handling cleanup;
+- PM-08l agent-loop architecture hardening gate.
 
-Current PM-08 work:
+Current transition:
 
-- PM-08l agent-loop architecture hardening gate; PM-09 remains blocked until
-  the final DB-enabled PM-08l gate is green.
+- PM-09 remains blocked until the final DB-enabled PM-08l verification/review
+  gate is green and committed.
 
 Next priority:
 
