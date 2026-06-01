@@ -202,12 +202,12 @@ Decision:
   and the loop-strategy boundary were introduced.
 - Near-term priority is PM-08a through PM-08k: automatic loop selection, API
   lifecycle wiring, CLI mode controls, CLI tool/RAG/approval readiness,
-  direct-answer hardening, routing quality gates and Codex-like interactive CLI
+  direct-answer hardening, request-quality gates and Codex-like interactive CLI
   shell UX, followed by canonical Jarvis runtime startup and PM-08k request
-  routing architecture review/classifier calibration. PM-09 voice gateway
-  foundation follows only after the text CLI/API surface is usable,
-  operationally repeatable and routing-safe. LangGraph remains a follow-up for
-  later durable workflows.
+  handling cleanup. PM-08k makes the bounded agent loop the default
+  natural-language path and removes classifier-first routing before PM-09 voice
+  gateway foundation follows. LangGraph remains a follow-up for later durable
+  workflows.
 - All future loop strategies must define budgets, stopping conditions, policy hooks and emitted events.
 
 ## 9. Extension Points

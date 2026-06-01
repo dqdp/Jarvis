@@ -45,11 +45,10 @@ make cli
 
 The Ollama profile uses `qwen3.5:9b` for chat, `qwen3.5:2b` for structured
 classification, and `embeddinggemma:latest` for embeddings.
-Classifier fast-path routing is conservative: deterministic classification may
-bypass the structured model only above `0.9` confidence. The threshold is
-runtime-configurable through `JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD`.
-Smaller structured models such as `qwen3.5:0.8b` remain candidates until local
-intent-routing evaluation shows acceptable schema-following and routing quality.
+PM-08k supersedes classifier-first routing for the production request path:
+normal typed input and future voice transcripts should enter the bounded agent
+loop, with tool execution controlled by PolicyPort and ToolGatewayPort.
+Structured classifier model notes remain historical/evaluation context.
 
 ## Scope Boundary
 

@@ -503,12 +503,15 @@ def test_cli_does_not_import_route_registry_or_classifier_implementation() -> No
     )
 
 
-def test_request_resolver_complexity_is_recorded_for_follow_up() -> None:
+def test_rejected_routing_modules_are_recorded_for_follow_up() -> None:
     source = (PROJECT_ROOT / "docs" / "37_post_mvp_tdd_slices_plan.md").read_text(
         encoding="utf-8"
     )
 
-    assert "request_resolver.py module split follow-up" in source
+    assert "remove rejected routing modules follow-up" in source
+    assert "RequestResolver, route registry, model-route parser" in source
+    assert "classifier, threshold, `RequestResolver` and\n`RouteDecision` artifacts" in source
+    assert "They are not a\nPM-09 gate" in source
 
 
 def test_tool_react_loop_consumes_direct_tool_plan_not_loose_tool_name_metadata() -> None:

@@ -20,8 +20,8 @@
   post-MVP Alpha slices, not as original MVP scope.
 - Automatic loop selection and CLI readiness now cover PM-08a through PM-08i,
   including the Codex-like interactive shell surface. Canonical Jarvis runtime
-  startup is tracked as PM-08j and request routing architecture review/classifier
-  calibration is tracked as PM-08k before PM-09. PM-09 voice, durable graph
+  startup is tracked as PM-08j and agentic-loop-first request handling cleanup
+  is tracked as PM-08k before PM-09. PM-09 voice, durable graph
   checkpoints and full-screen TUI behavior remain future work.
 - MCP, planner-executor, voice, remembered approvals, durable background
   workers and external integrations remain future work.
@@ -50,13 +50,13 @@ Completed PM-08 Alpha sequence so far:
 - PM-08e Model-backed intent classifier adapter;
 - PM-08f Typed tool observations and direct-answer hardening;
 - PM-08g Direct planner and capability routing registry cleanup;
-- PM-08h Tool-intent corpus hardening and pre-voice routing gate;
+- PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate;
 - PM-08i interactive CLI shell UX hardening.
 
 Next priority:
 
 - PM-08j canonical Jarvis runtime startup;
-- PM-08k request routing architecture review and classifier calibration;
+- PM-08k agentic-loop-first request handling cleanup;
 - PM-09 voice gateway foundation;
 
 Later priority candidates:

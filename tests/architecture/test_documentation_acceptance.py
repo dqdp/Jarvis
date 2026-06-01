@@ -348,7 +348,7 @@ def test_pm09_docs_gate_on_full_pm08_sequence_through_pm08k() -> None:
     assert "after PM-08j and must use" not in docs_text
     assert "after PM-08d CLI tool/RAG/approval readiness, PM-08f" not in docs_text
     assert "canonical jarvis runtime startup" in docs_text.lower()
-    assert "request routing architecture review" in docs_text.lower()
+    assert "agentic-loop-first request handling" in docs_text.lower()
     assert "jarvis-up" in docs_text
     assert "dogfood-up" not in docs_text
     assert "PM-08j complete" in docs_text
@@ -384,33 +384,49 @@ def test_pm08k_research_gate_records_architecture_decision() -> None:
     assert "Decision Matrix" in pm08k
     assert "mandatory front-gate LLM classifier is rejected as the default" in pm08k
     assert "Hybrid Request Resolver" in pm08k
-    assert "main-model tool calling is deferred" in pm08k
+    assert "agentic-loop-first" in pm08k
+    assert "runtime LLM route adjudication and route-threshold tuning are removed" in pm08k
     assert "PM-08k.1" in pm08k
     assert "PM-08k.2" in pm08k
     assert "PM-08k.3" in pm08k
+    assert "calibration report before changing defaults" not in pm08k
+    assert "not a calibration\n  gate" in pm08k
 
 
-def test_pm08k_plan_records_agreed_resolver_design_choices() -> None:
+def test_pm08k_plan_records_agreed_agentic_loop_design_choices() -> None:
     pm08k = (DOCS_ROOT / "38_pm08k_classifier_contract_simplification.md").read_text(
         encoding="utf-8",
     )
 
     for phrase in [
-        "RequestResolver",
-        "RouteDecision",
-        "Abstain",
-        "Clarify",
-        "Unavailable",
-        "medium-grained route taxonomy",
-        "current_time",
-        "system_memory",
-        "ordinary chat bypass",
-        "obvious chat must not call the classifier",
-        "non-LLM semantic layer starts as evaluation/calibration only",
-        "LLM adjudicator is optional and late-stage",
+        "bounded agent loop",
+        "no runtime LLM route classifier is called before the loop",
+        "Remove classifier and threshold runtime complexity",
+        "Control and safety determinism",
+        "model-origin tool proposal is not authorization",
+        "ToolGateway",
+        "voice transcripts",
+        "fail closed",
+        "historical classifier tests",
         "PM-08k.4",
-        "false live-state positives",
-        "direct_plan correctness",
-        "model-call avoidance",
     ]:
         assert phrase in pm08k
+
+
+def test_pm08k_docs_quarantine_classifier_first_pm09_gates() -> None:
+    docs_text = "\n".join(
+        (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        for relative_path in [
+            "docs/34_post_mvp_roadmap.md",
+            "docs/37_post_mvp_tdd_slices_plan.md",
+            "docs/38_pm08k_classifier_contract_simplification.md",
+        ]
+    )
+
+    normalized = " ".join(docs_text.split())
+
+    assert "not a PM-09 gate" in normalized
+    assert "not define PM-09\n    readiness" in docs_text
+    assert "historical/evaluation evidence or replaced by green" in docs_text
+    assert "calibration report before changing defaults" not in docs_text
+    assert "local classifier model evaluation defines PM-09 readiness" not in docs_text

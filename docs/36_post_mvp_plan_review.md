@@ -499,10 +499,10 @@ PM-08d CLI tool/RAG/approval readiness surface
 PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
 PM-08g Direct planner and capability routing registry cleanup
-PM-08h Tool-intent corpus hardening and pre-voice routing gate
+PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate
 PM-08i interactive CLI shell UX hardening
 PM-08j canonical Jarvis runtime startup
-PM-08k request routing architecture review and classifier calibration
+PM-08k agentic-loop-first request handling cleanup
 PM-09 voice gateway foundation
 then stabilize the implemented Alpha surface
 then choose between durable workflow execution, artifact storage, MCP or integrations
@@ -512,9 +512,9 @@ Do not start planner-executor, broad MCP, Telegram/Spotify or cloud reasoning
 before PM-08d makes the existing RAG/tools/approval surface usable from normal
 chat, before PM-08i makes the interactive CLI usable as the pre-voice dogfood
 surface, before PM-08j makes that surface startable through a canonical local
-runtime path, before PM-08k reviews/calibrates the request-routing architecture
-and any retained model-facing classifier contract, and before the durable
-workflow, artifact, permission and audit questions for that specific feature are
-documented and tested. Voice is the selected near-term product direction after
-PM-08k and must use the same runtime and loop-selection path rather than
+runtime path, before PM-08k removes classifier-first routing in favor of the
+same bounded agent loop for text and future voice transcripts, and before the
+durable workflow, artifact, permission and audit questions for that specific
+feature are documented and tested. Voice is the selected near-term product
+direction after PM-08k and must use the same runtime and agent loop rather than
 introducing a separate voice agent.

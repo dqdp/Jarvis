@@ -1,16 +1,25 @@
-# 38 — PM-08k Request Routing Architecture Review and Classifier Calibration
+# 38 — PM-08k Agentic Loop-First Request Handling
 
 ## Status
 
-Implemented.
+Updated plan.
 
 This document defines the implemented pre-voice hardening slice after PM-08j and
 before PM-09. It records the PM-08k research decision, implementation contract
-and acceptance criteria now used by the runtime.
+and acceptance criteria for replacing classifier-first routing with an
+agentic-loop-first runtime path.
+
+The concrete refactor sequence is tracked separately in
+`docs/39_pm08k_agentic_loop_refactor_plan.md`.
 
 The slice starts with a research gate. The first PM-08k question is not "which
 small model should classify requests?" but "should Jarvis use a mandatory
 front-gate LLM classifier at all?"
+
+The current decision is stronger than the earlier Hybrid Request Resolver plan:
+Jarvis should remove runtime LLM route adjudication and broad deterministic
+intent routing from the default natural-language path. The bounded agent loop is
+the central request handler for typed input and future voice transcripts.
 
 ## Problem
 
@@ -50,11 +59,10 @@ often return JSON, but invent out-of-contract labels such as
 `low` as a risk class. This is not only a JSON-formatting problem. It is a
 model-facing contract problem.
 
-The broader risk is architectural: putting an additional LLM classifier in front
-of every user turn adds latency, duplicates reasoning and creates a new failure
-point before the main runtime sees the request. PM-08k must therefore evaluate
-whether the mandatory classifier step is the right architecture, not only
-whether its schema should be simplified.
+The broader risk is architectural: putting any semantic router in front of every
+user turn adds latency, duplicates reasoning and creates a new failure point
+before the main agent loop sees the request. PM-08k must therefore remove the
+extra runtime classification layer, not merely simplify its schema.
 
 ## PM-08k.0 — Industry Research Gate
 
@@ -97,15 +105,15 @@ External references to review:
 Research questions:
 
 1. Is a mandatory front-gate LLM classifier needed for Jarvis, or should routing
-   be mostly deterministic/metadata-driven with optional model adjudication?
-2. Should the main model be allowed to decide tool use for some paths, or should
-   Jarvis keep all tool routing outside the answer model for now?
-3. Which routes are cheap and safe enough for deterministic fast path?
-4. Which routes are better handled by a non-LLM semantic/prototype classifier
-   with aggressive abstain behavior?
-5. Which cases truly require local LLM route adjudication?
-6. When should Jarvis ask a clarification question instead of routing?
-7. Which architecture minimizes latency without increasing false live-state
+   be removed in favor of one bounded agent loop?
+2. Should model understanding happen inside the same loop that can answer,
+   retrieve context, propose tools and handle observations?
+3. Which behavior must remain deterministic because it is control, safety,
+   policy, schema validation, budget or redaction rather than semantic routing?
+4. Which historical classifier/prototype fixtures should remain as evaluation
+   evidence with aggressive abstain behavior?
+5. When should Jarvis ask a clarification question instead of executing a tool?
+6. Which architecture minimizes latency without increasing false live-state
    positives or policy bypass risk?
 
 Stage output:
@@ -129,15 +137,15 @@ E. Hybrid: deterministic fast path, direct ordinary chat, local LLM only for
    ambiguous/risky routes, clarification when confidence is insufficient
 ```
 
-Initial hypothesis:
+Initial hypothesis before research:
 
 ```text
-E is the likely target.
+The early PM-08k draft expected E, the Hybrid Request Resolver, to be the likely
+target.
 
-Routing should be cheap and conservative. Execution remains policy-gated.
-Reasoning should mostly happen once. A local LLM route classifier, if retained,
-is an adjudicator for ambiguous cases rather than the mandatory first step for
-every request.
+The PM-08k.0 research outcome below supersedes that hypothesis. The accepted
+direction is agentic-loop-first request handling, with no semantic route
+classifier before the loop.
 ```
 
 PM-08k must not proceed to implementation until this research gate either
@@ -150,13 +158,15 @@ Decision:
 ```text
 The mandatory front-gate LLM classifier is rejected as the default architecture.
 
-Jarvis should move toward a Hybrid Request Resolver:
-  deterministic-first routing for obvious safe routes;
-  direct ordinary chat when no tool/live-state signal is present;
-  optional non-LLM semantic routing only when calibrated to abstain;
-  optional local LLM route adjudication only for ambiguous cases;
-  clarification or explicit unavailable result when confidence is insufficient
-    and execution/live-state risk exists.
+Jarvis should move to agentic-loop-first request handling:
+  every natural-language typed request or voice transcript enters the bounded
+    agent loop by default;
+  the model inside that loop decides whether to answer or propose a tool call;
+  PolicyPort, ToolGatewayPort, approval, budgets and tool schemas remain
+    authoritative outside the model;
+  deterministic code handles control and safety, not semantic request routing;
+  runtime LLM route adjudication and route-threshold tuning are removed from the
+    production path.
 ```
 
 Rationale:
@@ -168,8 +178,9 @@ Rationale:
   across 10 sampled cases and failed 10/10; `qwen3.5:0.8b` took 78.048 seconds
   and also failed 10/10 in the recorded comparison fixture. Additional local
   investigation saw the same failure shape for `qwen3.5:4b`: slower than 2B and
-  still not contract-correct. PM-08k implementation must reproduce any such
-  measurements in a calibration report before changing defaults.
+  still not contract-correct. These measurements are retained as historical
+  evidence for rejecting classifier-first routing. They are not a calibration
+  gate for changing PM-08k production defaults or starting PM-09.
 - The failure is not just malformed JSON. The models can return JSON while
   inventing route, capability, tool-name or risk-class labels.
 - Industry tool-use APIs do not generally require a separate classifier call in
@@ -192,206 +203,152 @@ Rationale:
 | Option | Verdict | Why |
 | --- | --- | --- |
 | A. Mandatory LLM classifier before every auto request | Reject as default | Highest latency, duplicates reasoning, adds a pre-answer failure point, and current local models do not follow the broad contract reliably. |
-| B. Deterministic-first router with optional local LLM route adjudicator | Accept as baseline direction | Fits local-first operation, keeps obvious safe routes cheap, preserves policy/ToolGateway boundaries, and uses the model only when cheaper layers abstain. |
-| C. Deterministic + embedding/prototype router + optional local LLM adjudicator | Evaluate before runtime default | Promising for speed and coverage, but local probes showed dangerous near-miss errors around conceptual vs live-state requests unless it abstains aggressively. |
-| D. Main-model tool-calling path with Jarvis-side policy/tool execution | Defer | Strong industry pattern, but it is a larger runtime change and would expose tool schemas to the answer model. Keep as a later ADR/PM after local support and policy semantics are proven. |
-| E. Hybrid Request Resolver | Accept | Best fit for Jarvis now: cheap deterministic gates, direct ordinary chat, optional calibrated semantic layer, optional thin local LLM adjudicator, and clarification/unavailable for risky ambiguity. |
+| B. Deterministic-first router with optional local LLM route adjudicator | Reject for runtime default | Still creates a second semantic decision point before the agent loop and keeps threshold/schema complexity alive. |
+| C. Deterministic + embedding/prototype router + optional local LLM adjudicator | Evaluation only | Useful as research evidence, but not the production request path before voice. |
+| D. Main-model tool-calling path with Jarvis-side policy/tool execution | Accept as target direction | Best matches industry tool-loop patterns and keeps request understanding in one place while preserving Jarvis-side execution control. |
+| E. Hybrid Request Resolver | Reject as PM-08k target | Better than a mandatory classifier, but still too complex and fragile for voice because it retains pre-agent semantic routing. |
 
 ### Accepted Architecture
 
 The target PM-08k architecture is:
 
 ```text
-user request
-  -> explicit user/API mode override
-  -> deterministic route guards
-       slash/CLI commands remain CLI-local commands
-       obvious safe builtins
-       obvious diagnostics
-       obvious project docs
-       explicit ordinary-chat hints
-  -> direct ordinary chat when no live-state/tool/RAG signal is present
-  -> optional non-LLM semantic resolver, only when calibrated to abstain
-  -> optional local LLM route adjudicator with thin route schema
-  -> clarification or unavailable result for ambiguous risky routes
-  -> LoopStrategySelector / PolicyPort / ToolGatewayPort remain authoritative
+user text or voice transcript
+  -> API/CLI request lifecycle
+  -> bounded agent loop
+      model may answer directly
+      model may propose a tool call from the supplied/allowed tools
+  -> PolicyPort / ToolGatewayPort validate and execute tool calls
+  -> tool observation returns to the same loop
+  -> final answer
 ```
 
-The local LLM route adjudicator, if retained, is no longer a mandatory
-front-gate classifier. It is a late-stage resolver for ambiguous cases after
-cheap deterministic and non-LLM layers abstain.
+There is no local LLM route adjudicator in the runtime default. There is also no
+deterministic natural-language intent router whose job is to understand the
+user before the agent loop.
 
 ### Agreed Design Choices
 
 PM-08k implementation planning should follow these decisions:
 
-1. Introduce `RequestResolver` rather than stretching `IntentClassifierPort`
-   into a broader orchestration boundary.
+1. Treat the bounded agent loop as the request-understanding boundary for
+   natural-language input.
 
 ```text
-RequestResolver
-  -> RouteDecision | Abstain | Clarify | Unavailable
-  -> route registry maps accepted routes to IntentClassification
-  -> LoopStrategySelector validates and selects the concrete loop
+normal typed input / voice transcript
+  -> bounded agent loop
+  -> model decides answer vs tool proposal
+  -> PolicyPort / ToolGatewayPort validate execution
 ```
 
-2. Use this resolver pipeline:
+2. Deterministic code is allowed only for control and safety:
 
 ```text
-explicit mode / slash command
-  -> deterministic route guards
-  -> ordinary chat bypass
-  -> optional semantic resolver
-  -> optional LLM adjudicator
-  -> Clarify / Unavailable
+slash commands
+cancel / exit / approval controls
+plain / non-TTY behavior
+permission and sensitivity gates
+tool allowlist and schema validation
+budgets and approval requirements
+redaction and event-shape constraints
 ```
 
-Slash commands remain CLI-local commands and do not become backend safety
-routing.
+It must not be a hidden natural-language intent router.
 
-3. Obvious chat must not call the classifier.
+3. Remove the runtime LLM route adjudicator and its threshold semantics from the
+production request path. Classifier comparison fixtures may remain historical
+evidence, but PM-08k implementation must not require a model call before the
+agent loop.
 
-Normative rule: obvious chat must not call the classifier.
+4. Direct execution is not part of the default natural-language path. If a
+future optimization reintroduces direct answers for current time or explicit
+calculator expressions, it needs a separate ADR and must prove that it cannot
+truncate mixed natural-language expressions or bypass PolicyPort/ToolGateway.
 
-Examples:
+5. Unsupported event/date questions must not be guessed by a pre-router. They
+enter the same agent loop. If a tool cannot resolve the event, the agent should
+surface an explicit unresolved/clarifying result rather than inventing a date.
+
+6. Blocking PM-09 metrics include:
 
 ```text
-Расскажи, как решаются кубические уравнения.
-Объясни, что такое VPN.
-Как работает аккумулятор?
-Напиши пример на Python.
+all natural-language paths enter the same bounded loop
+no runtime LLM route classifier is called before the loop
+no deterministic natural-language intent router exists in the default path
+tool proposals are constrained by allowlists and validated schemas
+PolicyPort and ToolGatewayPort remain the only execution gates
+unsupported/risky tool attempts fail closed or request clarification
+voice transcripts use the same request lifecycle as typed input
 ```
 
-If there is no live-state, tool, project-docs or project-inspection signal, the
-request should route directly to ordinary chat. This ordinary chat bypass is the
-latency-critical happy path.
+### Provider-Native Tool Calling
 
-4. Use deterministic guards for obvious, low-risk, high-value routes:
-
-```text
-current_time
-date_countdown
-calculator
-daemon_status
-explicit ordinary-chat hints
-strong project-docs markers
-clear live-state diagnostics with current/local wording
-```
-
-Process, network, temperature and project inspection routes should be more
-conservative because their near-miss surface is larger.
-
-5. Resolvers must abstain instead of forcing a best guess. If ambiguity is
-harmless, ordinary chat is acceptable. If ambiguity could trigger live-state or
-tool behavior, return `Clarify` or `Unavailable`.
-
-Example:
-
-```text
-память сейчас -> likely system_memory
-как работает память -> ordinary_chat
-проверь память -> system_memory
-расскажи как проверить память -> ordinary_chat
-```
-
-If the resolver cannot distinguish ordinary explanation from live-state
-diagnostics, it should ask whether the user wants an explanation or a current
-machine check.
-
-6. The non-LLM semantic layer starts as evaluation/calibration only. It may
-become runtime default only if it demonstrates high precision on selected cases,
-low false live-state positives, a clear abstain threshold and materially lower
-latency than the LLM adjudicator.
-
-7. The LLM adjudicator is optional and late-stage. If retained, it is called only
-after deterministic and non-LLM resolvers abstain. It uses the thin route schema,
-has a strict timeout, and invalid output becomes `Abstain` or `Unavailable`.
-
-8. Blocking PM-09 metrics include:
-
-```text
-false live-state positives on near-miss corpus
-direct_plan correctness for ci_baseline
-exact tool_names after deterministic route mapping
-ordinary chat bypass model-call avoidance
-p95 resolver latency without model call
-abstain rate reported explicitly
-Clarify / Unavailable behavior for risky ambiguity
-invalid model output never creates tool metadata
-```
-
-### Main-Model Tool Calling
-
-main-model tool calling is deferred.
+Provider-native tool calling is deferred.
 
 Reason:
 
 - OpenAI, Anthropic and Semantic Kernel make tool calling a strong industry
-  direction, but Jarvis currently has an explicit `ToolGatewayPort`,
-  policy/audit model, typed observation path and provider-neutral local-first
-  constraints.
-- PM-08k can borrow the shape of tool choice controls from industry, especially
-  allowed/none/auto semantics, without moving tool selection into the main
-  answer model yet.
-- A later ADR can evaluate provider-native/main-model tool calling once the
-  local models, tool schemas, streaming UX, policy gates and typed observation
-  contracts are ready for that larger change.
+  direction. Jarvis should follow the loop shape while keeping execution behind
+  its own `ToolGatewayPort`, policy/audit model, typed observation path and
+  provider-neutral local-first constraints.
+- PM-08k adopts model-in-loop tool choice for the bounded Jarvis agent loop,
+  not provider-native uncontrolled execution. The application supplies bounded
+  tools, validates proposals and owns every side effect.
+- Later ADRs can evaluate provider-native tool APIs, but PM-08k should first
+  remove the separate classifier/router layer so the text and voice paths share
+  one agentic control loop.
 
 ### PM-08k Follow-Up Slices
 
-PM-08k.1 — Hybrid request resolver contract:
+PM-08k.1 — Agentic loop default contract:
 
 ```text
-Introduce RequestResolver and define RouteDecision, Abstain, Clarify and
-Unavailable result types, explicit clarification/unavailable states, ordinary
-chat bypass behavior and the ordered resolver pipeline. Keep CLI commands out of
-backend safety routing.
+Define the default runtime path as bounded agent loop first for natural-language
+typed input and future voice transcripts. Remove the requirement for
+RequestResolver, RouteDecision, model-route adjudication and natural-language
+deterministic guards in the production path.
 ```
 
-PM-08k.2 — Deterministic and route-registry implementation:
+PM-08k.2 — Control and safety determinism:
 
 ```text
-Move obvious safe routes into deterministic route guards backed by registry
-metadata. Preserve PolicyPort, ToolGatewayPort and direct-plan validation as
-authoritative execution gates.
+Keep deterministic code for:
+  slash/control commands
+  policy and permission checks
+  sensitivity handling
+  tool allowlists and schemas
+  budgets and approvals
+  event/log redaction
+  non-TTY/plain behavior
 
-Initial deterministic route set:
-  current_time
-  date_countdown
-  calculator
-  daemon_status
-  explicit ordinary-chat hints
-  project_docs_question with strong docs/ADR/roadmap markers
-  clear live-state diagnostics with current/local wording
+Do not use deterministic code as a hidden semantic router for normal language.
 ```
 
-PM-08k.3 — Optional semantic/model adjudication and calibration:
+PM-08k.3 — Remove classifier and threshold runtime complexity:
 
 ```text
-The non-LLM semantic layer starts as evaluation/calibration only, not runtime
-default. Evaluate embedding/prototype routing and a thin local LLM route schema
-only for cases where deterministic routing abstains. Compare thresholds, false
-positives, abstain rates and latency before enabling any runtime default.
-The LLM adjudicator is optional and late-stage; it must not become a mandatory
-front gate again.
+Remove runtime LLM route adjudicator wiring, model-route schema parsing,
+deterministic fast-path threshold behavior and model-route calibration gates from
+the production request path. Keep historical classifier comparison fixtures only
+as evidence for why this direction was rejected.
 ```
 
-PM-08k.4 — Runtime default selection and acceptance gate:
+PM-08k.4 — ReAct/tool loop hardening:
 
 ```text
-Enable only the resolver layers that pass calibration. Keep ambiguous semantic
-and LLM layers disabled or opt-in until they prove lower latency without
-increasing false live-state positives.
+Ensure the bounded loop can handle ordinary answers, project-docs questions,
+safe builtins and read-only tools without a pre-router. Unsupported events,
+malformed tool arguments and denied tool calls fail closed or ask for
+clarification through the loop.
 ```
 
-## Direction
+## Rejected Route Schema
 
-If PM-08k keeps a model-backed routing layer, it should introduce a thinner
-model-facing classifier contract. The model should classify into a small closed
-route vocabulary and abstain when uncertain. Runtime code then maps that route
-into the existing domain objects.
+PM-08k no longer keeps a model-backed routing layer in runtime. The old thin
+route schema below is retained only as historical research output and should not
+be implemented as production request handling.
 
-Target shape:
+Rejected historical shape:
 
 ```json
 {
@@ -403,8 +360,9 @@ Target shape:
 }
 ```
 
-The exact route enum is a PM-08k design input, but it should use product-level
-routes rather than runtime internals. Example route families:
+The earlier route enum used product-level routes rather than runtime internals.
+It is useful as evaluation vocabulary, not as production routing state. Example
+historical route families:
 
 ```text
 ordinary_chat
@@ -426,12 +384,12 @@ system_vpn
 unknown
 ```
 
-PM-08k should use a medium-grained route taxonomy. It should be more specific
-than one broad `system_diagnostics` bucket, but it should not mirror adapter
-internals such as `free_memory_bytes`, `cpu_core_count` or command-specific
-parsers. The recommended first route set is the list above.
+This route taxonomy is not the PM-08k target. If retained, it belongs in
+offline/evaluation reports only. Runtime request handling should expose
+available tools to the bounded agent loop, validate any model-origin proposal,
+and fail closed or clarify when the request cannot be handled safely.
 
-The model must not output:
+The model must not output route-layer internals such as:
 
 ```text
 capability
@@ -447,104 +405,65 @@ provider-specific request dictionaries
 
 ## Runtime Mapping
 
-Jarvis should map route classifications into the existing selector domain
-deterministically:
+There is no route-classification mapping in the default runtime path.
 
 ```text
-model-facing route
-  -> route registry mapping
-  -> IntentClassification
-  -> CapabilityCandidate
-  -> LoopStrategySelector
-  -> policy / ToolGateway / direct-plan checks
+agent loop tool proposal
+  -> allowlist/schema validation
+  -> PolicyPort
+  -> ToolGatewayPort
+  -> typed ToolObservation
+  -> same agent loop
 ```
 
-The route registry, not the model, owns:
+The model may propose a tool call, but it never authorizes execution. Runtime
+code owns:
 
-- `IntentFamily`;
-- `Capability`;
-- stable tool names;
-- risk classes;
-- fallback behavior;
-- scope labels;
-- direct execution eligibility.
+- enabled tool registry and allowed tool names;
+- argument schema validation and normalization;
+- `Capability` and risk classes;
+- policy and approval decisions;
+- sensitivity ceilings and redaction;
+- direct side effects and audit events.
 
-`LoopStrategySelector`, `PolicyPort`, `ToolGatewayPort` and
-`CapabilityRoutingRegistry` remain authoritative. The model proposes a route;
-it never authorizes execution.
+In short: a model-origin tool proposal is not authorization.
 
-## Classifier Stack
+## Classifier Experiments
 
-Subject to PM-08k.0, PM-08k should evaluate a three-layer classifier stack:
+Classifier and threshold experiments are historical/evaluation-only after this
+decision. They may stay as fixtures that explain why Jarvis rejected a separate
+classifier path, but they must not control production request handling.
+
+Evaluation reports may still compare old router ideas for learning purposes:
 
 ```text
-1. Deterministic high-precision fast path
-2. Non-LLM classifier that can abstain
-3. Optional local LLM route classifier for ambiguous cases
+deterministic route coverage
+embedding/non-LLM route precision
+local LLM route classifier behavior
+latency per experimental classifier layer
+false live-state positives
 ```
 
-The non-LLM layer can be one of:
-
-- embedding nearest-neighbor/prototype routing over the intent corpus;
-- a small statistical classifier if a dependency is accepted later;
-- another deterministic route scorer with explicit abstain thresholds.
-
-The non-LLM layer must be calibrated for abstention. It must not become a broad
-always-answer classifier for conceptual/live-state near misses.
-
-## Calibration
-
-Thresholds such as `0.87` must be calibrated against recorded evidence, not
-chosen by latency preference alone.
-
-After PM-08k.0 selects the candidate routing architecture, PM-08k should compare
-at least:
-
-```text
-deterministic-only route coverage
-embedding/non-LLM route precision and coverage by abstain threshold
-local LLM route classifier behavior for qwen3.5:2b and qwen3.5:4b
-optional smaller candidates only if installed and explicitly evaluated
-end-to-end domain mapping after route -> IntentClassification conversion
-latency per classifier layer
-```
-
-Required metrics:
-
-```text
-route accuracy
-mapped IntentClassification accuracy
-tool-name/direct-plan correctness after deterministic mapping
-false-positive live-state rate
-ordinary conceptual near-miss false-positive rate
-abstain rate
-coverage
-precision at each threshold
-p50/p95 classifier latency
-model-call count avoided by fast paths
-```
-
-The default runtime configuration should not change merely because a smaller
-model is faster. A new default requires evidence that the route contract,
-mapping and fallback behavior are at least as safe as the previous baseline.
+These reports no longer define PM-09 readiness. PM-09 readiness depends on the
+agent loop handling typed text and voice transcripts through the same request
+lifecycle with safe tool execution gates.
 
 ## PM-08k Slice Contract
 
 PM-08k is complete only when:
 
 - PM-08k.0 research gate is complete;
-- the architecture decision rejects the mandatory front-gate LLM classifier as
-  the default and accepts the Hybrid Request Resolver direction;
-- the model-facing route schema exists and is smaller than the internal
-  `IntentClassification` domain object if a model adjudicator remains in scope;
-- route parsing rejects unknown route labels and malformed booleans;
-- invalid model output falls back or abstains instead of creating tool metadata;
-- route-to-domain mapping is deterministic and registry-backed;
-- model output cannot directly specify tool names, capabilities, risk classes,
-  policy outcome or direct execution;
-- deterministic, non-LLM and local LLM classifiers can be evaluated through one
-  comparable report format;
-- the pre-voice corpus report includes calibration data for threshold choices;
+- the architecture decision rejects both mandatory front-gate LLM classification
+  and the Hybrid Request Resolver as runtime defaults;
+- natural-language typed input enters the bounded agent loop by default;
+- voice transcripts are documented to use the same lifecycle and loop;
+- runtime model-route adjudication, route thresholds and route-schema parsing
+  are removed from the production path;
+- deterministic code is limited to control/safety/policy responsibilities;
+- tool proposals cannot directly bypass PolicyPort, ToolGatewayPort, schemas,
+  sensitivity ceilings, budgets or approvals;
+- unsupported/risky tool attempts fail closed or ask for clarification through
+  the agent loop;
 - PM-09 is blocked until PM-08k is either implemented or explicitly rejected by
   an updated architecture decision.
 
@@ -553,52 +472,41 @@ PM-08k is complete only when:
 Unit tests:
 
 ```text
-test_model_route_schema_contains_only_route_confidence_flags_and_abstain
-test_model_route_schema_uses_closed_route_enum
-test_model_route_parser_rejects_unknown_route
-test_model_route_parser_rejects_non_boolean_flags
-test_model_route_output_cannot_supply_tool_names_or_capabilities
-test_route_registry_maps_current_time_to_safe_datetime_candidate
-test_route_registry_maps_system_memory_to_read_resources_candidate
-test_route_registry_keeps_project_docs_as_chat_with_rag_context
-test_route_registry_maps_unknown_or_abstain_to_safe_fallback
-test_conceptual_live_state_near_miss_does_not_map_to_tool_route
+test_default_request_path_uses_agent_loop_without_route_classifier
+test_voice_transcript_uses_same_agent_loop_request_path
+test_slash_commands_remain_client_controls_not_backend_routing
+test_tool_proposal_requires_allowlisted_tool_name
+test_tool_proposal_arguments_validate_before_execution
+test_policy_denial_skips_tool_adapter_execution
+test_unsupported_calendar_event_does_not_guess_date
+test_mixed_natural_language_calculator_request_does_not_truncate_expression
 ```
 
 Documentation/architecture tests:
 
 ```text
 test_pm08k_docs_start_with_industry_research_gate
-test_pm08k_research_gate_compares_mandatory_classifier_and_hybrid_router
+test_pm08k_research_gate_compares_mandatory_classifier_hybrid_router_and_agent_loop
 test_pm08k_research_gate_records_source_links_and_architecture_decision
-```
-
-Evaluation tests:
-
-```text
-test_classifier_calibration_report_records_route_accuracy_and_latency
-test_classifier_calibration_report_compares_deterministic_embedding_and_llm
-test_classifier_calibration_report_records_threshold_precision_coverage
-test_classifier_calibration_report_blocks_default_model_change_on_regression
 ```
 
 Architecture tests:
 
 ```text
-test_model_facing_route_schema_does_not_expose_policy_or_tool_execution_fields
-test_route_registry_depends_on_capability_metadata_not_tool_adapters
-test_model_route_classifier_depends_on_model_router_port_not_provider_adapters
-test_cli_does_not_import_route_registry_or_classifier_implementation
+test_runtime_default_does_not_import_model_route_classifier
+test_loop_selector_does_not_execute_tools
+test_agent_loop_tool_calls_go_through_toolgateway
+test_cli_does_not_import_runtime_tool_adapters_or_route_classifiers
 ```
 
 Expected red phase:
 
 ```text
 PM-08k.0 industry research gate does not exist
-model-facing route schema does not exist
-route registry does not exist
-current model-backed classifier still asks the model for capability candidates
-calibration report does not compare route-level classifiers
+runtime still wires model-route adjudicator before the agent loop
+deterministic natural-language guards still select semantic tool routes
+direct calculator path can truncate mixed natural-language arithmetic
+unsupported event/date questions can bypass unresolved/clarification handling
 PM-09 dependency chain does not mention PM-08k
 ```
 
@@ -618,17 +526,11 @@ PM-08k does not add:
 
 Before implementation, decide:
 
-1. How aggressive should the deterministic part of the accepted Hybrid Request
-   Resolver be before it must abstain?
-2. Should the main answer model ever receive tool schemas and choose tool calls,
-   or should Jarvis keep tool-routing outside the answer model until later?
-3. Is the proposed route enum granular enough, or should diagnostics routes be
-   grouped more coarsely?
-4. Should PM-08k introduce a new `local_classifier` profile or keep using
-   `local_structured`?
-5. Should embedding/prototype routing be a runtime layer or only an evaluation
-   baseline for now?
-6. Should `0.87` be a candidate threshold in calibration, or should threshold
-   selection be entirely report-driven?
-7. Should PM-09 be hard-blocked on PM-08k, or may PM-09 proceed if PM-08k is
-   explicitly rejected after discussion?
+1. Should any direct-answer optimization survive PM-08k, or should every
+   natural-language request use the agent loop?
+2. How should the agent loop present available tools without overloading local
+   model context?
+3. Which unsupported tool outcomes should ask clarification versus return a
+   final unavailable answer?
+4. Which historical classifier tests should be deleted, and which should remain
+   as regression evidence for the rejected architecture?

@@ -120,18 +120,18 @@ The shell must not persist:
 Status/toolbars must not leak full secret-like paths. Working-directory display
 must be bounded and redacted enough for normal terminal sharing.
 
-## Classifier Fast Path
+## Agent Loop Boundary
 
-The interactive shell may display classifier and model state, but it does not
-own routing policy. The runtime classifier keeps a conservative deterministic
-fast path: deterministic fallback results may skip the structured model only
-when confidence is greater than `0.9` and the classification is an allowlisted
-runtime-tool intent or an explicit ordinary-chat request. Threshold changes and
-smaller structured-model candidates must be justified by the local
-intent-routing evaluation corpus, not by latency alone. The threshold is exposed
-as runtime configuration through
-`JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD` so dogfood runs can
-compare candidate thresholds without code edits.
+The interactive shell may display model/profile and request phase state, but it
+does not own routing policy. PM-08k/ADR-037 make the bounded agent loop the
+default natural-language request path. The CLI must not add a separate
+classifier fast path, route threshold, tool allowlist or deterministic
+natural-language router.
+
+The shell can render public stream phases such as selecting, assembling
+context, running a tool, waiting approval and streaming. Those phases are
+observability, not authorization. Tool execution still goes through the runtime
+policy, approval and ToolGateway boundaries.
 
 ## Consequences
 

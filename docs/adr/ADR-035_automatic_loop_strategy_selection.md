@@ -6,6 +6,12 @@ Accepted.
 
 Date: 2026-05-30
 
+PM-08k/ADR-037 supersedes this ADR for the production natural-language default:
+typed input and future voice transcripts enter a bounded agent loop directly,
+without a runtime LLM route classifier, route-threshold tuning or broad
+deterministic natural-language router before the loop. The classifier/selector
+sections below remain historical PM-08a/PM-08e context and evaluation evidence.
+
 ## Context
 
 Post-MVP Alpha now has the foundations needed for useful agent behavior:
@@ -516,7 +522,7 @@ Routing quality is tracked with a multilingual tool-intent corpus. CI validates
 the corpus schema and a deterministic/guardrail baseline. Real local model
 coverage is an opt-in evaluation test and must not be required for CI.
 
-### PM-08k amendment: request routing review and model-facing route contract
+### PM-08k amendment: agentic-loop-first request handling
 
 PM-08e originally made the local structured classifier return the same broad
 domain shape consumed by the selector. PM-08h/PM-08i local dogfood evaluation
@@ -525,47 +531,30 @@ syntactically valid JSON while inventing internal labels such as intent families
 capabilities, tool names or risk classes.
 
 PM-08k starts with an industry-informed request routing review. The PM-08k.0
-research outcome rejects a mandatory front-gate LLM classifier as the default
-architecture and accepts a Hybrid Request Resolver direction: deterministic
-first, ordinary chat direct when no route is needed, optional calibrated
-non-LLM/semantic routing, optional local LLM route adjudication for ambiguous
-cases, and clarification or explicit unavailable results for risky ambiguity.
-Main-model tool calling remains deferred to a later ADR/PM.
-
-PM-08k should introduce `RequestResolver` as the orchestration boundary before
-route-to-domain mapping. The resolver can return `RouteDecision`, `Abstain`,
-`Clarify` or `Unavailable`. Obvious ordinary chat must bypass classifier/model
-calls, while risky ambiguity must clarify or return unavailable instead of
-guessing a tool route.
-
-If a model-backed route adjudicator remains in scope, PM-08k should narrow the
-model-facing output further. The model should classify into a small closed route
-vocabulary with confidence and abstention flags. It must not output
-capabilities, stable tool names, risk classes, policy outcome, fallback behavior,
-approval state, direct execution metadata, raw shell commands or tool arguments.
-
-The runtime then maps accepted routes into the existing domain shape:
+research outcome rejects both a mandatory front-gate LLM classifier and the
+Hybrid Request Resolver as runtime defaults. Jarvis should use an
+agentic-loop-first path for natural-language typed input and future voice
+transcripts:
 
 ```text
-RouteDecision
-  -> deterministic route registry
-  -> IntentClassification
-  -> CapabilityCandidate
-  -> LoopStrategySelector
-  -> PolicyPort / ToolGatewayPort / direct-plan checks
+user text or voice transcript
+  -> bounded agent loop
+  -> model answers or proposes a tool call
+  -> PolicyPort / ToolGatewayPort validate and execute
+  -> typed observation returns to the same loop
 ```
 
-This amendment does not weaken the `IntentClassifierPort` boundary. It narrows
-the model-facing adapter contract behind that port. Fake classifiers and tests
-may still inject full `IntentClassification` objects when exercising selector
-behavior, but the local model-backed adapter should not ask a small model to
-construct those internal objects directly.
+The production request path no longer includes runtime LLM route adjudication,
+route-threshold tuning or a deterministic natural-language intent router.
+Deterministic code remains for controls and safety: slash commands, cancellation,
+approval handling, policy, permissions, sensitivity, budgets, tool allowlists,
+argument schemas, redaction and non-TTY/plain behavior.
 
-Threshold changes such as lowering the deterministic fast-path threshold to
-`0.87` are not architecture decisions by themselves. They must be justified by a
-calibration report that includes route accuracy, mapped-domain accuracy,
-precision/coverage by threshold, false live-state positives, abstention rate and
-latency. Speed alone is not enough to change the default classifier path.
+Threshold changes such as `0.87` or `0.9` are historical classifier experiment
+parameters, not production routing behavior for the PM-08k target path. If
+direct-answer optimizations are reintroduced later, they require a separate ADR
+and must prove they cannot truncate mixed natural-language input or bypass
+PolicyPort/ToolGatewayPort.
 
 ## Direct tool execution and typed observations
 
@@ -773,18 +762,24 @@ DirectToolPlan:
   Event logs and request metadata store only redacted plan summaries, not raw
   prompts, raw command output or executable argv.
 
+ReAct-first tool choice:
+  accepted as the post-PM-08k default. Natural-language requests enter the
+  bounded ReAct/tool loop directly. The model inside that loop chooses whether
+  to answer or propose a tool call. Jarvis validates the proposal through
+  allowlists, schemas, PolicyPort and ToolGatewayPort.
+  Direct execution is removed from the default natural-language path. Any future
+  direct optimization needs a separate ADR and must prove it cannot truncate
+  mixed natural-language input or bypass sensitivity/policy/tool gates.
+
 model-origin direct execution:
-  denied by default. Model-origin classification may select the tool-capable
-  loop, but low-latency direct execution requires DirectToolPlanner approval
-  from allowlisted scenario/scope evidence.
-  Direct evidence comes from registry-backed scenario and argument extractors
-  with fixture tests, not from a new global keyword-list selector.
+  denied by default. Model-origin tool proposals are execution requests, not
+  authorization. They must pass allowlist, schema, PolicyPort and ToolGatewayPort
+  validation before any adapter executes.
 
 model tool_name validation:
-  invalid candidates are rejected at the classifier/parser boundary. If other
-  valid candidates remain, the whole classification does not need to fail; if no
-  valid tool candidate remains for a tool intent, fallback/unavailable behavior
-  applies.
+  invalid tool names are rejected at the agent-loop/tool-gateway boundary. If no
+  valid tool proposal remains, the loop must surface an unavailable or
+  clarification outcome rather than guessing.
 
 corpus strictness:
   exact for critical ci_baseline/direct-plan cases; subset-style only for cases
@@ -800,14 +795,10 @@ mandatory pre-voice corpus:
   output shows recurring errors that should become hard-gate fixtures.
 
 local model evaluation:
-  opt-in and outside CI until enough data exists to set a stable threshold, but
-  PM-09 requires one recorded local classifier evaluation against the selected
-  local model with either fixes or accepted known failures. If PM-08h completes
-  where that local model is unavailable, the report must explicitly mark voice
-  readiness blocked; a not-run sandbox report is not accepted as PM-09 evidence.
-  The PM-09 readiness report must be a full-corpus model-only evaluation:
-  deterministic runtime fallback may be tested separately, but fallback-routed
-  and guardrail-corrected cases do not count as local model coverage.
+  historical PM-08h classifier evaluation is opt-in and outside CI. ADR-037
+  supersedes it as a PM-09 readiness requirement: voice readiness should be
+  proven by spoken-transcript-like requests entering the same bounded agent
+  loop, policy gates and ToolGateway path as typed input.
 
 PM-08f/PM-08g sequencing:
   PM-08f stays focused on typed observations and loop parser removal. PM-08g is
@@ -932,6 +923,8 @@ the normal user path.
 Overrides remain policy-gated:
 
 - `tools` fails when tools are disabled;
+- `tools` fails closed when runtime tool metadata cannot produce a concrete
+  candidate-tool allowlist;
 - `tools` fails when the selected tool loop has no executable runtime budget;
 - `chat` cannot execute tools;
 - `auto` cannot bypass capability policy;

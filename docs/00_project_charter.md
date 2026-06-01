@@ -159,11 +159,11 @@ Phase 1 не предназначена для:
 9. Graph checkpoints are deferred runtime state, not MVP storage scope.
 10. Near-term priority is PM-08a through PM-08k: backend auto-selection, API
     lifecycle wiring, CLI mode controls, CLI tool/RAG/approval readiness,
-    direct-answer hardening, routing quality gates and Codex-like interactive
+    direct-answer hardening, request-quality gates and Codex-like interactive
     CLI shell UX, followed by canonical Jarvis runtime startup and PM-08k request
-    routing architecture review/classifier calibration. PM-09 voice gateway
-    foundation starts only after that text surface is usable, operationally
-    repeatable and routing-safe. LangGraph remains a follow-up for later durable
+    handling cleanup. PM-08k makes the bounded agent loop the default
+    natural-language path and removes classifier-first routing before PM-09 voice
+    gateway foundation starts. LangGraph remains a follow-up for later durable
     workflows.
 11. Redis/NATS не вводятся как обязательная зависимость Phase 1.
 12. SSE — primary streaming transport.

@@ -115,23 +115,17 @@ For local Ollama dogfood, run with:
 make run-ollama
 ```
 
-The `ollama` profile uses the locally available chat model `qwen3.5:9b`, the
-structured/classifier model `qwen3.5:2b`, and the embedding model
-`embeddinggemma:latest`. This is a runtime
-profile behind the existing `ModelRouterPort`; CI still uses fake model and
-embedding providers and does not require real LLM calls.
-The classifier fast path is conservative: deterministic intent routing may skip
-the structured model only when the deterministic confidence is greater than
-`0.9`. Broad tool, project and live-state hints remain model-routed so the
-selector does not silently bypass the classifier on ambiguous input. Smaller
-structured-model candidates, including `qwen3.5:0.8b`, must be compared through
-the local intent-routing evaluation before becoming the default. The threshold
-can be tuned without a code change through
-`JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD`.
-PM-08k is planned to simplify this classifier path further: the model-facing
-structured output should become a small route classification, while runtime code
-maps accepted routes into capabilities, tool names, risk classes and policy
-semantics.
+The `ollama` profile uses the locally available chat/agent-loop model
+`qwen3.5:9b`, the historical structured/evaluation model `qwen3.5:2b`, and the
+embedding model `embeddinggemma:latest`. This is a runtime profile behind the
+existing `ModelRouterPort`; CI still uses fake model and embedding providers and
+does not require real LLM calls.
+PM-08k changes the request-handling direction: local structured classifier
+profiles may remain available for experiments, but the production
+natural-language path should not call a runtime route classifier before the
+agent loop. Typed input and future voice transcripts enter the bounded agent
+loop; tool proposals are then validated through allowlists, schemas, PolicyPort
+and ToolGatewayPort.
 The Ollama adapter sends anti-repeat generation options and terminates obvious
 repeated-line loops before they exhaust the configured output-token budget.
 `GET /v1/health` also performs cheap provider readiness probes: Ollama uses

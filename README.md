@@ -73,6 +73,7 @@ docs/
   36_post_mvp_plan_review.md
   37_post_mvp_tdd_slices_plan.md
   38_pm08k_classifier_contract_simplification.md
+  39_pm08k_agentic_loop_refactor_plan.md
 ```
 
 ## ADR Index
@@ -114,6 +115,7 @@ docs/adr/
   ADR-034_content_retrieval_subsystem_and_project_docs_rag.md
   ADR-035_automatic_loop_strategy_selection.md
   ADR-036_interactive_cli_shell_architecture.md
+  ADR-037_agentic_loop_first_request_handling.md
 ```
 
 ## Ключевые принятые решения
@@ -177,11 +179,11 @@ docs/adr/
   Alpha adds bounded `tool_react_loop` behind the loop-strategy boundary.
 - Near-term priority is PM-08a through PM-08k: backend auto-selection, API
   lifecycle wiring, CLI mode controls, CLI tool/RAG/approval readiness,
-  direct-answer hardening, routing quality gates and Codex-like interactive CLI
-  shell UX, followed by canonical Jarvis runtime startup and PM-08k request
-  routing architecture review/classifier calibration. PM-09 voice gateway
-  foundation starts only after that text surface is usable, operationally
-  repeatable and routing-safe.
+  direct-answer hardening, request-quality gates and Codex-like interactive CLI
+  shell UX, followed by canonical Jarvis runtime startup and PM-08k
+  agentic-loop-first request handling. PM-09 voice gateway foundation starts
+  only after that text surface is usable, operationally repeatable and
+  routing-safe.
   LangGraph stays a follow-up for later durable workflows.
 - Planner-executor and unbounded autonomous ReAct behavior remain future scope.
 - Future loop strategies must declare budgets, capabilities, policy hooks, failure semantics and emitted events.
@@ -263,15 +265,13 @@ wave:
   constraints.
 
 PM-08a through PM-08k are documented as the next implementation sequence. They
-make `auto` the user-facing default, harden routing/direct-answer behavior and
-turn the interactive CLI into the pre-voice dogfood shell so normal chat can
-route to ordinary answer, Project Docs RAG or safe/read-only tools without
-requiring the user to choose internal loop strategies. PM-08j then makes that
-Jarvis surface startable through one canonical local runtime path instead of
-manual DB/migration/daemon orchestration. PM-08k then reviews the request
-routing architecture, rejects a mandatory front-gate LLM classifier as the
-default, and calibrates any retained classifier/adjudicator path before voice
-relies on the same routing path.
+make `auto` the user-facing default, harden tool/policy behavior and turn the
+interactive CLI into the pre-voice dogfood shell. PM-08j then makes that Jarvis
+surface startable through one canonical local runtime path instead of manual
+DB/migration/daemon orchestration. PM-08k changes the request-handling direction:
+normal natural-language input should enter the bounded agent loop first, rather
+than being pre-classified by a runtime LLM router or broad deterministic intent
+router.
 
 Implementation notes:
 
@@ -290,20 +290,12 @@ Implementation notes:
 - Local Ollama dogfood is available through `config/ollama.yaml`. The current
   local profile uses `qwen3.5:9b` for chat, `qwen3.5:2b` for structured
   classification, and `embeddinggemma:latest` for embeddings.
-- The classifier fast path is intentionally conservative: deterministic routing
-  may bypass the structured model only when its confidence is greater than
-  `0.9`. Lower-confidence tool, project and live-state hints still go through
-  the structured model and fallback guardrails. The threshold is operationally
-  tunable through `JARVIS_LOOP_SELECTION__DETERMINISTIC_FAST_PATH_THRESHOLD`.
-- PM-08k starts from a request-routing architecture review that rejects a
-  mandatory front-gate LLM classifier as the default and accepts a Hybrid Request
-  Resolver direction. `RequestResolver` can return `RouteDecision`, `Abstain`,
-  `Clarify` or `Unavailable`; obvious ordinary chat bypasses classifier/model
-  calls. If a model-backed route adjudicator remains in scope, its model-facing
-  schema should become a thinner route classification contract. The model should
-  not emit tool names, capabilities, risk classes, policy outcomes or direct
-  execution metadata; runtime registry code maps accepted routes into those
-  internal fields.
+- PM-08k rejects runtime LLM route adjudication and broad deterministic intent
+  routing as the default direction. Natural-language typed input and future
+  voice transcripts should enter the same bounded agent loop. Deterministic
+  code remains responsible for controls, policy, permission, sensitivity,
+  budgets, tool allowlists, schema validation and redaction, not for semantic
+  request understanding.
 - A thin local CLI is available through `make cli ARGS='...'` or the `jarvis`
   console entrypoint. Running `make cli` without `ARGS` opens an interactive
   chat shell with slash commands.
@@ -320,6 +312,7 @@ Post-MVP planning is tracked in:
 - `docs/36_post_mvp_plan_review.md`;
 - `docs/37_post_mvp_tdd_slices_plan.md`;
 - `docs/38_pm08k_classifier_contract_simplification.md`.
+- `docs/39_pm08k_agentic_loop_refactor_plan.md`.
 
 ## Final hardening additions in v16
 
@@ -349,11 +342,11 @@ Post-MVP planning is tracked in:
 
 - `config/ollama.yaml` wires local Ollama profiles without cloud fallback.
 - `qwen3.5:9b` is the current chat model and `qwen3.5:2b` is the current
-  structured classifier model for local dogfood verification on the target
-  machine.
-- Smaller classifier candidates such as `qwen3.5:0.8b` must pass the local
-  intent-routing evaluation before becoming the default; speed alone is not
-  enough if schema-following or routing quality regresses.
+  local agent-loop model on the target machine.
+- `qwen3.5:2b`, `qwen3.5:0.8b` and other smaller structured-model candidates
+  remain historical/evaluation profiles. PM-08k rejects a production
+  classifier-first route gate before the agent loop, so these models are not a
+  runtime routing prerequisite for voice.
 - PM-08i comparison evidence is recorded in
   `tests/fixtures/intent_routing/pm08i_classifier_model_comparison.json`.
 - PM-08k planning is documented in

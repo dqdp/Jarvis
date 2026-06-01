@@ -100,81 +100,70 @@ tool_react_loop
 planner_executor_loop later
 ```
 
-Mapping:
+Mapping after PM-08k/ADR-037:
 
 ```text
-auto  -> selector chooses concrete loop
-chat  -> memory_augmented_answer
-tools -> tool_react_loop
+auto  -> bounded agent loop with normal tool policy
+chat  -> bounded agent loop with tool use disabled
+tools -> bounded agent loop with tool use available/required by request policy
 ```
 
-The selector lives on the server side. CLI, API, future voice clients and future
-integrations must not implement their own safety-critical routing logic.
+The loop boundary lives on the server side. CLI, API, future voice clients and
+future integrations must not implement their own safety-critical routing logic.
 
-PM-08a through PM-08d must not make a deterministic-only selector the target
-architecture. PM-08a introduces:
+PM-08a through PM-08h introduced loop selection, classifier and corpus
+infrastructure. PM-08k supersedes classifier-first routing for the production
+natural-language path: the runtime must not call a separate route classifier
+before the bounded agent loop. Historical classifier fixtures may remain as
+evaluation evidence, but they are not authorization and not a voice prerequisite.
 
-```text
-LoopStrategySelector
-  -> IntentClassifierPort
-  -> policy/config validation
-```
-
-CI uses fake classifier implementations. Runtime may initially use a
-deterministic classifier implementation in conservative mode, but the port must
-allow a later local structured model classifier without changing selector
-callers.
-
-Expected PM-08 classifications:
+Expected PM-08k behavior:
 
 ```text
 ordinary chat or explanation
-  -> memory_augmented_answer
+  -> bounded agent loop answers without tool use unless useful and allowed
 
 project docs question
-  -> memory_augmented_answer
-  -> ContextAssembler retrieves project docs through ContentRetrievalPort
+  -> bounded agent loop may use retrieval/context assembly
 
 live project inspection
-  -> tool_react_loop
+  -> bounded agent loop may propose a tool
+  -> proposal is validated by schema, policy, approval and ToolGateway
 
 live system diagnostics
-  -> tool_react_loop
+  -> bounded agent loop may propose a diagnostics tool
+  -> proposal is validated by schema, policy, approval and ToolGateway
 
-tools disabled for tool intent
-  -> fail clearly or answer that live inspection is unavailable
+tools disabled for a live-state request
+  -> fail clearly, ask for permission or explain that live inspection is
+     unavailable; do not invent live facts
 ```
 
-A classifier may propose intent and candidate capabilities; it must not execute
-tools or grant permissions. Policy constraints always apply after
-classification.
+Model-origin tool proposals are not execution authorization. Policy constraints
+always apply after the model proposes an action.
 
 ```python
-class IntentClassifierPort(Protocol):
-    async def classify(self, request: IntentClassificationRequest) -> IntentClassification: ...
-
-class LoopStrategySelector(Protocol):
-    async def select(self, request: LoopSelectionRequest) -> LoopSelectionDecision: ...
+class AgentLoopPort(Protocol):
+    async def run(self, request: AgentLoopRequest) -> AgentLoopResult: ...
 ```
 
-Selector decisions are auditable and redacted. They record the selected loop,
-reason code, candidate capabilities and policy outcome without logging the raw
-full prompt.
+Loop decisions and tool proposals are auditable and redacted. They record public
+phase, selected mode, proposed tool, validation outcome and policy outcome
+without logging the raw full prompt.
 
-The selection model must distinguish:
+The request model must distinguish:
 
 ```text
 requested_mode          user-facing mode: auto/chat/tools
-intent_family           classifier output, such as project_inspection
-candidate_capabilities  capability candidates, not execution instructions
-selected_loop_strategy  concrete runtime strategy
-decision_status         selected/fallback/rejected/unavailable
+tool_policy             disabled/available/required
+agent_phase             selecting/retrieving/tool_running/streaming/etc.
+proposed_tool           model-origin tool proposal, not authorization
+proposal_status         accepted/rejected/approval_required/unavailable
+policy_outcome          policy/approval result
 ```
 
-Confidence and fallback behavior are part of the domain model. Medium or low
-confidence must not silently trigger risky tools, and a live-state request with
-tools disabled must not produce an answer that pretends live inspection
-happened.
+Fallback behavior is part of the agent-loop contract. Unclear or unsupported
+live-state requests must not silently become hallucinated ordinary chat.
 
 ## 6. Runtime State
 

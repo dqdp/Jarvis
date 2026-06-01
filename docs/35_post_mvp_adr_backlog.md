@@ -302,7 +302,8 @@ Status:
 
 ```text
 Promoted to docs/adr/ADR-035_automatic_loop_strategy_selection.md.
-Current ADR status: Accepted.
+Current ADR status: Accepted, then superseded in part by ADR-037 for the
+production natural-language request path.
 ```
 
 Needed before:
@@ -311,22 +312,18 @@ Needed before:
 default CLI/API access to tools
 default CLI/API access to Project Docs RAG
 automatic routing between normal chat and tool-capable loops
-local model-backed intent classifier adapter
+agentic-loop-first request handling before voice
 ```
 
 Decision scope:
 
 - user-facing `auto`, `chat` and `tools` modes;
-- backend `LoopStrategySelector`;
-- `IntentClassifierPort`;
-- domain objects for `LoopSelectionRequest`, `IntentClassification`,
-  `CapabilityCandidate` and `LoopSelectionDecision`;
-- confidence bands and fallback semantics;
+- backend loop boundary and policy gates;
+- historical `LoopStrategySelector`/`IntentClassifierPort` work as PM-08a/e
+  context, not the PM-08k production target;
+- fallback semantics for unclear or unavailable live-state requests;
 - capability routing metadata for future tools such as code sandbox;
-- fake classifier for CI;
-- conservative deterministic runtime classifier as bootstrap/fallback;
-- local structured classifier adapter as the preferred interactive runtime
-  classifier when configured;
+- fake/evaluation classifier fixtures where retained;
 - relation to policy and approvals;
 - relation to RAG and ContextAssembler;
 - CLI/API override semantics;
@@ -335,12 +332,13 @@ Decision scope:
 Resolved baseline:
 
 - `auto` is a routing mode, not a concrete loop;
-- PM-08 must not make a deterministic-only selector the target architecture;
-- PM-08 starts with `LoopStrategySelector` plus `IntentClassifierPort`;
-- runtime uses a local model-backed classifier when configured, with
-  deterministic fallback for failure/startup/testing;
-- ordinary chat and project-docs questions use `memory_augmented_answer`;
-- live project/system inspection uses `tool_react_loop`;
+- PM-08k must not make a classifier-first selector the target architecture;
+- natural-language typed input and future voice transcripts enter the same
+  bounded agent loop;
+- ordinary chat and project-docs questions are answered inside that loop without
+  bypassing the shared request lifecycle;
+- live project/system inspection uses model-origin tool proposals validated by
+  policy, approval and ToolGateway;
 - RAG is not a tool-loop trigger by itself;
 - tools-disabled tool intent must not silently fallback to hallucinated chat;
 - CLI does not own safety-critical routing.
@@ -356,8 +354,8 @@ Testing:
   model-backed intent classifier adapter, followed by PM-08f typed
   tool-observation/direct-answer hardening, PM-08g direct planner/registry
   cleanup, PM-08h corpus hardening, PM-08i interactive CLI shell hardening and
-  PM-08j canonical Jarvis runtime startup plus PM-08k request routing
-  architecture review/classifier calibration before voice.
+  PM-08j canonical Jarvis runtime startup plus PM-08k agentic-loop-first request
+  handling cleanup before voice.
 
 ### Resolved by ADR-031/PM-04 — Bounded tool loop strategy
 
@@ -367,11 +365,11 @@ PM-04.
 
 Open questions:
 
-- Should the later ambiguous-intent classifier call the same structured local
-  profile used by `tool_react_loop`, or a smaller dedicated classifier profile?
 - Should explicit CLI `/mode tools` persist only in-session or in a local config
   file?
-- Which future external integrations should be eligible for automatic routing?
+- Which future external integrations should be eligible for agent-loop tool
+  proposals?
+- Which historical classifier fixtures should stay as evaluation-only coverage?
 
 Testing:
 
@@ -391,8 +389,8 @@ write/promote this ADR after PM-08d CLI tool/RAG/approval readiness, PM-08e
 model-backed classifier adapter, PM-08f typed tool-observation hardening,
 PM-08g direct planner/registry cleanup, PM-08h corpus hardening, PM-08i
 interactive CLI shell hardening, PM-08j canonical Jarvis runtime startup and
-PM-08k request routing architecture review/classifier calibration before PM-09
-voice gateway foundation
+PM-08k agentic-loop-first request handling cleanup before PM-09 voice gateway
+foundation
 implementation.
 ```
 
@@ -640,14 +638,13 @@ Rationale:
   model-backed classifier behavior, PM-08f typed tool observations, PM-08g
   direct planner/registry cleanup, PM-08h corpus hardening and PM-08i
   interactive CLI shell hardening plus PM-08j canonical Jarvis runtime startup
-  and PM-08k request routing architecture review/classifier calibration so spoken turns can
+  and PM-08k agentic-loop-first request handling cleanup so spoken turns can
   use the same chat/RAG/tool/approval/cancel path as typed turns without
   inheriting fragile stdout parsing, unstable routing, an under-tested text
-  shell, ad hoc local startup steps or a model-facing schema that asks small
-  local models to emit internal tool/policy metadata;
-- before PM-09 starts, PM-08h should include spoken-transcript-like corpus cases
-  and one recorded non-CI local classifier evaluation against the selected local
-  model, while CI remains fake/deterministic and network-free;
+  shell, ad hoc local startup steps or a separate route classifier;
+- before PM-09 starts, PM-08h/PM-08k should include spoken-transcript-like cases
+  proving transcripts enter the same bounded agent loop while CI remains
+  fake/deterministic and network-free;
 - graph runtime evaluation is deferred until planner-executor, durable code
   sandbox, sleep/reflection or long-running workflow pressure justifies it.
 

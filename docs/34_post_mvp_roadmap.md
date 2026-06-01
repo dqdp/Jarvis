@@ -355,11 +355,17 @@ PM-08d CLI tool/RAG/approval readiness surface
 PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
 PM-08g Direct planner and capability routing registry cleanup
-PM-08h Tool-intent corpus hardening and pre-voice routing gate
+PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
-PM-08k Request routing architecture review and classifier calibration
+PM-08k Agentic loop-first request handling cleanup
 ```
+
+PM-08a through PM-08h describe the selector/classifier-era implementation path.
+PM-08k supersedes that direction for production natural-language request
+handling: the bounded agent loop is the default, and classifier/threshold
+artifacts are historical, evaluation-only or quarantined follow-up material
+unless an updated ADR explicitly changes the architecture.
 
 PM-08a:
 
@@ -447,8 +453,9 @@ PM-08g:
 
 PM-08h:
 
-- turn the multilingual tool-intent corpus into a pre-voice routing quality gate;
-- add exact CI baseline checks for critical tool names and direct-plan outcomes;
+- turn the multilingual tool-intent corpus into pre-voice evaluation evidence;
+- add exact CI baseline checks for critical tool names and direct-plan outcomes
+  while those paths exist;
 - add negative near-miss examples so conceptual questions do not become tools;
 - cover datetime, calculator, daemon status, diagnostics, process search, VPN,
   disk, battery, CPU, memory, temperature, project inspection and ordinary chat;
@@ -458,15 +465,13 @@ PM-08h:
   shows recurring errors worth promoting to hard-gate fixtures;
 - keep CPU and memory direct-answer v1 aggregate-only, with per-core and
   per-process resource details deferred to later schemas;
-- keep real local model evaluation out of CI, but require one recorded non-CI
-  local classifier evaluation before PM-09 starts;
-- treat the recorded PM-09 readiness evaluation as a full-corpus, model-only
-  local classifier run; deterministic runtime fallback remains separately
-  tested and must not count as local model coverage; guardrail-corrected cases
-  are reported separately and do not count as model-only pass evidence;
-- if PM-08h is completed in an environment where the selected local classifier
-  model is unavailable, record that state explicitly as not voice-ready rather
-  than treating a sandbox placeholder as PM-09 evidence.
+- keep real local model evaluation out of CI; classifier model comparison is
+  historical/evaluation evidence after PM-08k, not a PM-09 runtime gate;
+- treat recorded PM-09 readiness evidence as spoken-transcript-like agent-loop
+  cases, proving the transcript enters the same bounded loop and tool gateway
+  path as typed input;
+- if PM-08h-era local classifier evidence is missing, record that state
+  explicitly without blocking the PM-08k agentic-loop-first direction.
 
 PM-08i:
 
@@ -501,41 +506,33 @@ PM-08k:
 
 - start with an industry-informed request-routing architecture review before
   changing production routing code;
-- reject a mandatory front-gate LLM classifier as the default and move to a
-  deterministic-first Hybrid Request Resolver direction;
-- defer main-model tool calling to a later ADR/PM rather than moving tool
-  choice into the answer model during PM-08k;
-- introduce a `RequestResolver` boundary that can return `RouteDecision`,
-  `Abstain`, `Clarify` or `Unavailable` before route-to-domain mapping;
-- make obvious ordinary chat bypass classifier/model calls;
-- keep the non-LLM semantic layer evaluation/calibration-only until its false
-  live-state positive rate and abstain threshold are proven safe;
-- keep the LLM adjudicator optional and late-stage, called only after cheaper
-  resolvers abstain;
-- if a model-backed route adjudicator remains in scope, replace the current
-  model-facing classifier schema with a thin route contract;
-- keep `IntentClassification`, `CapabilityCandidate`, tool names, capabilities,
-  risk classes, fallback behavior, policy outcome and direct execution metadata
-  as runtime-owned fields, not model output;
-- add a deterministic route registry that maps accepted route labels into the
-  existing selector domain and capability routing metadata;
-- evaluate deterministic, non-LLM and local LLM classifier layers through one
-  comparable calibration report;
-- tune or reject thresholds such as `0.87` from precision/coverage/latency
-  evidence rather than by intuition;
+- reject both a mandatory front-gate LLM classifier and the deterministic-first
+  Hybrid Request Resolver as production defaults;
+- make the bounded agent loop the central request-handling path for
+  natural-language typed input and future voice transcripts;
+- remove runtime model-route adjudication, route thresholds and route-schema
+  parsing from the production path;
+- keep deterministic code for controls and safety only: slash commands,
+  cancellation, approvals, policy, permissions, sensitivity, budgets,
+  allowlists, schemas, redaction and non-TTY/plain behavior;
+- keep model-origin tool proposals behind PolicyPort, ToolGatewayPort,
+  allowlists, schemas and typed observations;
+- ensure unsupported/risky tool attempts fail closed or ask clarification
+  through the agent loop rather than being guessed by a pre-router;
 - require invalid model output to abstain or fall back instead of inventing
   tool/capability metadata.
 
 Acceptance:
 
 - a plain CLI chat request can automatically use RAG or safe tools when needed;
-- users do not need to type `tool_react_loop` or tool names for normal usage;
+- users do not need to type `tool_react_loop`, route names or tool names for
+  normal usage;
 - tools-disabled tool intent does not silently hallucinate live state;
 - RAG remains ContextAssembler behavior and does not become a tool-loop trigger;
 - approval-required tool flow is usable from the CLI;
 - cancel/interrupt does not break the interactive CLI session;
-- fake classifiers, fake model-router responses, providers and adapters cover
-  the routing behavior in CI.
+- fake model-router responses, fake providers and fake adapters cover the
+  agent-loop behavior in CI.
 - direct answers are not built from fragile regex parsing of raw command stdout
   inside `tool_react_loop`;
 - new diagnostics commands add adapter/normalizer tests instead of bespoke loop
@@ -546,12 +543,12 @@ Acceptance:
 - one canonical Jarvis command path can bring up DB, migrations, daemon and
   health checks, and can report status/logs or shut the daemon down without
   manual Terminal orchestration.
-- the model-facing classifier no longer asks the model to emit capabilities,
-  tool names, risk classes or policy/fallback decisions; route mapping and
-  calibration are documented and tested before PM-09 starts.
-- PM-08k reports false live-state positives, direct_plan correctness, ordinary
-  chat model-call avoidance, abstain rate, p95 resolver latency and
-  Clarify/Unavailable behavior before PM-09 starts.
+- production request handling no longer asks a separate classifier to emit
+  capabilities, tool names, risk classes or policy/fallback decisions before the
+  agent loop.
+- PM-08k reports false live-state positives, unsupported-tool behavior,
+  policy-denial behavior, transcript-path parity and clarification/unavailable
+  outcomes before PM-09 starts.
 
 ### Phase J — Voice gateway foundation
 
@@ -560,13 +557,12 @@ Goal:
 ```text
 Add push-to-talk voice interaction on top of the existing runtime after PM-08d
 proves the text CLI/API surface can use auto-selected chat, RAG, tools,
-approvals and cancellation, PM-08e proves model-backed classifier behavior,
-PM-08f hardens direct tool answers around typed observations, PM-08g/PM-08h
-stabilize direct planning and corpus-gated routing quality, PM-08i hardens the
-interactive CLI shell as the pre-voice dogfood surface, and PM-08j makes that
-surface operationally repeatable through canonical startup commands. PM-08k then
-reviews and calibrates request routing so voice does not inherit an over-broad
-model-facing schema or an unnecessary mandatory classifier call.
+approvals and cancellation, PM-08f hardens typed observations, PM-08g/PM-08h
+stabilize tool metadata/corpus quality, PM-08i hardens the interactive CLI shell
+as the pre-voice dogfood surface, and PM-08j makes that surface operationally
+repeatable through canonical startup commands. PM-08k then replaces
+classifier-first routing with agentic-loop-first request handling so voice does
+not inherit a separate semantic router or threshold-tuned classifier path.
 ```
 
 Work:
@@ -578,7 +574,7 @@ Work:
   gateway can later use local engines, local libraries or external API adapters;
 - add fake STT/TTS adapters for CI;
 - submit transcripts through the same API/runtime path as typed input;
-- use PM-08 `auto` loop selection for spoken turns after PM-08k readiness;
+- use the PM-08k agentic loop path for spoken turns after PM-08k readiness;
 - stream assistant text through existing runtime events before TTS output;
 - disable raw audio storage by default;
 - keep external speech API and cloud realtime providers disabled until explicit
@@ -775,10 +771,10 @@ PM-08d CLI tool/RAG/approval readiness surface
 PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
 PM-08g Direct planner and capability routing registry cleanup
-PM-08h Tool-intent corpus hardening and pre-voice routing gate
+PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
-PM-08k Request routing architecture review and classifier calibration
+PM-08k Agentic loop-first request handling cleanup
 Voice gateway foundation
 ```
 
