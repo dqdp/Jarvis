@@ -20,7 +20,11 @@ from assistant_core.domain.policy import Capability, RiskClass
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.app_factory import build_intent_classifier
 from assistant_core.policy.engine import ConfigPolicyEngine
-from assistant_core.runtime.request_metadata import LoopSelectionError, runtime_request_metadata
+from assistant_core.runtime.request_metadata import (
+    AgentToolPolicy,
+    LoopSelectionError,
+    runtime_request_metadata,
+)
 from assistant_core.runtime.request_resolver import (
     RequestResolverIntentClassifier,
     Unavailable,
@@ -78,6 +82,250 @@ def test_request_metadata_rejects_tool_loop_when_budget_disallows_tool_calls() -
     assert exc_info.value.decision.selected_loop_strategy is None
     assert exc_info.value.decision.reason_code == "selected_tool_loop_budget_unavailable"
     assert exc_info.value.decision.decision_status is SelectionDecisionStatus.TOOLS_UNAVAILABLE
+
+
+def test_agent_request_plan_records_chat_mode_with_tools_disabled() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+
+    resolution = asyncio.run(
+        runtime_request_metadata(
+            SimpleNamespace(
+                content="Расскажи, как решаются кубические уравнения.",
+                sensitivity=Sensitivity.PROJECT,
+                loop_strategy="chat",
+                model_profile=None,
+                working_directory=str(Path.cwd()),
+            ),
+            settings,
+            request_id="request-1",
+            conversation_id="conversation-1",
+            user_id="user-1",
+            active_project_namespace="project.personal_assistant",
+            working_directory=str(Path.cwd()),
+            policy=ConfigPolicyEngine(settings),
+        )
+    )
+
+    plan = resolution.agent_request_plan
+    assert plan.requested_mode == "chat"
+    assert plan.tool_policy is AgentToolPolicy.DISABLED
+    assert plan.allowed_tool_names == ()
+    assert plan.redacted_metadata()["agent_tool_policy"] == "disabled"
+    assert resolution.metadata["agent_tool_policy"] == "disabled"
+    assert resolution.metadata["agent_allowed_tool_count"] == 0
+
+
+def test_agent_request_plan_records_tools_mode_with_required_tools() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+
+    resolution = asyncio.run(_resolve_tool_metadata(settings))
+
+    plan = resolution.agent_request_plan
+    assert plan.requested_mode == "tools"
+    assert plan.tool_policy is AgentToolPolicy.REQUIRED
+    assert plan.allowed_tool_names
+    assert resolution.metadata["agent_tool_policy"] == "required"
+    assert resolution.metadata["agent_allowed_tool_count"] == len(plan.allowed_tool_names)
+
+
+def test_agent_request_plan_disables_tools_when_policy_disables_tools() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+    settings = replace(settings, policy=replace(settings.policy, tools_enabled=False))
+
+    resolution = asyncio.run(
+        runtime_request_metadata(
+            SimpleNamespace(
+                content="Привет",
+                sensitivity=Sensitivity.PROJECT,
+                loop_strategy=None,
+                model_profile=None,
+                working_directory=str(Path.cwd()),
+            ),
+            settings,
+            request_id="request-1",
+            conversation_id="conversation-1",
+            user_id="user-1",
+            active_project_namespace="project.personal_assistant",
+            working_directory=str(Path.cwd()),
+            policy=ConfigPolicyEngine(settings),
+        )
+    )
+
+    assert resolution.agent_request_plan.tool_policy is AgentToolPolicy.DISABLED
+    assert resolution.agent_request_plan.allowed_tool_names == ()
+    assert resolution.metadata["agent_tool_policy"] == "disabled"
+    assert resolution.metadata["agent_allowed_tool_count"] == 0
+    assert "agent_allowed_tool_names" not in resolution.metadata
+
+
+def test_agent_request_plan_disables_tools_when_tool_budget_cannot_execute_tools() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+    budget = replace(
+        settings.runtime_budgets[LoopStrategyName.TOOL_REACT_LOOP.value],
+        allow_tools=False,
+        max_tool_calls=0,
+    )
+    settings = replace(
+        settings,
+        runtime_budgets={
+            **settings.runtime_budgets,
+            LoopStrategyName.TOOL_REACT_LOOP.value: budget,
+        },
+    )
+
+    resolution = asyncio.run(
+        runtime_request_metadata(
+            SimpleNamespace(
+                content="Привет",
+                sensitivity=Sensitivity.PROJECT,
+                loop_strategy=None,
+                model_profile=None,
+                working_directory=str(Path.cwd()),
+            ),
+            settings,
+            request_id="request-1",
+            conversation_id="conversation-1",
+            user_id="user-1",
+            active_project_namespace="project.personal_assistant",
+            working_directory=str(Path.cwd()),
+            policy=ConfigPolicyEngine(settings),
+        )
+    )
+
+    assert resolution.agent_request_plan.tool_policy is AgentToolPolicy.DISABLED
+    assert resolution.agent_request_plan.allowed_tool_names == ()
+    assert resolution.metadata["agent_tool_policy"] == "disabled"
+    assert resolution.metadata["agent_allowed_tool_count"] == 0
+    assert "agent_allowed_tool_names" not in resolution.metadata
+
+
+def test_agent_request_plan_filters_allowed_tools_through_request_policy() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+
+    resolution = asyncio.run(
+        runtime_request_metadata(
+            SimpleNamespace(
+                content="Привет",
+                sensitivity=Sensitivity.SECRET,
+                loop_strategy=None,
+                model_profile=None,
+                working_directory=str(Path.cwd()),
+            ),
+            settings,
+            request_id="request-1",
+            conversation_id="conversation-1",
+            user_id="user-1",
+            active_project_namespace="project.personal_assistant",
+            working_directory=str(Path.cwd()),
+            policy=ConfigPolicyEngine(settings),
+        )
+    )
+
+    assert resolution.agent_request_plan.tool_policy is AgentToolPolicy.DISABLED
+    assert resolution.agent_request_plan.allowed_tool_names == ()
+    assert resolution.metadata["agent_tool_policy"] == "disabled"
+    assert resolution.metadata["agent_allowed_tool_count"] == 0
+    assert "agent_allowed_tool_names" not in resolution.metadata
+
+
+def test_agent_request_plan_uses_request_plan_reason_namespace() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+
+    resolution = asyncio.run(
+        runtime_request_metadata(
+            SimpleNamespace(
+                content="Сколько время?",
+                sensitivity=Sensitivity.PROJECT,
+                loop_strategy=None,
+                model_profile=None,
+                working_directory=str(Path.cwd()),
+            ),
+            settings,
+            request_id="request-1",
+            conversation_id="conversation-1",
+            user_id="user-1",
+            active_project_namespace="project.personal_assistant",
+            working_directory=str(Path.cwd()),
+            policy=ConfigPolicyEngine(settings),
+        )
+    )
+
+    assert resolution.decision.reason_code == "tool_intent_safe_builtin"
+    assert resolution.agent_request_plan.request_plan_reason_code == "request_plan_tools_selected"
+    assert resolution.metadata["request_plan_reason_code"] == "request_plan_tools_selected"
+    assert not resolution.agent_request_plan.request_plan_reason_code.startswith("tool_intent_")
+    assert not resolution.agent_request_plan.request_plan_reason_code.startswith("classifier_")
+
+
+def test_agent_request_plan_chat_fallback_reason_does_not_copy_classifier_reason() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+    classifier = StaticIntentClassifier(
+        IntentClassification(
+            intent_family=IntentFamily.SYSTEM_DIAGNOSTICS,
+            confidence=0.1,
+            reason_code="classifier_low_confidence",
+            fallback_preference=SelectionFallbackPreference.CHAT,
+        )
+    )
+
+    resolution = asyncio.run(
+        runtime_request_metadata(
+            SimpleNamespace(
+                content="Проверь состояние системы",
+                sensitivity=Sensitivity.PROJECT,
+                loop_strategy=None,
+                model_profile=None,
+                working_directory=str(Path.cwd()),
+            ),
+            settings,
+            request_id="request-1",
+            conversation_id="conversation-1",
+            user_id="user-1",
+            active_project_namespace="project.personal_assistant",
+            working_directory=str(Path.cwd()),
+            policy=ConfigPolicyEngine(settings),
+            intent_classifier=classifier,
+        )
+    )
+
+    assert resolution.decision.reason_code == "classifier_low_confidence"
+    assert resolution.agent_request_plan.request_plan_reason_code == "request_plan_chat_fallback"
+    assert resolution.metadata["request_plan_reason_code"] == "request_plan_chat_fallback"
+
+
+def test_agent_request_plan_metadata_excludes_classifier_fields() -> None:
+    settings = ConfigLoader(Path("config")).load("test")
+
+    resolution = asyncio.run(
+        runtime_request_metadata(
+            SimpleNamespace(
+                content="Сколько время?",
+                sensitivity=Sensitivity.PROJECT,
+                loop_strategy=None,
+                model_profile=None,
+                working_directory=str(Path.cwd()),
+            ),
+            settings,
+            request_id="request-1",
+            conversation_id="conversation-1",
+            user_id="user-1",
+            active_project_namespace="project.personal_assistant",
+            working_directory=str(Path.cwd()),
+            policy=ConfigPolicyEngine(settings),
+        )
+    )
+
+    plan_metadata = resolution.agent_request_plan.redacted_metadata()
+    assert plan_metadata["requested_loop_mode"] == "auto"
+    assert plan_metadata["request_plan_status"] == "selected"
+    assert plan_metadata["request_plan_reason_code"]
+    assert "agent_tool_policy" in plan_metadata
+    assert "intent_family" not in plan_metadata
+    assert "loop_selection_intent_family" not in plan_metadata
+    assert "loop_selection_confidence" not in plan_metadata
+    assert "loop_selection_classification_source" not in plan_metadata
+    assert "direct_tool_plan" not in plan_metadata
+    assert "loop_selection_direct_tool_plan" not in plan_metadata
 
 
 def test_request_metadata_rejects_tool_loop_when_budget_is_missing() -> None:

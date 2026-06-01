@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
@@ -14,7 +15,7 @@ from assistant_core.domain.loop_selection import (
     SelectionDecisionStatus,
 )
 from assistant_core.domain.loops import LoopStrategyName
-from assistant_core.domain.policy import Capability, PolicyDecisionOutcome
+from assistant_core.domain.policy import Capability, CapabilityPolicyRequest, PolicyDecisionOutcome
 from assistant_core.ports.event_log import EventLogPort
 from assistant_core.ports.intent_classifier import IntentClassifierPort
 from assistant_core.ports.policy import PolicyPort
@@ -23,11 +24,45 @@ from assistant_core.runtime.loop_selection import DeterministicIntentClassifier,
 from assistant_core.runtime.routing import CapabilityRoutingRegistry
 
 
+class AgentToolPolicy(StrEnum):
+    DISABLED = "disabled"
+    AVAILABLE = "available"
+    REQUIRED = "required"
+
+
+@dataclass(frozen=True)
+class AgentRequestPlan:
+    requested_mode: str
+    selected_loop_strategy: str
+    tool_policy: AgentToolPolicy
+    allowed_tool_names: tuple[str, ...]
+    selected_model_profile: str
+    request_plan_status: str
+    request_plan_reason_code: str
+
+    def redacted_metadata(self) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "requested_loop_mode": self.requested_mode,
+            "selected_loop_strategy": self.selected_loop_strategy,
+            "agent_tool_policy": self.tool_policy.value,
+            "agent_allowed_tool_count": len(self.allowed_tool_names),
+            "selected_model_profile": self.selected_model_profile,
+            "model_profile": self.selected_model_profile,
+            "request_plan_status": self.request_plan_status,
+            "request_plan_reason_code": self.request_plan_reason_code,
+        }
+        if self.allowed_tool_names:
+            metadata["agent_allowed_tool_names"] = list(self.allowed_tool_names)
+        return metadata
+
+
 @dataclass(frozen=True)
 class RuntimeRequestMetadataResolution:
     metadata: dict[str, Any]
     selection_request: LoopSelectionRequest
     decision: LoopSelectionDecision
+    agent_request_plan: AgentRequestPlan
+
 
 
 class LoopSelectionError(ValueError):
@@ -122,15 +157,25 @@ async def runtime_request_metadata(
         ) from exc
 
     decision = replace(decision, selected_model_profile=model_profile)
+    agent_request_plan = await agent_request_plan_from_decision(
+        decision,
+        selection_request=selection_request,
+        model_profile=model_profile,
+        routing_registry=routing_registry,
+        settings=settings,
+        policy=policy,
+    )
     return RuntimeRequestMetadataResolution(
         metadata=metadata_from_decision(
             decision,
             body=body,
             model_profile=model_profile,
             routing_registry=routing_registry,
+            agent_request_plan=agent_request_plan,
         ),
         selection_request=selection_request,
         decision=decision,
+        agent_request_plan=agent_request_plan,
     )
 
 
@@ -182,9 +227,21 @@ def metadata_from_decision(
     body: Any,
     model_profile: str,
     routing_registry: CapabilityRoutingRegistry,
+    agent_request_plan: AgentRequestPlan | None = None,
 ) -> dict[str, Any]:
     selected_loop_strategy = _loop_strategy_value(decision.selected_loop_strategy)
-    metadata = {
+    metadata = (
+        agent_request_plan.redacted_metadata()
+        if agent_request_plan is not None
+        else {
+            "requested_loop_mode": decision.requested_mode.value,
+            "selected_loop_strategy": selected_loop_strategy,
+            "selected_model_profile": model_profile,
+            "model_profile": model_profile,
+        }
+    )
+    metadata.update(
+        {
         "requested_loop_mode": decision.requested_mode.value,
         "selected_loop_strategy": selected_loop_strategy,
         "loop_strategy": selected_loop_strategy,
@@ -199,7 +256,8 @@ def metadata_from_decision(
         "loop_selection_requires_live_state": decision.requires_live_state,
         "loop_selection_policy_outcome": _policy_outcome_value(decision.policy_outcome),
         "loop_selection_approval_possible": decision.approval_possible,
-    }
+        }
+    )
     tool_names = _decision_tool_names(decision, routing_registry)
     if tool_names:
         metadata["loop_selection_tool_names"] = tool_names
@@ -208,6 +266,131 @@ def metadata_from_decision(
         metadata["loop_selection_direct_tool_plan"] = direct_plan.redacted_metadata()
     metadata.update(static_request_metadata(body))
     return metadata
+
+
+async def agent_request_plan_from_decision(
+    decision: LoopSelectionDecision,
+    *,
+    selection_request: LoopSelectionRequest,
+    model_profile: str,
+    routing_registry: CapabilityRoutingRegistry,
+    settings: Settings,
+    policy: PolicyPort | None,
+) -> AgentRequestPlan:
+    selected_loop_strategy = _loop_strategy_value(decision.selected_loop_strategy)
+    if selected_loop_strategy is None:
+        selected_loop_strategy = ""
+    allowed_tool_names = await _agent_allowed_tool_names(
+        decision,
+        selection_request,
+        routing_registry,
+        settings=settings,
+        policy=policy,
+    )
+    return AgentRequestPlan(
+        requested_mode=decision.requested_mode.value,
+        selected_loop_strategy=selected_loop_strategy,
+        tool_policy=_agent_tool_policy(decision, allowed_tool_names=allowed_tool_names),
+        allowed_tool_names=allowed_tool_names,
+        selected_model_profile=model_profile,
+        request_plan_status=decision.decision_status.value,
+        request_plan_reason_code=_request_plan_reason_code(decision),
+    )
+
+
+def _tool_surface_available(settings: Settings) -> bool:
+    if not settings.policy.tools_enabled:
+        return False
+    budget = settings.runtime_budgets.get(LoopStrategyName.TOOL_REACT_LOOP.value)
+    if budget is None:
+        return False
+    return budget.allow_tools and budget.max_tool_calls > 0
+
+
+def _agent_tool_policy(
+    decision: LoopSelectionDecision,
+    *,
+    allowed_tool_names: tuple[str, ...],
+) -> AgentToolPolicy:
+    if decision.requested_mode is LoopSelectionMode.CHAT or not allowed_tool_names:
+        return AgentToolPolicy.DISABLED
+    if decision.requested_mode is LoopSelectionMode.TOOLS:
+        return AgentToolPolicy.REQUIRED
+    return AgentToolPolicy.AVAILABLE
+
+
+async def _agent_allowed_tool_names(
+    decision: LoopSelectionDecision,
+    selection_request: LoopSelectionRequest,
+    routing_registry: CapabilityRoutingRegistry,
+    *,
+    settings: Settings,
+    policy: PolicyPort | None,
+) -> tuple[str, ...]:
+    if (
+        decision.requested_mode is LoopSelectionMode.CHAT
+        or not _tool_surface_available(settings)
+        or policy is None
+    ):
+        return ()
+    names: list[str] = []
+    for item in routing_registry.available_tools_summary():
+        if not isinstance(item, dict):
+            continue
+        tool_name = item.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name or tool_name in names:
+            continue
+        descriptor = routing_registry.descriptor(tool_name)
+        if descriptor is None:
+            continue
+        policy_decision = await policy.evaluate_capability_request(
+            _tool_policy_request(selection_request, descriptor)
+        )
+        if policy_decision.outcome is PolicyDecisionOutcome.DENY:
+            continue
+        names.append(tool_name)
+    return tuple(names)
+
+
+def _tool_policy_request(
+    selection_request: LoopSelectionRequest,
+    descriptor: Any,
+) -> CapabilityPolicyRequest:
+    return CapabilityPolicyRequest(
+        capability=descriptor.capability,
+        risk_classes=descriptor.risk_classes,
+        sensitivity=selection_request.current_message_sensitivity,
+        permission_mode=selection_request.permission_mode,
+        user_id=selection_request.user_id,
+        conversation_id=selection_request.conversation_id,
+        request_id=selection_request.request_id,
+        project_namespace=selection_request.active_project_namespace,
+        working_directory=selection_request.working_directory,
+        tool_name=descriptor.tool_name,
+        scope={
+            "intent_families": sorted(intent.value for intent in descriptor.intent_families),
+        },
+    )
+
+
+def _request_plan_reason_code(decision: LoopSelectionDecision) -> str:
+    if decision.decision_status is SelectionDecisionStatus.SELECTED:
+        if decision.selected_loop_strategy is LoopStrategyName.TOOL_REACT_LOOP:
+            return "request_plan_tools_selected"
+        return "request_plan_chat_selected"
+    if decision.decision_status is SelectionDecisionStatus.FALLBACK_CHAT:
+        return "request_plan_chat_fallback"
+    if decision.decision_status is SelectionDecisionStatus.CLARIFICATION_REQUIRED:
+        return "request_plan_clarification_required"
+    if decision.decision_status is SelectionDecisionStatus.REJECTED_BY_POLICY:
+        return "request_plan_policy_rejected"
+    if decision.decision_status is SelectionDecisionStatus.TOOLS_UNAVAILABLE:
+        return "request_plan_tools_unavailable"
+    if decision.decision_status is SelectionDecisionStatus.INVALID_OVERRIDE:
+        return "request_plan_invalid_override"
+    if decision.decision_status is SelectionDecisionStatus.CLASSIFIER_UNAVAILABLE:
+        return "request_plan_intent_resolver_unavailable"
+    return "request_plan_unknown"
 
 
 def static_request_metadata(body: Any) -> dict[str, Any]:
