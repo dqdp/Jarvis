@@ -30,6 +30,7 @@ def tool_event_payload(
     *,
     policy_decision_id: str | None = None,
     error_code: str | None = None,
+    policy_outcome: str | None = None,
 ) -> dict[str, Any]:
     payload = {
         "tool_name": spec.name,
@@ -39,6 +40,8 @@ def tool_event_payload(
     }
     if error_code is not None:
         payload["error_code"] = safe_tool_observation_error_code(error_code)
+    if policy_outcome is not None:
+        payload["policy_outcome"] = policy_outcome
     return payload
 
 

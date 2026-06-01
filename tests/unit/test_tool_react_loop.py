@@ -687,6 +687,94 @@ def test_tool_react_loop_recovers_to_final_answer_after_optional_failed_observat
         and event.payload.get("action") == "tool_call"
         for event in events
     )
+    recovered = next(
+        event
+        for event in events
+        if event.event_type == EventType.AGENT_STEP_COMPLETED
+        and event.payload.get("action") == "tool_observation_recovered"
+    )
+    assert recovered.payload["agent_state"] == AgentLoopState.OBSERVING.value
+    assert recovered.payload["agent_step"] == AgentLoopStep.OBSERVATION.value
+    assert recovered.payload["tool_name"] == "datetime.now"
+    assert recovered.payload["tool_call_id"] == result.tool_observation_refs[0].tool_call_id
+    assert recovered.payload["observation_status"] == ToolObservationStatus.FAILED.value
+    assert recovered.payload["recovery_action"] == "finalize"
+    final_completed = next(
+        event
+        for event in events
+        if event.event_type == EventType.AGENT_STEP_COMPLETED
+        and event.payload.get("action") == "final_answer"
+    )
+    assert final_completed.payload["step_id"] != recovered.payload["step_id"]
+    assert final_completed.payload["source_step_id"] == recovered.payload["step_id"]
+    completed_step_ids = [
+        event.payload["step_id"]
+        for event in events
+        if event.event_type == EventType.AGENT_STEP_COMPLETED
+    ]
+    assert len(completed_step_ids) == len(set(completed_step_ids))
+
+
+def test_tool_react_loop_recovery_finalizer_failure_is_attributed_to_final_step() -> None:
+    class FailedGateway:
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            return ToolObservation.empty(
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.FAILED,
+                sensitivity=request.sensitivity,
+                started_at=now,
+                completed_at=now,
+                error={"code": "tool_failed", "message": "tool execution failed"},
+            )
+
+    async def scenario():
+        event_log = FakeEventLog()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredAndChatRouter(
+                [{"action": "tool_call", "tool_name": "datetime.now", "arguments": {}}],
+                chat_response="must not complete",
+            ),
+            event_log=event_log,
+            tool_gateway=FailedGateway(),
+        )
+        with pytest.raises(RuntimeError, match="max_model_calls_exceeded"):
+            await loop.run_turn(
+                _request(
+                    metadata=_tool_plan_metadata("datetime.now"),
+                    budget=replace(_budget(), max_model_calls=1),
+                )
+            )
+        return event_log.events
+
+    events = asyncio.run(scenario())
+    recovered = next(
+        event
+        for event in events
+        if event.event_type == EventType.AGENT_STEP_COMPLETED
+        and event.payload.get("action") == "tool_observation_recovered"
+    )
+    final_started = next(
+        event
+        for event in events
+        if event.event_type == EventType.AGENT_STEP_STARTED
+        and event.payload.get("action") == "final_answer"
+        and event.payload.get("source") == "tool_observation_recovery"
+    )
+    failed = next(event for event in events if event.event_type == EventType.AGENT_STEP_FAILED)
+
+    assert final_started.payload["source_step_id"] == recovered.payload["step_id"]
+    assert failed.payload["step_id"] == final_started.payload["step_id"]
+    assert failed.causation_id == final_started.event_id
+    assert failed.payload["error_code"] == "max_model_calls_exceeded"
+    assert failed.payload["step_id"] != recovered.payload["step_id"]
 
 
 def test_tool_react_loop_live_state_recovery_does_not_call_chat_finalizer() -> None:
@@ -1846,6 +1934,46 @@ def test_tool_react_loop_streams_final_answer_token_and_terminal_event() -> None
     ]
     assert events[-1].event_type == "request.processing.completed"
     assert events[-1].data["event_id"] == "event-request.processing.completed"
+    assert [
+        event.event_type for event in events
+    ].count(EventType.REQUEST_PROCESSING_COMPLETED.value) == 1
+
+
+def test_tool_react_loop_streams_model_and_assistant_lifecycle_events() -> None:
+    async def scenario():
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=FakeStructuredAndChatRouter(
+                [{"action": "final_answer"}],
+                chat_response="streamed answer",
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        return [
+            event
+            async for event in loop.stream_turn(
+                _request(metadata=_tool_plan_metadata("tool.shell.read.project"))
+            )
+        ]
+
+    events = asyncio.run(scenario())
+    event_types = [event.event_type for event in events]
+
+    assert EventType.MODEL_REQUEST_CREATED.value in event_types
+    assert EventType.MODEL_RESPONSE_RECEIVED.value in event_types
+    assert EventType.ASSISTANT_MESSAGE_CREATED.value in event_types
+    assert event_types.count(EventType.REQUEST_PROCESSING_COMPLETED.value) == 1
+    assert event_types.index(EventType.MODEL_REQUEST_CREATED.value) < event_types.index(
+        EventType.MODEL_RESPONSE_RECEIVED.value,
+    )
+    assert event_types.index(EventType.MODEL_RESPONSE_RECEIVED.value) < event_types.index(
+        EventType.ASSISTANT_MESSAGE_CREATED.value,
+    )
+    assert event_types.index(EventType.ASSISTANT_MESSAGE_CREATED.value) < event_types.index(
+        EventType.REQUEST_PROCESSING_COMPLETED.value,
+    )
 
 
 def test_tool_react_loop_streams_public_tool_lifecycle_events() -> None:

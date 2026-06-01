@@ -52,6 +52,7 @@ class FinalAnswerStep:
         tool_observation_refs: list[ToolObservationRef],
         loop_deadline: float,
         output_contract: str | None = None,
+        source_step_id: str | None = None,
     ) -> LoopExecutionResult:
         if used_model_calls >= request.budget.max_model_calls:
             raise RuntimeError("max_model_calls_exceeded")
@@ -150,15 +151,18 @@ class FinalAnswerStep:
                 state=AgentLoopState.FINALIZING,
                 step=AgentLoopStep.FINAL,
             )
+            completed_payload = {
+                "strategy_name": request.strategy_name.value,
+                "step_id": step_id,
+                "step_index": step_index,
+                "action": "final_answer",
+            }
+            if source_step_id is not None:
+                completed_payload["source_step_id"] = source_step_id
             await self._event_recorder.append(
                 EventType.AGENT_STEP_COMPLETED,
                 request,
-                payload={
-                    "strategy_name": request.strategy_name.value,
-                    "step_id": step_id,
-                    "step_index": step_index,
-                    "action": "final_answer",
-                },
+                payload=completed_payload,
                 causation_id=step_started.event_id,
                 sensitivity=final_context.manifest.max_sensitivity,
                 state=AgentLoopState.FINALIZING,
@@ -221,6 +225,7 @@ class FinalAnswerStep:
         used_tool_calls: int,
         context_manifest_refs: list[str],
         tool_observation_refs: list[ToolObservationRef],
+        source_step_id: str | None = None,
     ) -> LoopExecutionResult:
         completion = await self._conversation_store.complete_assistant_response(
             CompleteAssistantResponseCommand(
@@ -242,16 +247,19 @@ class FinalAnswerStep:
             state=AgentLoopState.FINALIZING,
             step=AgentLoopStep.FINAL,
         )
+        completed_payload = {
+            "strategy_name": request.strategy_name.value,
+            "step_id": step_started.payload["step_id"],
+            "step_index": step_started.payload["step_index"],
+            "action": "final_answer",
+            "source": "deterministic_recovery",
+        }
+        if source_step_id is not None:
+            completed_payload["source_step_id"] = source_step_id
         await self._event_recorder.append(
             EventType.AGENT_STEP_COMPLETED,
             request,
-            payload={
-                "strategy_name": request.strategy_name.value,
-                "step_id": step_started.payload["step_id"],
-                "step_index": step_started.payload["step_index"],
-                "action": "final_answer",
-                "source": "deterministic_recovery",
-            },
+            payload=completed_payload,
             causation_id=step_started.event_id,
             sensitivity=request.current_message_sensitivity,
             state=AgentLoopState.FINALIZING,

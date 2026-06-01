@@ -987,10 +987,15 @@ def test_tool_react_loop_streams_failed_terminal_after_denied_approval() -> None
     assert [event.event_type for event in emitted] == [
         EventType.REQUEST_PROCESSING_STARTED.value,
         EventType.CONTEXT_ASSEMBLY_STARTED.value,
+        EventType.MODEL_REQUEST_CREATED.value,
+        EventType.MODEL_RESPONSE_RECEIVED.value,
         EventType.APPROVAL_REQUIRED.value,
         EventType.APPROVAL_DENIED.value,
         EventType.REQUEST_PROCESSING_FAILED.value,
     ]
+    assert [event.event_type for event in emitted].count(
+        EventType.REQUEST_PROCESSING_FAILED.value,
+    ) == 1
     failed = emitted[-1].data["error"]
     assert failed["code"] == "approval_denied"
 

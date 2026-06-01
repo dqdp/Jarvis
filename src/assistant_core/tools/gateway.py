@@ -242,6 +242,8 @@ class ToolGateway:
                 payload=_tool_event_payload(
                     spec,
                     policy_decision_id=decision.decision_id,
+                    error_code=decision.code,
+                    policy_outcome=decision.outcome.value,
                 ),
             )
             await self._audit.record_observation(

@@ -58,8 +58,9 @@ Assistant API
 Client
   -> GET /v1/requests/{request_id}/stream
 Runtime
-  -> emit context/model/token/assistant events
+  -> emit context/model/assistant lifecycle events
   -> create assistant message
+  -> emit answer stream deltas when available; ordering depends on loop type
   -> mark request completed
 ```
 
@@ -295,6 +296,15 @@ Transient stream-only events may use names such as:
 token
 heartbeat
 ```
+
+For the bounded agent loop, `token` is currently a synthetic final-answer delta
+emitted after durable lifecycle events such as `assistant.message.created`.
+True token-by-token final-answer streaming is deferred to the PM-09 readiness
+work.
+
+Provider-streaming loops may emit `token` events before
+`assistant.message.created`; clients must use terminal request events, not token
+position, to determine completion.
 
 Token events are not persisted in event log.
 

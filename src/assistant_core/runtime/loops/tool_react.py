@@ -39,6 +39,7 @@ from assistant_core.runtime.loops.failure_policy import LoopFailureDecision, Loo
 from assistant_core.runtime.loops.final_answer import FinalAnswerStep, FinalAnswerStepError
 from assistant_core.runtime.loops.observation_recovery import (
     ToolObservationRecoveryAction,
+    ToolObservationRecoveryDecision,
     ToolObservationRecoveryError,
     ToolObservationRecoveryPolicy,
 )
@@ -178,6 +179,8 @@ class ToolReactLoop:
                 causation_id=loop_started.event_id,
                 step=AgentLoopStep.STARTED,
             )
+            active_step_started = step_started
+            active_step_id = step_id
             try:
                 if _should_use_final_chat_without_proposal(
                     request_plan,
@@ -352,24 +355,41 @@ class ToolReactLoop:
                         tool_requires_live_state=tool_requires_live_state,
                     )
                     if recovery_decision.action == ToolObservationRecoveryAction.FINALIZE:
+                        recovery_completed = await self._append_observation_step_recovered(
+                            request,
+                            proposal=proposal,
+                            step_started=step_started,
+                            observation_ref=observation_ref,
+                            recovery_decision=recovery_decision,
+                        )
+                        final_step_started = await self._append_recovery_final_step_started(
+                            request,
+                            step_index=step_index,
+                            source_step_id=step_id,
+                            causation_id=recovery_completed.event_id,
+                        )
+                        active_step_started = final_step_started
+                        active_step_id = final_step_started.payload["step_id"]
                         if tool_requires_live_state:
                             return await self._final_answer_step.complete_deterministic(
                                 request,
-                                step_started=step_started,
+                                step_started=final_step_started,
                                 response_text=_live_state_unavailable_response(observation_ref),
                                 used_model_calls=used_model_calls,
                                 used_tool_calls=used_tool_calls,
                                 context_manifest_refs=context_manifest_refs,
                                 tool_observation_refs=tool_observation_refs,
+                                source_step_id=step_id,
                             )
                         return await self._final_answer_step.run(
                             request,
-                            step_started=step_started,
+                            step_started=final_step_started,
                             used_model_calls=used_model_calls,
                             used_tool_calls=used_tool_calls,
                             context_manifest_refs=context_manifest_refs,
                             tool_observation_refs=tool_observation_refs,
                             loop_deadline=loop_deadline,
+                            source_step_id=step_id,
                             output_contract=_tool_observation_recovery_output_contract(
                                 observation_ref,
                                 tool_requires_live_state=tool_requires_live_state,
@@ -396,12 +416,12 @@ class ToolReactLoop:
                     request,
                     payload={
                         "strategy_name": request.strategy_name.value,
-                        "step_id": step_id,
+                        "step_id": active_step_id,
                         "step_index": step_index,
                         "error_code": failure_decision.error_code,
                         "error_type": type(failure_exc).__name__,
                     },
-                    causation_id=step_started.event_id,
+                    causation_id=active_step_started.event_id,
                     state=AgentLoopState.FAILED,
                     step=AgentLoopStep.FAILED,
                 )
@@ -409,7 +429,7 @@ class ToolReactLoop:
                     request,
                     failure_exc,
                     decision=failure_decision,
-                    causation_id=step_started.event_id,
+                    causation_id=active_step_started.event_id,
                     used_model_calls=used_model_calls,
                     used_tool_calls=used_tool_calls,
                     context_manifest_refs=tuple(context_manifest_refs),
@@ -444,6 +464,8 @@ class ToolReactLoop:
             async for event in self._public_stream_events(request, seen_stream_events):
                 yield event
             result = await task
+            async for event in self._public_stream_events(request, seen_stream_events):
+                yield event
         except Exception:
             failed_event = await self._latest_event(
                 request.request_id,
@@ -574,6 +596,60 @@ class ToolReactLoop:
             step=AgentLoopStep.OBSERVATION,
         )
 
+    async def _append_observation_step_recovered(
+        self,
+        request: LoopExecutionRequest,
+        *,
+        proposal: ToolProposal,
+        step_started: EventEnvelope,
+        observation_ref: ToolObservationRef,
+        recovery_decision: ToolObservationRecoveryDecision,
+    ) -> EventEnvelope:
+        payload = {
+            "strategy_name": request.strategy_name.value,
+            "step_id": step_started.payload["step_id"],
+            "step_index": step_started.payload["step_index"],
+            "action": "tool_observation_recovered",
+            "tool_name": proposal.tool_name,
+            "tool_call_id": observation_ref.tool_call_id,
+            "observation_status": observation_ref.status.value,
+            "recovery_action": recovery_decision.action.value,
+        }
+        if recovery_decision.error_code is not None:
+            payload["error_code"] = recovery_decision.error_code
+        return await self._append_event(
+            EventType.AGENT_STEP_COMPLETED,
+            request,
+            payload=payload,
+            causation_id=step_started.event_id,
+            state=AgentLoopState.OBSERVING,
+            step=AgentLoopStep.OBSERVATION,
+        )
+
+    async def _append_recovery_final_step_started(
+        self,
+        request: LoopExecutionRequest,
+        *,
+        step_index: int,
+        source_step_id: str,
+        causation_id: str,
+    ) -> EventEnvelope:
+        return await self._append_event(
+            EventType.AGENT_STEP_STARTED,
+            request,
+            payload={
+                "strategy_name": request.strategy_name.value,
+                "step_id": str(uuid4()),
+                "step_index": step_index,
+                "action": "final_answer",
+                "source_step_id": source_step_id,
+                "source": "tool_observation_recovery",
+            },
+            causation_id=causation_id,
+            state=AgentLoopState.FINALIZING,
+            step=AgentLoopStep.FINAL,
+        )
+
     async def _fail(
         self,
         request: LoopExecutionRequest,
@@ -685,11 +761,20 @@ _USER_STREAM_EVENT_TYPES = {
     EventType.MEMORY_RETRIEVAL_FAILED,
     EventType.CONTENT_RETRIEVED,
     EventType.CONTEXT_ASSEMBLED,
+    EventType.MODEL_REQUEST_CREATED,
+    EventType.MODEL_RESPONSE_RECEIVED,
+    EventType.ASSISTANT_MESSAGE_CREATED,
     EventType.APPROVAL_REQUIRED,
     EventType.APPROVAL_GRANTED,
     EventType.APPROVAL_DENIED,
     EventType.APPROVAL_EXPIRED,
     EventType.APPROVAL_CANCELLED,
+    EventType.TOOL_CALL_STARTED,
+    EventType.TOOL_CALL_COMPLETED,
+    EventType.TOOL_CALL_DENIED,
+    EventType.TOOL_CALL_FAILED,
+    EventType.TOOL_CALL_TIMEOUT,
+    EventType.TOOL_CALL_CANCELLED,
     EventType.TOOL_SHELL_STARTED,
     EventType.TOOL_SHELL_COMPLETED,
     EventType.TOOL_SHELL_DENIED,

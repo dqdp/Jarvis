@@ -378,14 +378,23 @@ def test_tool_timeout_returns_timeout_observation() -> None:
 
 
 def test_denied_policy_returns_denied_observation_without_adapter_execution() -> None:
+    event_log = InMemoryEventLog()
     adapter = FakeToolAdapter(fake_echo_tool().spec, response="executed")
-    gateway, _policy = _gateway(adapter, policy=RecordingPolicy(PolicyDecisionOutcome.DENY))
+    gateway, _policy = _gateway(
+        adapter,
+        policy=RecordingPolicy(PolicyDecisionOutcome.DENY),
+        event_log=event_log,
+    )
 
     observation = asyncio.run(gateway.invoke(_request()))
+    events = asyncio.run(event_log.query(EventFilter(request_id="req-tool-1")))
+    denied_event = next(event for event in events if event.event_type == EventType.TOOL_CALL_DENIED)
 
     assert observation.status == ToolObservationStatus.DENIED
     assert observation.error["code"] == "deny"
     assert adapter.call_count == 0
+    assert denied_event.payload["error_code"] == "tool_error"
+    assert denied_event.payload["policy_outcome"] == "deny"
 
 
 def test_approval_required_returns_observation_without_adapter_execution() -> None:

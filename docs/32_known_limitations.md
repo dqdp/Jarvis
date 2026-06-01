@@ -16,6 +16,9 @@
   config changes.
 - Request execution is in-process. There is no durable queue or background
   worker system yet.
+- Agent-loop SSE emits stable lifecycle phases and a final answer delta, but
+  true token-by-token final-answer streaming for the bounded agent loop remains a
+  PM-09 readiness input.
 - Tools, RAG/content ingestion and a bounded tool loop are now implemented as
   post-MVP Alpha slices, not as original MVP scope.
 - Automatic loop selection and CLI readiness now cover PM-08a through PM-08i,

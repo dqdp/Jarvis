@@ -41,6 +41,9 @@ from assistant_core.storage.event_log import PostgresEventLog
 from assistant_core.storage.memory_store import PostgresMemoryStore
 from assistant_core.storage.migrations import run_migrations
 from assistant_core.storage.model_invocations import PostgresModelInvocationRepository
+from assistant_core.tools.builtin import datetime_now_tool
+from assistant_core.tools.gateway import ToolGateway
+from assistant_core.tools.registry import ToolRegistry
 
 
 pytestmark = [pytest.mark.contract, pytest.mark.db]
@@ -179,7 +182,14 @@ def stream_parts():
     )
     apps: list[FastAPI] = []
 
-    def make_app(provider: FakeModelProvider, *, settings_override=None, runtime_override=None):
+    def make_app(
+        provider: FakeModelProvider,
+        *,
+        settings_override=None,
+        runtime_override=None,
+        tool_gateway_override=None,
+        use_memory_loop_adapter: bool = True,
+    ):
         app_settings = settings_override or settings
         policy = ConfigPolicyEngine(app_settings)
         router = ModelRouter(
@@ -203,12 +213,17 @@ def stream_parts():
             model_router=router,
             event_log=event_log,
             settings=app_settings,
+            tool_gateway=tool_gateway_override,
+        )
+        selected_runtime = (
+            runtime_override
+            or (MemoryLoopRuntimeAdapter(runtime) if use_memory_loop_adapter else runtime)
         )
         app = create_app(
             conversation_store=conversation_store,
             memory_store=memory_store,
             settings=app_settings,
-            runtime=runtime_override or MemoryLoopRuntimeAdapter(runtime),
+            runtime=selected_runtime,
             event_log=event_log,
             policy=policy,
         )
@@ -566,6 +581,74 @@ def test_sse_stream_emits_assistant_message_created(stream_parts) -> None:
         return _sse_events(raw)
 
     assert "assistant.message.created" in [event for event, _ in asyncio.run(scenario())]
+
+
+def test_tool_react_sse_stream_emits_model_tool_and_assistant_lifecycle_events(stream_parts) -> None:
+    async def scenario():
+        make_app, event_log = stream_parts
+        base_settings = ConfigLoader(Path("config")).load("test")
+        tool_budget = base_settings.runtime_budgets[LoopStrategyName.TOOL_REACT_LOOP.value]
+        app_settings = replace(
+            base_settings,
+            runtime_budgets={
+                **base_settings.runtime_budgets,
+                LoopStrategyName.TOOL_REACT_LOOP.value: replace(
+                    tool_budget,
+                    max_model_calls=3,
+                    max_tool_calls=1,
+                ),
+            },
+        )
+        provider = FakeModelProvider(
+            chat_response="agent loop response",
+            structured_text_responses=[
+                '{"action":"tool_call","tool_name":"datetime.now","arguments":{}}',
+            ],
+        )
+        policy = ConfigPolicyEngine(app_settings)
+        tool_gateway = ToolGateway(
+            registry=ToolRegistry([datetime_now_tool()]),
+            policy=policy,
+            event_log=event_log,
+        )
+        app = make_app(
+            provider,
+            settings_override=app_settings,
+            tool_gateway_override=tool_gateway,
+            use_memory_loop_adapter=False,
+        )
+        submitted = await _accepted_message(
+            app,
+            client_message_id="client-tool-react-model-stream",
+            content="echo hello through tool loop",
+            loop_strategy=LoopStrategyName.TOOL_REACT_LOOP.value,
+        )
+        _, raw = await _request(app, "GET", f"/v1/requests/{submitted['request_id']}/stream")
+        return _sse_events(raw), provider
+
+    events, provider = asyncio.run(scenario())
+    event_types = [event for event, _ in events]
+
+    assert provider.structured_calls == 1
+    assert provider.chat_calls == 1
+    assert EventType.MODEL_REQUEST_CREATED.value in event_types
+    assert EventType.MODEL_RESPONSE_RECEIVED.value in event_types
+    assert EventType.TOOL_CALL_STARTED.value in event_types
+    assert EventType.TOOL_CALL_COMPLETED.value in event_types
+    assert EventType.ASSISTANT_MESSAGE_CREATED.value in event_types
+    assert event_types.count(EventType.REQUEST_PROCESSING_COMPLETED.value) == 1
+    assert event_types.index(EventType.MODEL_REQUEST_CREATED.value) < event_types.index(
+        EventType.MODEL_RESPONSE_RECEIVED.value,
+    )
+    assert event_types.index(EventType.MODEL_RESPONSE_RECEIVED.value) < event_types.index(
+        EventType.TOOL_CALL_STARTED.value,
+    )
+    assert event_types.index(EventType.TOOL_CALL_COMPLETED.value) < event_types.index(
+        EventType.ASSISTANT_MESSAGE_CREATED.value,
+    )
+    assert event_types.index(EventType.ASSISTANT_MESSAGE_CREATED.value) < event_types.index(
+        EventType.REQUEST_PROCESSING_COMPLETED.value,
+    )
 
 
 def test_sse_stream_emits_request_completed(stream_parts) -> None:
@@ -934,6 +1017,85 @@ def test_reconnect_stream_projects_allowlisted_events_to_public_payloads(stream_
     assert set(context_payloads[-1]) == {"request_id", "event_id", "context_manifest_id"}
     assert "secret audit payload" not in json.dumps(events)
     assert "internal-message-id" not in json.dumps(events)
+
+
+def test_reconnect_stream_redacts_model_and_message_payloads(stream_parts) -> None:
+    async def scenario():
+        make_app, event_log = stream_parts
+        app = make_app(FakeModelProvider(stream_tokens=["A"]))
+        submitted = await _accepted_message(
+            app,
+            client_message_id="client-model-replay-redaction",
+            content="model replay redaction",
+        )
+        await _request(app, "GET", f"/v1/requests/{submitted['request_id']}/stream")
+        now = datetime.now(UTC)
+
+        async def append(event_type: EventType, payload: dict[str, Any]) -> None:
+            await event_log.append(
+                EventEnvelope(
+                    event_id=str(uuid4()),
+                    event_seq=0,
+                    event_type=event_type,
+                    event_version=1,
+                    occurred_at=now,
+                    recorded_at=now,
+                    conversation_id=submitted["conversation_id"],
+                    request_id=submitted["request_id"],
+                    correlation_id=submitted["request_id"],
+                    causation_id=None,
+                    parent_event_id=None,
+                    actor_type=ActorType.SYSTEM,
+                    actor_id=None,
+                    source_component="test",
+                    source_node=None,
+                    sensitivity=Sensitivity.PROJECT,
+                    visibility=EventVisibility.INTERNAL,
+                    idempotency_key=None,
+                    payload=payload,
+                    metadata={"trace": "internal metadata"},
+                ),
+            )
+
+        await append(
+            EventType.MODEL_REQUEST_CREATED,
+            {
+                "context_manifest_id": "model-redaction-manifest",
+                "messages": [{"role": "user", "content": "raw model request secret"}],
+            },
+        )
+        await append(
+            EventType.MODEL_RESPONSE_RECEIVED,
+            {
+                "context_manifest_id": "model-redaction-manifest",
+                "raw_response": "raw model response secret",
+            },
+        )
+        await append(
+            EventType.ASSISTANT_MESSAGE_CREATED,
+            {
+                "message_id": "assistant-redaction-message",
+                "content_hash": "assistant-redaction-hash",
+                "content": "raw assistant message secret",
+            },
+        )
+        replay_app = make_app(FakeModelProvider(stream_tokens=["SHOULD_NOT_RERUN"]))
+        _, reconnect_raw = await _request(
+            replay_app,
+            "GET",
+            f"/v1/requests/{submitted['request_id']}/stream",
+        )
+        return _sse_events(reconnect_raw)
+
+    events = asyncio.run(scenario())
+    encoded = json.dumps(events)
+
+    assert "model-redaction-manifest" in encoded
+    assert "assistant-redaction-message" in encoded
+    assert "assistant-redaction-hash" in encoded
+    assert "raw model request secret" not in encoded
+    assert "raw model response secret" not in encoded
+    assert "raw assistant message secret" not in encoded
 
 
 def test_completed_request_stream_reconnect_does_not_rerun_provider(stream_parts) -> None:
