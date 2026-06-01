@@ -51,6 +51,7 @@ class FinalAnswerStep:
         context_manifest_refs: list[str],
         tool_observation_refs: list[ToolObservationRef],
         loop_deadline: float,
+        output_contract: str | None = None,
     ) -> LoopExecutionResult:
         if used_model_calls >= request.budget.max_model_calls:
             raise RuntimeError("max_model_calls_exceeded")
@@ -84,7 +85,7 @@ class FinalAnswerStep:
                     purpose="final_answer",
                     permission_mode=request.permission_mode,
                     tool_observation_refs=tuple(tool_observation_refs),
-                    output_contract=None,
+                    output_contract=output_contract,
                 ),
             ),
             timeout=_remaining_timeout(
@@ -208,6 +209,89 @@ class FinalAnswerStep:
             context_manifest_refs=tuple(context_manifest_refs),
             tool_observation_refs=tuple(tool_observation_refs),
             degraded=False,
+        )
+
+    async def complete_deterministic(
+        self,
+        request: LoopExecutionRequest,
+        *,
+        step_started: EventEnvelope,
+        response_text: str,
+        used_model_calls: int,
+        used_tool_calls: int,
+        context_manifest_refs: list[str],
+        tool_observation_refs: list[ToolObservationRef],
+    ) -> LoopExecutionResult:
+        completion = await self._conversation_store.complete_assistant_response(
+            CompleteAssistantResponseCommand(
+                conversation_id=request.conversation_id,
+                request_id=request.request_id,
+                content=response_text,
+                sensitivity=request.current_message_sensitivity,
+            ),
+        )
+        assistant_event = await self._event_recorder.append(
+            EventType.ASSISTANT_MESSAGE_CREATED,
+            request,
+            payload={
+                "message_id": completion.message.message_id,
+                "content_hash": completion.message.content_hash,
+            },
+            causation_id=step_started.event_id,
+            sensitivity=request.current_message_sensitivity,
+            state=AgentLoopState.FINALIZING,
+            step=AgentLoopStep.FINAL,
+        )
+        await self._event_recorder.append(
+            EventType.AGENT_STEP_COMPLETED,
+            request,
+            payload={
+                "strategy_name": request.strategy_name.value,
+                "step_id": step_started.payload["step_id"],
+                "step_index": step_started.payload["step_index"],
+                "action": "final_answer",
+                "source": "deterministic_recovery",
+            },
+            causation_id=step_started.event_id,
+            sensitivity=request.current_message_sensitivity,
+            state=AgentLoopState.FINALIZING,
+            step=AgentLoopStep.FINAL,
+        )
+        loop_completed = await self._event_recorder.append(
+            EventType.AGENT_LOOP_COMPLETED,
+            request,
+            payload={
+                "strategy_name": request.strategy_name.value,
+                "status": LoopStatus.COMPLETED.value,
+                "used_model_calls": used_model_calls,
+                "used_tool_calls": used_tool_calls,
+                "context_manifest_refs": list(context_manifest_refs),
+                "tool_observation_refs": [ref.tool_call_id for ref in tool_observation_refs],
+                "source": "deterministic_recovery",
+            },
+            causation_id=assistant_event.event_id,
+            sensitivity=request.current_message_sensitivity,
+            state=AgentLoopState.COMPLETED,
+            step=AgentLoopStep.COMPLETED,
+        )
+        await self._event_recorder.append(
+            EventType.REQUEST_PROCESSING_COMPLETED,
+            request,
+            payload={"assistant_message_id": completion.message.message_id},
+            causation_id=loop_completed.event_id,
+            sensitivity=request.current_message_sensitivity,
+            state=AgentLoopState.COMPLETED,
+            step=AgentLoopStep.COMPLETED,
+        )
+        return LoopExecutionResult(
+            status=LoopStatus.COMPLETED,
+            response_text=response_text,
+            assistant_message=completion.message,
+            used_model_calls=used_model_calls,
+            used_tool_calls=used_tool_calls,
+            context_manifest_refs=tuple(context_manifest_refs),
+            tool_observation_refs=tuple(tool_observation_refs),
+            degraded=True,
         )
 
 

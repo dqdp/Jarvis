@@ -18,6 +18,70 @@ SENSITIVITY_ORDER = {
     Sensitivity.SECRET: 4,
 }
 
+DEFAULT_TOOL_OBSERVATION_ERROR_CODE = "tool_error"
+
+SAFE_TOOL_OBSERVATION_ERROR_CODES = frozenset(
+    {
+        DEFAULT_TOOL_OBSERVATION_ERROR_CODE,
+        "approval_cancelled",
+        "approval_conflict",
+        "approval_denied",
+        "approval_error",
+        "approval_expired",
+        "approval_granted",
+        "approval_not_expired",
+        "approval_not_found",
+        "approval_pending",
+        "approval_required",
+        "approval_required_for_external_side_effect",
+        "approval_required_for_shell_read",
+        "approval_required_for_system_diagnostics",
+        "approval_required_for_write",
+        "approval_required_for_write_risk",
+        "approval_scope_mismatch",
+        "approval_store_unavailable",
+        "approval_used",
+        "backend_not_found",
+        "command_family_denied",
+        "command_path_denied",
+        "empty_command",
+        "git_subcommand_denied",
+        "interactive_command_denied",
+        "invalid_path",
+        "invalid_working_directory",
+        "invalid_arguments",
+        "diagnostics_family_mismatch",
+        "line_count_exceeds_limit",
+        "line_range_exceeds_limit",
+        "mutating_command_denied",
+        "network_client_denied",
+        "path_argument_required",
+        "path_argument_must_be_file",
+        "path_outside_workspace",
+        "secret_path_denied",
+        "sensitivity_ceiling_exceeded",
+        "sensor_mutation_denied",
+        "sensor_polling_denied",
+        "shell_syntax_denied",
+        "tool_disabled",
+        "tool_failed",
+        "tool_timeout",
+        "unknown_tool",
+        "unsupported_arguments",
+        "unsupported_command",
+        "unsupported_platform_command",
+        "working_directory_required",
+    }
+)
+
+
+def safe_tool_observation_error_code(error_code: Any) -> str | None:
+    if error_code is None:
+        return None
+    if isinstance(error_code, str) and error_code in SAFE_TOOL_OBSERVATION_ERROR_CODES:
+        return error_code
+    return DEFAULT_TOOL_OBSERVATION_ERROR_CODE
+
 
 class ToolObservationStatus(StrEnum):
     COMPLETED = "completed"

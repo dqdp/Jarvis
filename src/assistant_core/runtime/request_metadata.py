@@ -37,6 +37,7 @@ class AgentRequestPlan:
     selected_model_profile: str
     request_plan_status: str
     request_plan_reason_code: str
+    live_state_tool_names: tuple[str, ...] = ()
 
     def redacted_metadata(self) -> dict[str, Any]:
         metadata: dict[str, Any] = {
@@ -51,6 +52,8 @@ class AgentRequestPlan:
         }
         if self.allowed_tool_names:
             metadata["agent_allowed_tool_names"] = list(self.allowed_tool_names)
+        if self.live_state_tool_names:
+            metadata["agent_live_state_tool_names"] = list(self.live_state_tool_names)
         return metadata
 
 
@@ -295,11 +298,16 @@ async def agent_request_plan_from_decision(
         settings=settings,
         policy=policy,
     )
+    live_state_tool_names = _agent_live_state_tool_names(
+        allowed_tool_names,
+        routing_registry,
+    )
     return AgentRequestPlan(
         requested_mode=decision.requested_mode.value,
         selected_loop_strategy=selected_loop_strategy,
         tool_policy=_agent_tool_policy(decision, allowed_tool_names=allowed_tool_names),
         allowed_tool_names=allowed_tool_names,
+        live_state_tool_names=live_state_tool_names,
         selected_model_profile=model_profile,
         request_plan_status=decision.decision_status.value,
         request_plan_reason_code=_request_plan_reason_code(decision),
@@ -363,6 +371,18 @@ async def _agent_allowed_tool_names(
             continue
         names.append(tool_name)
     return tuple(names)
+
+
+def _agent_live_state_tool_names(
+    allowed_tool_names: tuple[str, ...],
+    routing_registry: CapabilityRoutingRegistry,
+) -> tuple[str, ...]:
+    allowed = set(allowed_tool_names)
+    return tuple(
+        item["tool_name"]
+        for item in routing_registry.available_tools_summary()
+        if item.get("tool_name") in allowed and item.get("requires_live_state") is True
+    )
 
 
 def _tool_policy_request(

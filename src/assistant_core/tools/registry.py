@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from assistant_core.domain.tools import ToolSpec
+from assistant_core.domain.tools import ToolSpec, safe_tool_observation_error_code
 
 
 class ToolRegistryError(ValueError):
@@ -33,9 +33,9 @@ class ToolExecutionDenied(ValueError):
         *,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
+        self.code = safe_tool_observation_error_code(code) or "tool_error"
+        self.message = "tool execution denied"
+        super().__init__(self.message)
         self.metadata = metadata or {}
 
 

@@ -39,7 +39,8 @@ pytestmark = [pytest.mark.e2e, pytest.mark.db]
 
 
 class FakeDiagnosticsExecutor:
-    def __init__(self) -> None:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
         self.calls: list[dict[str, Any]] = []
 
     async def execute(
@@ -58,6 +59,8 @@ class FakeDiagnosticsExecutor:
                 "timeout_seconds": timeout_seconds,
             },
         )
+        if self.fail:
+            raise RuntimeError("diagnostics backend failed")
         return ShellExecutionResult(
             exit_code=0,
             stdout="123 ollama\n456 jarvis\n",
@@ -124,6 +127,7 @@ async def _run_system_diagnostics_loop(
     *,
     chat_response: str = "fake response",
     sensor_snapshot: SensorSnapshot | None = None,
+    fail_diagnostics: bool = False,
 ):
     database_url = _database_url()
     assert_test_database_url(database_url)
@@ -159,7 +163,7 @@ async def _run_system_diagnostics_loop(
         event_log=event_log,
         policy=policy,
     )
-    diagnostics_executor = FakeDiagnosticsExecutor()
+    diagnostics_executor = FakeDiagnosticsExecutor(fail=fail_diagnostics)
     sensor_provider = FakeSensorProvider(
         sensor_snapshot
         or SensorSnapshot(
@@ -172,6 +176,16 @@ async def _run_system_diagnostics_loop(
             [
                 SystemDiagnosticsTool(
                     family=SystemDiagnosticsFamily.PROCESS,
+                    allowed_roots=[Path.cwd()],
+                    executor=diagnostics_executor,
+                    max_stdout_bytes=2000,
+                    max_stderr_bytes=2000,
+                    max_lines=20,
+                    timeout_seconds=1.0,
+                    platform="linux",
+                ),
+                SystemDiagnosticsTool(
+                    family=SystemDiagnosticsFamily.RESOURCES,
                     allowed_roots=[Path.cwd()],
                     executor=diagnostics_executor,
                     max_stdout_bytes=2000,
@@ -237,6 +251,12 @@ async def _run_system_diagnostics_loop(
                 "agent_tool_policy": "available",
                 "agent_allowed_tool_names": [
                     "tool.system.read.process",
+                    "tool.system.read.resources",
+                    "tool.system.read.sensors",
+                ],
+                "agent_live_state_tool_names": [
+                    "tool.system.read.process",
+                    "tool.system.read.resources",
                     "tool.system.read.sensors",
                 ],
             },
@@ -343,3 +363,37 @@ def test_agent_cannot_use_denied_diagnostics_command() -> None:
         if event.event_type == EventType.TOOL_OBSERVATION_RECORDED
     )
     assert observation_event.payload["status"] == ToolObservationStatus.DENIED.value
+
+
+def test_agent_recovers_from_optional_cpu_diagnostics_failure() -> None:
+    result, request, events, diagnostics_executor = asyncio.run(
+        _run_system_diagnostics_loop(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {
+                        "argv": ["top", "-b", "-n", "1"],
+                        "cwd": str(Path.cwd()),
+                    },
+                },
+            ],
+            chat_response="CPU diagnostics are unavailable, but the request stayed controlled.",
+            fail_diagnostics=True,
+        ),
+    )
+
+    assert not isinstance(result, Exception)
+    assert request.status == RequestStatus.COMPLETED
+    assert result.response_text == (
+        "Live state from tool.system.read.resources is unavailable "
+        "(tool_failed)."
+    )
+    assert diagnostics_executor.calls[0]["argv"] == ["top", "-b", "-n", "1"]
+    assert EventType.TOOL_SYSTEM_DIAGNOSTICS_FAILED in [event.event_type for event in events]
+    observation_event = next(
+        event
+        for event in events
+        if event.event_type == EventType.TOOL_OBSERVATION_RECORDED
+    )
+    assert observation_event.payload["status"] == ToolObservationStatus.FAILED.value

@@ -5,6 +5,7 @@ from typing import Any
 
 from assistant_core.domain.loops import ToolProposalParseError
 from assistant_core.domain.tools import ToolObservationStatus
+from assistant_core.runtime.loops.observation_recovery import ToolObservationRecoveryError
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,12 @@ class LoopFailureDecision:
 
 class LoopFailurePolicy:
     def decide(self, exc: Exception) -> LoopFailureDecision:
+        if isinstance(exc, ToolObservationRecoveryError):
+            return LoopFailureDecision(
+                error_code=exc.error_code,
+                error_message=exc.error_message,
+                details=exc.details,
+            )
         return LoopFailureDecision(error_code=loop_error_code(exc))
 
 
@@ -29,6 +36,9 @@ _SAFE_RUNTIME_ERROR_CODES = {
     "required_tool_call_missing",
     "tool_not_allowed_by_request_plan",
     "tool_policy_disabled",
+    "approval_cancelled",
+    "approval_denied",
+    "approval_expired",
 }
 _SAFE_TOOL_OBSERVATION_ERROR_CODES = {
     f"tool_observation_{status.value}"

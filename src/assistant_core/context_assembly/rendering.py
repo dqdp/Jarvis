@@ -103,6 +103,11 @@ def build_sections(
 def tool_observation_content(refs: list[ToolObservationRef]) -> str:
     rendered = []
     for ref in refs:
+        status_prefix = (
+            f"{ref.tool_name} [{ref.status.value}, {ref.parse_status.value if ref.parse_status else 'unknown'}]"
+            if ref.structured_schema is not None
+            else f"{ref.tool_name} [{ref.status.value}]"
+        )
         if ref.structured_schema is not None:
             payload: dict[str, object] = {
                 "structured_schema": ref.structured_schema,
@@ -113,8 +118,10 @@ def tool_observation_content(refs: list[ToolObservationRef]) -> str:
                 payload["structured_content"] = ref.structured_content
             if ref.content.strip():
                 payload["raw_content"] = ref.content
+            if ref.error_code is not None:
+                payload["error_code"] = ref.error_code
             rendered.append(
-                f"{ref.tool_name} [{ref.status.value}, {ref.parse_status.value if ref.parse_status else 'unknown'}]: "
+                f"{status_prefix}: "
                 + json.dumps(
                     payload,
                     ensure_ascii=False,
@@ -122,8 +129,19 @@ def tool_observation_content(refs: list[ToolObservationRef]) -> str:
                 )
             )
             continue
+        diagnostics = []
+        if ref.error_code is not None:
+            diagnostics.append(f"error_code={ref.error_code}")
         if ref.content.strip():
-            rendered.append(f"{ref.tool_name} [{ref.status.value}]: {ref.content}")
+            body = ref.content
+            if diagnostics:
+                body = "; ".join(diagnostics) + f"; content={body}"
+            rendered.append(f"{status_prefix}: {body}")
+            continue
+        if diagnostics:
+            rendered.append(f"{status_prefix}: " + "; ".join(diagnostics))
+            continue
+        rendered.append(f"{status_prefix}: no_content")
     observations = "\n".join(rendered)
     if not observations:
         return ""

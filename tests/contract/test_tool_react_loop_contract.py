@@ -26,7 +26,7 @@ from assistant_core.events.in_memory import InMemoryEventLog
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.runtime.loops.tool_react import ToolReactLoop
 from assistant_core.tools.builtin import datetime_now_tool
-from assistant_core.tools.fake import fake_echo_tool
+from assistant_core.tools.fake import fake_echo_tool, fake_fail_tool
 from assistant_core.tools.gateway import ToolGateway
 from assistant_core.tools.registry import ToolRegistry
 
@@ -756,6 +756,36 @@ def test_tool_react_loop_handles_denied_tool_observation() -> None:
     assert EventType.AGENT_STEP_FAILED in [event.event_type for event in events]
 
 
+def test_tool_react_loop_recovers_optional_failed_tool_observation() -> None:
+    async def scenario():
+        loop, store, assembler, event_log = _loop(
+            router=ScriptedRouter(
+                [
+                    {
+                        "action": "tool_call",
+                        "tool_name": "fake.fail",
+                        "arguments": {},
+                    },
+                ],
+                chat_text="Recovered from optional tool failure.",
+            ),
+            extra_tools=[fake_fail_tool()],
+        )
+        result = await loop.run_turn(_request(metadata=_tool_plan_metadata("fake.fail")))
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, store, assembler, events
+
+    result, store, assembler, events = asyncio.run(scenario())
+
+    assert result.response_text == "Recovered from optional tool failure."
+    assert result.used_tool_calls == 1
+    assert result.tool_observation_refs[0].status == ToolObservationStatus.FAILED
+    assert store.request.status == RequestStatus.COMPLETED
+    assert assembler.tool_ref_counts[-1] == 1
+    assert EventType.TOOL_CALL_FAILED in [event.event_type for event in events]
+    assert EventType.REQUEST_PROCESSING_FAILED not in [event.event_type for event in events]
+
+
 def test_tool_react_loop_handles_approval_required_observation_without_execution() -> None:
     async def scenario():
         loop, store, _assembler, event_log = _loop(
@@ -961,6 +991,8 @@ def test_tool_react_loop_streams_failed_terminal_after_denied_approval() -> None
         EventType.APPROVAL_DENIED.value,
         EventType.REQUEST_PROCESSING_FAILED.value,
     ]
+    failed = emitted[-1].data["error"]
+    assert failed["code"] == "approval_denied"
 
 
 def test_tool_react_loop_cancels_pending_approval_when_request_is_cancelled() -> None:

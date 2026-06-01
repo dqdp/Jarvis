@@ -6,7 +6,11 @@ from uuid import uuid4
 
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolCallRequest, ToolObservation
+from assistant_core.domain.tools import (
+    ToolCallRequest,
+    ToolObservation,
+    safe_tool_observation_error_code,
+)
 
 
 class ToolInvocationAuditRecorder:
@@ -30,7 +34,9 @@ class ToolInvocationAuditRecorder:
                 "status": observation.status.value,
                 "truncated": observation.truncated,
                 "output_bytes": observation.output_bytes,
-                "error_code": observation.error["code"] if observation.error else None,
+                "error_code": safe_tool_observation_error_code(
+                    observation.error.get("code") if observation.error else None,
+                ),
                 "structured_schema": observation.structured_schema,
                 "structured_schema_version": observation.structured_schema_version,
                 "parse_status": observation.parse_status.value,

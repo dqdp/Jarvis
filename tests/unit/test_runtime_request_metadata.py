@@ -413,6 +413,12 @@ def test_default_auto_request_builds_agent_loop_plan_without_classifier() -> Non
     assert resolution.metadata["selected_model_profile"] == "local_main"
     assert resolution.metadata["model_profile"] == "local_main"
     assert resolution.agent_request_plan.tool_policy is AgentToolPolicy.AVAILABLE
+    assert "datetime.now" in resolution.metadata["agent_live_state_tool_names"]
+    assert "tool.system.read.resources" in resolution.metadata["agent_live_state_tool_names"]
+    assert "calculator.evaluate" not in resolution.metadata["agent_live_state_tool_names"]
+    assert resolution.agent_request_plan.live_state_tool_names == tuple(
+        resolution.metadata["agent_live_state_tool_names"],
+    )
     assert "loop_selection_confidence" not in resolution.metadata
     assert "loop_selection_intent_family" not in resolution.metadata
     assert "loop_selection_classification_source" not in resolution.metadata

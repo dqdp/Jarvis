@@ -7,7 +7,12 @@ from typing import Any
 from assistant_core.domain.conversations import ConversationMessage
 from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolObservation, ToolObservationStatus, ToolParseStatus
+from assistant_core.domain.tools import (
+    ToolObservation,
+    ToolObservationStatus,
+    ToolParseStatus,
+    safe_tool_observation_error_code,
+)
 
 
 class LoopStrategyName(StrEnum):
@@ -204,7 +209,9 @@ class ToolObservationRef:
             content_type=observation.content_type,
             sensitivity=observation.sensitivity,
             truncated=observation.truncated,
-            error_code=observation.error["code"] if observation.error else None,
+            error_code=safe_tool_observation_error_code(
+                observation.error.get("code") if observation.error else None,
+            ),
             structured_content=observation.structured_content,
             structured_schema=observation.structured_schema,
             structured_schema_version=observation.structured_schema_version,
@@ -226,6 +233,11 @@ class ToolObservationRef:
         elif not isinstance(self.parse_status, ToolParseStatus):
             object.__setattr__(self, "parse_status", ToolParseStatus(self.parse_status))
         object.__setattr__(self, "parse_warnings", tuple(self.parse_warnings))
+        object.__setattr__(
+            self,
+            "error_code",
+            safe_tool_observation_error_code(self.error_code),
+        )
 
 
 @dataclass(frozen=True)

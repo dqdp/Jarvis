@@ -5,7 +5,13 @@ from typing import Any
 from assistant_core.domain.events import EventType
 from assistant_core.domain.policy import Capability
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import SENSITIVITY_ORDER, ToolCallRequest, ToolObservation, ToolSpec
+from assistant_core.domain.tools import (
+    SENSITIVITY_ORDER,
+    ToolCallRequest,
+    ToolObservation,
+    ToolSpec,
+    safe_tool_observation_error_code,
+)
 
 
 SYSTEM_DIAGNOSTICS_CAPABILITIES = frozenset(
@@ -32,7 +38,7 @@ def tool_event_payload(
         "policy_decision_id": policy_decision_id,
     }
     if error_code is not None:
-        payload["error_code"] = error_code
+        payload["error_code"] = safe_tool_observation_error_code(error_code)
     return payload
 
 
