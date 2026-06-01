@@ -509,12 +509,21 @@ def test_classifier_era_fixtures_are_historical_not_pm09_gates() -> None:
     import json
 
     fixture_root = PROJECT_ROOT / "tests" / "fixtures" / "intent_routing"
-    pre_voice = json.loads(
-        (fixture_root / "pre_voice_local_model_eval_report.json").read_text(encoding="utf-8")
-    )
-    corpus = json.loads((fixture_root / "tool_intent_corpus.json").read_text(encoding="utf-8"))
+    historical_fixtures = {
+        path.name: json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(fixture_root.glob("*.json"))
+    }
+    pre_voice = historical_fixtures["pre_voice_local_model_eval_report.json"]
+    corpus = historical_fixtures["tool_intent_corpus.json"]
     pre_voice_text = json.dumps(pre_voice, ensure_ascii=False)
 
+    assert historical_fixtures
+    assert {
+        name: payload.get("historical_only") for name, payload in historical_fixtures.items()
+    } == {name: True for name in historical_fixtures}
+    assert {name: payload.get("pm09_gate") for name, payload in historical_fixtures.items()} == {
+        name: False for name in historical_fixtures
+    }
     assert pre_voice["historical_only"] is True
     assert pre_voice["pm09_gate"] is False
     assert pre_voice["voice_ready_for_pm09"] is None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from assistant_core.config.settings import Settings
 from assistant_core.domain.conversations import RecentMessagesQuery
+from assistant_core.domain.loops import LoopStrategyName
 from assistant_core.runtime.agent_runtime import RuntimeTurnCommand
 
 
@@ -29,7 +30,10 @@ class RuntimeTurnCommandBuilder:
             active_project_namespace=conversation.active_project_namespace,
             current_message_sensitivity=user_message.sensitivity,
             model_profile=request_record.metadata.get("model_profile", "local_main"),
-            loop_strategy=request_record.metadata.get("loop_strategy", "memory_augmented_answer"),
+            loop_strategy=request_record.metadata.get(
+                "loop_strategy",
+                LoopStrategyName.TOOL_REACT_LOOP.value,
+            ),
             working_directory=request_record.metadata.get("working_directory"),
             permission_mode=self._settings.permissions.mode,
             metadata=dict(request_record.metadata),

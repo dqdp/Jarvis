@@ -14,6 +14,7 @@ from assistant_core.domain.conversations import (
     ConversationMessage,
 )
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
+from assistant_core.domain.loops import LoopStrategyName
 from assistant_core.domain.messages import ChatMessage, MessageRole, TextPart
 from assistant_core.domain.models import ChatModelResponse
 from assistant_core.domain.requests import RequestStatus
@@ -218,6 +219,7 @@ def _command() -> RuntimeTurnCommand:
         user_id="user-1",
         user_input="current question",
         active_project_namespace="project.personal_assistant",
+        loop_strategy=LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value,
     )
 
 

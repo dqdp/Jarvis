@@ -1,6 +1,9 @@
 {
   "version": 1,
   "slice": "PM-08i",
+  "historical_only": true,
+  "pm09_gate": false,
+  "status": "historical_classifier_era_fixture",
   "date": "2026-05-31",
   "comparison_type": "local_ollama_structured_classifier_smoke",
   "candidate_models": [

@@ -303,6 +303,19 @@ def _validate(settings: Settings) -> None:
     if budget.allow_cloud or budget.allow_tools or budget.allow_autonomous_memory_write:
         raise ConfigError("Phase 1 runtime capabilities exceed MVP scope")
 
+    tool_budget = settings.runtime_budgets.get("tool_react_loop")
+    if tool_budget is None:
+        raise ConfigError("missing runtime budget: tool_react_loop")
+    if (
+        not tool_budget.allow_tools
+        or tool_budget.max_tool_calls <= 0
+        or tool_budget.max_model_calls < 2
+        or tool_budget.max_steps <= 0
+    ):
+        raise ConfigError("tool_react_loop must allow bounded tools")
+    if tool_budget.allow_cloud or tool_budget.allow_autonomous_memory_write:
+        raise ConfigError("tool_react_loop must remain local and not write memory")
+
     if "secret" not in settings.policy.memory_write.deny_sensitivity:
         raise ConfigError("secret memory writes must be denied")
     if "secret" not in settings.policy.context_inclusion.deny_sensitivity:

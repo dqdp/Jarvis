@@ -14,11 +14,12 @@ from assistant_core.domain.conversations import (
     ConversationStatus,
 )
 from assistant_core.domain.events import ActorType, EventEnvelope, EventType, EventVisibility
+from assistant_core.domain.loops import LoopStrategyName
 from assistant_core.domain.messages import MessageRole
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.runtime.request_command import RuntimeTurnCommandBuilder
-from assistant_core.runtime.agent_runtime import RuntimeStreamEvent
+from assistant_core.runtime.agent_runtime import RuntimeStreamEvent, RuntimeTurnCommand
 from assistant_core.runtime.request_execution import RequestExecutionManager
 from assistant_core.runtime.request_lifecycle import RequestLifecycleService
 from assistant_core.runtime.request_stream_buffer import RequestStreamBuffer
@@ -430,6 +431,42 @@ def test_runtime_turn_command_builder_uses_request_metadata_and_user_message() -
     assert command.loop_strategy == "tool_react_loop"
     assert command.working_directory == "/tmp/jarvis-project"
     assert command.metadata["agent_allowed_tool_names"] == ["datetime.now"]
+
+
+def test_runtime_turn_command_builder_defaults_missing_loop_to_agent_loop() -> None:
+    async def scenario():
+        settings = ConfigLoader("config").load("test")
+        store = FakeConversationStore()
+        store.request = replace(
+            store.request,
+            metadata={
+                key: value
+                for key, value in store.request.metadata.items()
+                if key != "loop_strategy"
+            },
+        )
+        command = await RuntimeTurnCommandBuilder(
+            conversation_store=store,
+            settings=settings,
+        ).build(store.request)
+        return command
+
+    command = asyncio.run(scenario())
+
+    assert command.loop_strategy == LoopStrategyName.TOOL_REACT_LOOP.value
+
+
+def test_runtime_turn_command_default_is_agent_loop() -> None:
+    command = RuntimeTurnCommand(
+        request_id="request-1",
+        conversation_id="conversation-1",
+        user_message_id="message-user",
+        user_id="user-1",
+        user_input="hello runtime",
+        active_project_namespace="project.personal_assistant",
+    )
+
+    assert command.loop_strategy == LoopStrategyName.TOOL_REACT_LOOP.value
 
 
 def test_request_lifecycle_service_marks_failure_and_publishes_terminal_event() -> None:

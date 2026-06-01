@@ -19,6 +19,12 @@ def test_pytest_declares_db_marker_and_opt_in_gate() -> None:
     assert "pytest.mark.skip" in conftest
 
 
+def test_pytest_full_suite_uses_package_safe_import_mode() -> None:
+    pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "--import-mode=importlib" in pyproject
+
+
 def test_make_db_targets_enable_db_tests_explicitly() -> None:
     makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
 

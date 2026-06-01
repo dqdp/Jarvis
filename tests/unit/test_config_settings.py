@@ -116,6 +116,13 @@ def test_runtime_budget_memory_augmented_answer_limits() -> None:
     assert budget.allow_autonomous_memory_write is False
 
 
+def test_runtime_budget_tool_react_loop_required_for_default_agent_path(monkeypatch) -> None:
+    monkeypatch.setenv("JARVIS_RUNTIME_BUDGETS__TOOL_REACT_LOOP__ALLOW_TOOLS", "false")
+
+    with pytest.raises(ConfigError, match="tool_react_loop must allow bounded tools"):
+        load_settings("default")
+
+
 def test_secret_not_allowed_in_memory_write_policy_config() -> None:
     settings = load_settings("default")
 

@@ -20,12 +20,16 @@ from assistant_core.models.router import ModelRouter
 from assistant_core.policy.engine import ConfigPolicyEngine
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.runtime.agent_runtime import AgentRuntime
+from assistant_core.runtime.loops import LoopStrategyRegistry, MemoryAugmentedAnswerLoop
+from assistant_core.runtime.loops.tool_react import ToolReactLoop
 from assistant_core.storage.conversation_store import PostgresConversationStore
 from assistant_core.storage.database import assert_test_database_url, create_database_engine
 from assistant_core.storage.event_log import PostgresEventLog
 from assistant_core.storage.memory_store import PostgresMemoryStore
 from assistant_core.storage.migrations import run_migrations
 from assistant_core.storage.model_invocations import PostgresModelInvocationRepository
+from assistant_core.tools.gateway import ToolGateway
+from assistant_core.tools.registry import ToolRegistry
 
 
 pytestmark = [pytest.mark.e2e, pytest.mark.db]
@@ -97,21 +101,48 @@ def _run_user_turn_lifecycle():
             invocation_repository=invocations,
             event_log=event_log,
             providers={
-                "local_openai_compatible": FakeModelProvider(stream_tokens=["OK"]),
+                "local_openai_compatible": FakeModelProvider(
+                    chat_response="OK",
+                    stream_tokens=["OK"],
+                    structured_text_responses=['{"action":"final_answer"}'],
+                ),
                 "local_embedding": FakeEmbeddingProvider(),
             },
         )
+        context_assembler = DeterministicContextAssembler(
+            conversation_store=conversation_store,
+            memory_read=memory_store,
+            event_log=event_log,
+            policy=policy,
+        )
+        tool_gateway = ToolGateway(
+            registry=ToolRegistry([]),
+            policy=policy,
+            event_log=event_log,
+        )
         runtime = AgentRuntime(
             conversation_store=conversation_store,
-            context_assembler=DeterministicContextAssembler(
-                conversation_store=conversation_store,
-                memory_read=memory_store,
-                event_log=event_log,
-                policy=policy,
-            ),
+            context_assembler=context_assembler,
             model_router=router,
             event_log=event_log,
             settings=settings,
+            loop_strategy_registry=LoopStrategyRegistry(
+                [
+                    MemoryAugmentedAnswerLoop(
+                        conversation_store=conversation_store,
+                        context_assembler=context_assembler,
+                        model_router=router,
+                        event_log=event_log,
+                    ),
+                    ToolReactLoop(
+                        conversation_store=conversation_store,
+                        context_assembler=context_assembler,
+                        model_router=router,
+                        event_log=event_log,
+                        tool_gateway=tool_gateway,
+                    ),
+                ],
+            ),
         )
         app = create_app(
             conversation_store=conversation_store,
@@ -193,7 +224,7 @@ def test_e2e_user_turn_lifecycle_with_memory_and_fake_model() -> None:
     assert request_status["status"] == "completed"
     assert messages["messages"][-1]["role"] == "assistant"
     assert messages["messages"][-1]["content"] == "OK"
-    assert len(invocations) == 1
+    assert len(invocations) == 2
     assert all(event.request_id == submitted["request_id"] for event in events)
     context_event = next(event for event in events if event.event_type == EventType.CONTEXT_ASSEMBLED)
     memory_event = next(event for event in events if event.event_type == EventType.MEMORY_RETRIEVED)
@@ -209,19 +240,19 @@ def test_e2e_user_turn_lifecycle_with_memory_and_fake_model() -> None:
     assert model_policy_event.payload["allowed"] is True
 
 
-def test_user_turn_lifecycle_still_uses_memory_augmented_answer() -> None:
+def test_user_turn_lifecycle_uses_agent_loop_request_metadata() -> None:
     _, _, _, _, events, _ = _run_user_turn_lifecycle()
 
     loop_started = next(event for event in events if event.event_type == EventType.AGENT_LOOP_STARTED)
     loop_completed = next(
         event for event in events if event.event_type == EventType.AGENT_LOOP_COMPLETED
     )
-    assert loop_started.payload["strategy_name"] == "memory_augmented_answer"
-    assert loop_completed.payload["used_model_calls"] == 1
+    assert loop_started.payload["strategy_name"] == "tool_react_loop"
+    assert loop_completed.payload["used_model_calls"] == 2
     assert loop_completed.payload["used_tool_calls"] == 0
 
 
-def test_no_tool_events_are_emitted_for_memory_augmented_answer() -> None:
+def test_no_tool_events_are_emitted_when_agent_loop_model_skips_tools() -> None:
     _, _, _, _, events, _ = _run_user_turn_lifecycle()
 
     assert all(not event.event_type.value.startswith("tool.") for event in events)

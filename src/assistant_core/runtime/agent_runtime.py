@@ -30,7 +30,7 @@ class RuntimeTurnCommand:
     active_project_namespace: str | None
     current_message_sensitivity: Sensitivity = Sensitivity.PROJECT
     model_profile: str = "local_main"
-    loop_strategy: str = LoopStrategyName.MEMORY_AUGMENTED_ANSWER.value
+    loop_strategy: str = LoopStrategyName.TOOL_REACT_LOOP.value
     working_directory: str | None = None
     permission_mode: PermissionMode | str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
