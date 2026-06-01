@@ -31,8 +31,8 @@ PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
 PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
-PM-08g Direct planner and capability routing registry cleanup
-PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate
+PM-08g Historical capability routing registry cleanup
+PM-08h Historical tool-intent corpus evidence
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
 PM-08k Agentic loop-first request handling cleanup
@@ -2275,11 +2275,12 @@ In that historical model, `auto` resolved on the backend to one concrete loop
 strategy before runtime execution. PM-08k/ADR-037 supersedes this for production
 natural-language handling: `auto` is now a policy mode of the bounded agent loop.
 
-PM-08 must not implement a deterministic-only selector as the target
-architecture. The slice must introduce `LoopStrategySelector` plus
-`IntentClassifierPort`; CI uses fake classifier implementations, while runtime
-uses a local structured model-backed adapter when available and a conservative
-deterministic classifier adapter as bootstrap/fallback.
+Historical PM-08a/PM-08e implementation did not use a deterministic-only
+selector: it introduced `LoopStrategySelector`, `IntentClassifierPort`, fake CI
+classifiers and optional local structured classifier adapters. PM-08k/ADR-037
+supersedes that selector-first production architecture. PM-08l freezes the
+current contract: normal natural-language input uses the bounded agent loop, and
+`auto`, `chat` and `tools` are request policy modes for that loop.
 
 ### Inputs
 
@@ -2326,33 +2327,42 @@ chat
 tools
 ```
 
-Mapping:
+Historical PM-08a mapping before PM-08k superseded selector-first
+production routing:
 
 ```text
-auto  -> LoopStrategySelector chooses concrete loop
-chat  -> memory_augmented_answer
-tools -> tool_react_loop
+auto  -> historical selector chose a concrete loop
+chat  -> historical memory_augmented_answer mapping
+tools -> historical tool_react_loop mapping
 ```
 
-Examples:
+Current PM-08k/PM-08l production mapping:
+
+```text
+auto  -> bounded agent loop with normal tool policy
+chat  -> bounded agent loop with tools disabled
+tools -> bounded agent loop with a required valid tool observation when tools are available and allowed
+```
+
+Current production examples after PM-08k/PM-08l:
 
 ```text
 "explain the permission model"
-  -> memory_augmented_answer
+  -> bounded agent loop finalizes without requiring a tool observation
 
 "what does ADR-034 say about project docs RAG?"
-  -> memory_augmented_answer with ContentRetrievalPort context hits
+  -> bounded agent loop uses ContextAssembler/content hits, not a tool requirement
 
 "check CPU temperature"
-  -> tool_react_loop using system diagnostics tools
+  -> bounded agent loop may propose diagnostics; ToolGateway executes only if allowed
 
 "inspect where LoopStrategyName is defined"
-  -> tool_react_loop using project read-only shell tools
+  -> bounded agent loop may propose project read-only shell; ToolGateway executes only if allowed
 ```
 
 ### Delivery breakdown
 
-PM-08 is delivered as eleven ordered sub-slices:
+PM-08 is delivered as twelve ordered sub-slices:
 
 ```text
 PM-08a Loop selection domain and selector contract
@@ -2361,11 +2371,12 @@ PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
 PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
-PM-08g Direct planner and capability routing registry cleanup
-PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate
+PM-08g Historical capability routing registry cleanup
+PM-08h Historical tool-intent corpus evidence
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
 PM-08k Agentic loop-first request handling cleanup
+PM-08l Agent loop architecture hardening gate
 ```
 
 PM-08a through PM-08h record the implemented selector/classifier-era path and
@@ -2375,17 +2386,15 @@ natural-language handling: classifier, threshold, `RequestResolver` and
 historical evidence or explicitly quarantined follow-up work. They are not a
 PM-09 gate and must not be reintroduced as a pre-agent semantic router.
 
-Do not start PM-09 voice implementation until PM-08d, PM-08e, PM-08f, PM-08g,
-PM-08h, PM-08i, PM-08j, PM-08k and PM-08l are complete. Voice depends on the same
-user-turn surface being usable from text first, on direct answers not inheriting
-fragile stdout parsing, on registry-backed tool metadata, on corpus evidence
-that covers typed and spoken-transcript-like requests, on a Codex-like
-interactive CLI shell that is usable enough to dogfood before voice, on a
-canonical local startup path that does not rely on manual
-DB/migration/daemon orchestration, and on the PM-08k agentic-loop-first contract
-that removes the separate classifier-first path before voice. PM-08l is the
-final hardening gate that proves that contract through DB-backed transcript-like
-API/e2e evidence and startup invariants before PM-09 starts.
+Do not start PM-09 voice implementation until PM-08d, PM-08e, PM-08f,
+PM-08i, PM-08j, PM-08k and PM-08l are complete. PM-08g/PM-08h remain historical
+selector-era evidence, not voice runtime gates. Voice depends on the same
+user-turn surface being usable from text first, on typed tool observations not
+inheriting fragile stdout parsing, on a Codex-like interactive CLI shell that is
+usable enough to dogfood before voice, on a canonical local startup path that
+does not rely on manual DB/migration/daemon orchestration, and on the hardened
+PM-08k/PM-08l bounded agent-loop contract proven through DB-backed
+transcript-like API/e2e evidence and startup invariants before PM-09 starts.
 
 ### PM-08a — Loop selection domain and selector contract
 
@@ -2395,80 +2404,28 @@ Goal:
 Create the backend selection model without changing CLI/API defaults yet.
 ```
 
-Tests first:
+Historical tests first summary:
 
 ```text
-test_loop_selection_mode_accepts_auto_chat_tools
-test_loop_selection_request_rejects_missing_required_fields
-test_intent_classification_requires_confidence_between_zero_and_one
-test_capability_candidate_does_not_store_raw_prompt_evidence
-test_loop_selection_decision_distinguishes_requested_mode_from_selected_loop
-test_medium_confidence_tool_intent_falls_back_conservatively
-test_misleading_without_tools_does_not_fallback_to_fake_chat
-test_selector_uses_intent_classifier_for_auto_mode
-test_fake_intent_classifier_drives_selector_decision
-test_auto_selects_memory_loop_for_ordinary_chat
-test_auto_selects_memory_loop_for_project_docs_question
-test_auto_selects_tool_loop_for_project_shell_read_intent
-test_auto_selects_tool_loop_for_system_diagnostics_intent
-test_selector_passes_working_directory_to_real_policy_for_system_diagnostics
-test_auto_reports_tools_disabled_for_tool_intent
-test_tools_disabled_reason_takes_precedence_over_unavailable_capabilities
-test_classifier_low_confidence_falls_back_to_chat
-test_non_tool_intent_drops_tool_candidate_metadata_before_chat_fallback
-test_classifier_tool_intent_is_clamped_by_policy
-test_explicit_chat_override_selects_memory_loop
-test_explicit_tools_override_selects_tool_loop
-test_explicit_tools_override_fails_closed_without_candidate_allowlist
-test_selector_does_not_treat_rag_as_tool_loop
-test_selector_outputs_reason_code_and_candidate_capabilities
-test_selector_does_not_log_raw_prompt_in_decision_payload
+selector-era unit tests covered mode validation, confidence bounds, raw-prompt
+redaction, conservative fallback, tools-disabled behavior, policy clamping,
+explicit chat/tools overrides, RAG-not-as-tool-loop behavior and stable reason
+codes.
+
+selector-era architecture tests covered provider/tool/storage/context boundary
+separation.
+
+selector-era red phase covered missing loop-selection domain types, constrained
+classifier output types and selector implementation.
 ```
 
-Architecture tests:
+Historical implementation summary:
 
 ```text
-test_selector_depends_on_intent_classifier_port_not_model_provider
-test_selector_does_not_import_tool_adapters
-test_selector_does_not_import_storage_adapters
-test_selector_does_not_import_context_assembler_implementation
-test_intent_classifier_port_does_not_import_tool_adapters
-test_memory_augmented_answer_still_does_not_import_toolgateway
-```
-
-Expected red phase:
-
-```text
-LoopStrategySelector does not exist
-IntentClassifierPort does not exist
-LoopSelectionMode does not exist
-LoopSelectionRequest does not exist
-LoopSelectionDecision does not exist
-CapabilityCandidate does not exist
-IntentClassification does not exist
-```
-
-Implementation:
-
-```text
-domain:
-  LoopSelectionMode
-  LoopSelectionRequest
-  LoopSelectionDecision
-  stable reason_code strings
-  IntentFamily
-  IntentClassification
-  CapabilityCandidate
-  SelectionDecisionStatus
-  SelectionFallbackPreference
-
-runtime:
-  IntentClassifierPort
-  FakeIntentClassifier
-  DeterministicIntentClassifier conservative baseline
-  LoopStrategySelector
-  classifier-output validation
-  policy/config/budget gates, including working_directory policy scope
+domain loop-selection objects;
+fake and deterministic classifier adapters;
+selector-era validation and policy/config/budget gates;
+redacted reason codes and metadata.
 ```
 
 Acceptance:
@@ -2696,16 +2653,14 @@ test logs raw full prompt text
 test duplicates selector rules in CLI
 ```
 
-PM-08 must introduce the `IntentClassifierPort` boundary and use fake
-implementations so CI does not require a real LLM call. Runtime should prefer a
-local structured model-backed classifier when a structured local model profile
-is configured, with deterministic fallback for startup, failure and tests.
-PM-08f must then harden the direct-tool answer path before PM-09 voice work:
-fast direct execution may stay, but user-facing answers must consume typed tool
-observations rather than command-specific stdout parsing inside the loop.
-PM-08g and PM-08h are mandatory pre-voice hardening slices: routing metadata,
-direct-tool eligibility and corpus expectations must be centralized and tested
-before spoken turns start relying on automatic routing.
+Historical PM-08a/PM-08e introduced the `IntentClassifierPort` boundary and
+fake implementations so CI did not require a real LLM call. That evidence is now
+historical. PM-08k/PM-08l supersede classifier-first production routing: runtime
+natural-language input must enter the bounded agent loop, and model-origin tool
+proposals execute only through policy, approvals and ToolGatewayPort. PM-08f
+observations, PM-08g metadata cleanup and PM-08h corpus evidence remain useful
+as historical hardening artifacts, not as permission to restore direct-tool or
+classifier-first routing before PM-09.
 
 ### PM-08e — Model-backed intent classifier adapter
 
@@ -2779,18 +2734,19 @@ are disabled or denied.
 Goal:
 
 ```text
-Keep the fast direct-tool path, but remove the architectural dependency on
-loop-level stdout parsing for user-facing answers.
+Preserve typed tool-observation contracts while removing the architectural
+dependency on loop-level stdout parsing for user-facing answers.
 ```
 
 Rationale:
 
 ```text
-The direct path is useful for low-latency common questions, but it must not grow
-into a large set of regex parsers inside tool_react_loop. Command output formats
-vary by OS version, locale and tool implementation. Parsing belongs in
-capability-specific adapters/normalizers with contract fixtures. The loop should
-orchestrate execution and answer assembly, not understand every command format.
+PM-08f started while selector-era latency optimizations still existed. After
+PM-08k/PM-08l, its durable contract is typed observations: command output
+formats vary by OS version, locale and tool implementation, so parsing belongs
+in capability-specific adapters/normalizers with contract fixtures. The bounded
+agent loop should orchestrate proposal, execution, observation recovery and
+finalization, not understand every command format.
 ```
 
 Tests first:
@@ -2908,20 +2864,15 @@ sequencing:
     broad to verify cleanly.
 ```
 
-PM-08k refinement:
+PM-08k/PM-08l refinement:
 
 ```text
-The default runtime no longer treats diagnostics or natural-language extraction
-as direct-answer scenarios. Typed diagnostics payloads remain required because
-they are the stable tool observation contract for ReAct context, audit output
-and future renderers, but direct execution is now restricted to the smallest
-obvious whitelist:
-  current_time
-  explicit symbolic calculator expressions
-
-Natural-language arithmetic, calendar/event countdowns and all system
-diagnostics must route through tool_react_loop with validated candidate tools,
-then let the ReAct model choose the concrete tool call and arguments.
+The default runtime no longer treats diagnostics, arithmetic or natural-language
+extraction as a separate direct-answer route. Typed tool payloads remain required
+because they are the stable observation contract for bounded-loop context, audit
+output and future renderers. Normal natural-language input enters the bounded
+agent loop; any tool execution goes through schema validation, PolicyPort,
+approvals when required and ToolGatewayPort.
 ```
 
 Implementation:
@@ -3065,460 +3016,44 @@ top-process resource summaries
 voice input/output
 ```
 
-### PM-08g — Direct planner and capability routing registry cleanup
+### PM-08g — Historical capability routing registry cleanup
 
-Goal:
+PM-08g is retained as a selector-era historical record. It centralized
+auto-routable tool metadata and removed loose direct metadata while the
+classifier/selector path still existed. PM-08k/ADR-037 and PM-08l supersede that
+production direction: normal natural-language input and future voice transcripts
+must enter the bounded agent loop, and model-origin tool proposals execute only
+through schema validation, policy, approvals and `ToolGatewayPort`.
+
+Durable lessons kept for PM-08l and later work:
 
 ```text
-Replace scattered direct-tool metadata and allowlists with one typed routing
-registry and one direct-tool planning component.
+registry metadata must have one source of truth;
+model-proposed tool names are references, not execution authorization;
+ToolGateway remains the execution boundary;
+request metadata and events must be redacted;
+raw user prompts and executable argv must not be persisted as routing artifacts.
 ```
 
-Rationale:
+The historical direct-planning implementation details are not a PM-09
+prerequisite and must not be used to restore a direct-tool production route.
+
+### PM-08h — Historical tool-intent corpus hardening
+
+PM-08h is retained as selector-era historical evidence. It hardened multilingual
+routing/corpus fixtures while classifier-first and direct-plan paths existed.
+After PM-08k/ADR-037 and PM-08l, that corpus is not a PM-09 runtime gate and must
+not be used to restore classifier-first routing, direct planning or exact tool
+selection before the bounded agent loop.
+
+Durable lessons kept for later evaluation:
 
 ```text
-PM-08e/PM-08f make auto-routing useful, but direct eligibility is currently a
-cross-cutting concern: request metadata builds tool summaries, the model
-classifier knows a direct allowlist, and the tool loop validates persisted
-metadata again. Before adding voice or more tools, this must become one
-auditable decision point.
-```
-
-Tests first:
-
-```text
-test_capability_routing_registry_lists_enabled_tools_from_settings
-test_capability_routing_registry_rejects_duplicate_tool_names
-test_model_classifier_rejects_tool_names_not_in_available_registry
-test_direct_tool_planner_allows_known_safe_scenario
-test_direct_tool_planner_denies_model_origin_direct_execution
-test_direct_tool_planner_denies_tool_scope_mismatch
-test_direct_scope_evidence_comes_from_registry_backed_extractors
-test_direct_argument_extractor_fixtures_cover_supported_scenarios
-test_direct_tool_plan_round_trips_through_request_metadata
-test_tool_react_loop_consumes_direct_tool_plan_not_loose_tool_name_metadata
-test_direct_tool_plan_requires_process_search_pattern
-```
-
-Architecture tests:
-
-```text
-test_loop_selector_does_not_import_direct_tool_planner
-test_direct_tool_planner_does_not_execute_tools
-test_model_intent_classifier_does_not_own_direct_execution_allowlist
-test_request_metadata_does_not_define_tool_registry_literals
-```
-
-Expected red phase:
-
-```text
-tool routing metadata is built inline in request_metadata
-direct scenarios are inferred from loose metadata keys
-model classifier accepts stable-looking but unregistered tool_names
-tool_react_loop accepts direct tool metadata by tool name instead of a typed plan
-```
-
-Decision matrix:
-
-```text
-registry ownership:
-  options:
-    A. keep available_tools_summary assembled inline in request_metadata
-    B. derive everything dynamically from ToolGateway at request time
-    C. introduce CapabilityRoutingRegistry fed by registered tool metadata and
-       settings enablement
-  chosen:
-    C
-  reason:
-    A keeps duplication; B makes settings/policy visibility unclear; C gives one
-    auditable metadata source without making ToolGateway an authorization system
-  resolved details:
-    tool descriptors declare static routing metadata
-    settings enable/disable capabilities and tool families
-    CapabilityRoutingRegistry merges descriptors with active settings into the
-    available registry used by classifiers and direct planning
-    ToolGateway remains the execution boundary, not the metadata authority
-
-tool_name validation:
-  options:
-    A. accept stable-looking labels and let later stages filter
-    B. strip unknown tool names but keep the candidate
-    C. reject the candidate when all proposed tool_names are unknown; strip only
-       mixed unknown extras when at least one valid registered tool remains
-  chosen:
-    C
-  reason:
-    model output is advice, but registry membership should be enforced at the
-    classifier/parser boundary before selection metadata is persisted
-  resolved details:
-    reject only the invalid candidate when possible, not the whole classification
-    if other candidates remain valid
-    if a tool-intent classification has no valid candidates after validation,
-    return classifier_unavailable/unknown or fail_unavailable according to the
-    existing fallback rules instead of silently fabricating a tool candidate
-
-direct execution authority:
-  options:
-    A. model-origin classification can directly authorize direct execution
-    B. model-origin classification can choose tool_react_loop, but direct
-       execution needs DirectToolPlanner approval from deterministic/guardrail
-       direct scope evidence
-    C. remove direct execution and always use bounded ReAct
-  chosen:
-    B
-  reason:
-    direct execution is useful for latency, but it is an optimization granted by
-    runtime policy/planning, not by the model
-  resolved details:
-    deterministic/guardrail direct scope evidence must come from registry-backed
-    scenario extractors and argument extractors with fixture tests
-    it must not become a new global keyword-list selector hidden inside
-    DirectToolPlanner
-
-DirectToolPlan shape:
-  options:
-    A. keep loose loop_selection_direct_tool_name metadata
-    B. store a typed redacted DirectToolPlan in request metadata
-    C. keep DirectToolPlan transient only and do not persist selection details
-  chosen:
-    B
-  reason:
-    execution, events and later debugging need a clear decision artifact, but the
-    artifact must be redacted and non-executable by itself
-  resolved details:
-    request metadata and event logs store only a redacted DirectToolPlan summary:
-      scenario
-      tool_names
-      capability labels
-      scope_hint
-      classification_source
-      provenance/evidence labels
-      redacted required argument labels or values approved by policy
-    raw command output, raw user prompt and executable argv are not stored inside
-    the DirectToolPlan
-
-planner placement:
-  options:
-    A. put direct planning inside LoopStrategySelector
-    B. put direct planning inside request metadata after loop selection
-    C. put direct planning inside tool_react_loop only
-  chosen:
-    B
-  reason:
-    selector should choose a loop; the loop should execute a plan; request
-    metadata is the boundary where selected loop, classifier output, registry and
-    redacted persisted metadata meet
-
-argument ownership:
-  options:
-    A. DirectToolPlan includes final argv
-    B. DirectToolPlan includes scenario/scope/required argument values; direct
-       tool helpers build argv from registered scenarios
-    C. model classifier emits tool arguments
-  chosen:
-    B
-  reason:
-    plans should be auditable and non-provider-specific, while executable argv
-    remains deterministic runtime code behind ToolGateway
-
-process search:
-  chosen:
-    DirectToolPlanner must require an extracted process search pattern for the
-    process_name_search direct scenario
-  fallback:
-    if no pattern is available, route to ordinary bounded ReAct/clarification
-    instead of direct pgrep
-
-implementation sequencing:
-  chosen:
-    implement PM-08g after PM-08f as a separate TDD slice
-  allowed PM-08f preparation:
-    typed observation fields and backward-compatible metadata fields that make
-    DirectToolPlan migration straightforward
-  rejected:
-    doing registry cleanup opportunistically inside PM-08f without its own red
-    phase and architecture tests
-```
-
-Implementation:
-
-```text
-runtime/routing:
-  CapabilityRoutingRegistry
-    reads settings and registered ToolGateway metadata
-    produces available_tools_summary for classifiers
-    owns stable tool_name -> capability/risk/intent metadata
-    owns or references scenario/argument extractor descriptors for direct-capable
-      tools
-
-runtime/direct_tools:
-  DirectToolPlan
-    tool_names
-    scenario
-    scope_hint
-    required_arguments
-    classification_source
-    provenance
-  DirectToolPlanner
-    accepts LoopSelectionDecision plus registry metadata
-    consumes registry-backed scenario/argument extractor output
-    grants direct execution only for allowlisted tool+scenario+scope combinations
-    denies direct execution for model-origin classifier output unless a separate
-      deterministic/guardrail direct scope approved it
-    keeps policy and ToolGateway as execution authorities
-
-runtime/request_metadata:
-  requests available_tools_summary from the registry
-  stores a redacted DirectToolPlan shape, not ad hoc direct_tool_name fields
-
-runtime/loops:
-  reads DirectToolPlan and delegates argument construction to direct-tool helpers
-  does not reinterpret classifier candidates as execution authorization
-```
-
-Acceptance:
-
-```text
-there is one source of truth for auto-routable tool metadata;
-unknown model-proposed tool_names are rejected or stripped before selection;
-direct execution eligibility is represented as DirectToolPlan, not loose metadata;
-direct planning validates tool, capability, scenario, scope and source together;
-ToolGateway remains the only execution boundary;
-adding a new direct-capable tool changes registry/planner fixtures, not selector
-or CLI routing code;
-adding a new direct-capable tool requires a descriptor plus registry/planner
-fixture coverage before it can be auto-routed or direct-planned.
-```
-
-Out of scope:
-
-```text
-new tool families
-write-capable direct tools
-provider-native tool calling
-voice input/output
-```
-
-### PM-08h — Tool-intent corpus hardening and pre-voice corpus evaluation gate
-
-Goal:
-
-```text
-Turn the multilingual tool-intent corpus into a pre-voice quality gate for
-automatic routing, direct planning and safe fallback behavior.
-```
-
-Rationale:
-
-```text
-Voice will make routing misses more visible and more expensive to correct in the
-moment. Before PM-09, typed turns must prove that varied natural-language
-requests route to the expected family, capabilities, tool names, direct plan or
-safe fallback without relying on one-off fixes for each phrasing.
-```
-
-Tests first:
-
-```text
-test_tool_intent_corpus_has_required_categories_for_pre_voice_gate
-test_tool_intent_corpus_exact_ci_baseline_matches_expected_tools
-test_tool_intent_corpus_covers_negative_live_state_near_misses
-test_tool_intent_corpus_covers_direct_plan_scenarios
-test_tool_intent_corpus_covers_model_classifier_fake_payloads
-test_tool_intent_corpus_covers_spoken_transcript_variants
-test_tool_intent_corpus_asserts_policy_outcome_for_relevant_cases
-test_pre_voice_local_model_eval_report_is_recorded
-test_tool_intent_corpus_requires_languages_for_priority_categories
-test_guardrail_baseline_does_not_turn_conceptual_questions_into_tools
-test_pre_voice_routing_gate_blocks_missing_priority_categories
-```
-
-Evaluation tests:
-
-```text
-test_local_model_classifier_routes_pre_voice_corpus_opt_in
-test_local_model_classifier_reports_failures_without_ci_network_or_real_llm
-```
-
-Decision matrix:
-
-```text
-baseline strictness:
-  options:
-    A. subset assertions for all corpus cases
-    B. exact assertions for every corpus case
-    C. exact assertions for critical ci_baseline/direct-plan cases, subset only
-       for explicitly marked extensible cases
-  chosen:
-    C
-  reason:
-    critical routing must be stable, but future multi-tool or explanatory cases
-    may legitimately add non-breaking candidates
-
-corpus dimensions:
-  chosen required expectation fields:
-    intent_family
-    capabilities
-    tool_names
-    scope_hint
-    direct_plan expected/forbidden
-    fallback_behavior
-    policy_outcome optional
-    approval_possible optional
-    spoken_transcript_variants optional
-  reason:
-    before voice, correctness is not only intent family; it is also whether the
-    system will execute directly, fall back, require approval, or refuse
-    misleading live-state chat
-
-mandatory pre-voice categories:
-  chosen:
-    safe.current_time
-    safe.date_countdown
-    safe.calculator
-    safe.daemon_status
-    system.os_version
-    system.cpu_overview
-    system.memory
-    system.disk
-    system.battery
-    system.temperature
-    system.processes
-    system.network
-    system.vpn
-    project.inspection
-    project.docs_question
-    ordinary.conceptual
-    ordinary.near_miss_live_state
-    tools_disabled.live_state
-    spoken_transcript_variants
-  reason:
-    these categories cover the expected typed CLI/voice surface before adding
-    audio, and they directly match prior failures around local diagnostics,
-    false live-state answers and per-phrase routing fixes
-
-language coverage:
-  options:
-    A. require every category in every supported language
-    B. require Russian and English for all priority categories, plus additional
-       languages for representative live-state and ordinary-chat groups
-    C. keep current ad hoc language coverage
-  chosen:
-    B
-  reason:
-    A is too heavy for the near term; C already missed phrasing diversity; B is
-    a practical pre-voice quality gate
-
-spoken transcript coverage:
-  chosen:
-    priority categories include mandatory transcript-like variants before PM-09:
-      fillers and conversational prefixes such as "ээ", "ну", "слушай"
-      wake-name prefixes such as "джарвис проверь" or "jarvis check"
-      missing punctuation
-      inconsistent casing
-      mixed Russian/English terms
-      common ASR-like inflections and phrasing variants
-  advisory:
-    representative misheard tool nouns may be included in opt-in/evaluation cases
-    once real STT output shows concrete recurring errors, but they are not a hard
-    PM-08h gate
-  reason:
-    PM-09 consumes STT transcripts, not clean typed prompts; the pre-voice gate
-    must catch common transcript noise without turning speculative ASR mistakes
-    into an unbounded required corpus
-
-negative examples:
-  chosen:
-    every priority live-state category gets conceptual near-misses that must stay
-    ordinary_chat, plus tools-disabled/fail-unavailable cases where relevant
-  examples:
-    explain what VPN means
-    how does CPU temperature monitoring work
-    what is disk space conceptually
-  reason:
-    voice and natural phrasing increase false-positive risk
-
-model evaluation:
-  chosen:
-    CI uses deterministic/fake classifier and fake model-router payloads for
-    the PM-08h-era corpus while those tests remain
-    real local classifier model evaluation is opt-in and reports
-    category/language failures as historical evidence
-    after PM-08k, classifier model evaluation no longer defines PM-09 readiness
-    voice readiness is proven by spoken-transcript-like requests entering the
-    same bounded agent loop, policy gates and ToolGateway path as typed input
-  rejected:
-    requiring a real local model in CI
-  reason:
-    CI must stay deterministic and network-free, and PM-08k removes the
-    classifier-first runtime path before voice
-
-pre-voice gate:
-  chosen:
-    Before PM-08k, PM-08h exact ci_baseline and guardrail baseline protected
-    classifier-era production behavior. After PM-08k, they do not define PM-09
-    readiness unless they are rewritten as agent-loop transcript parity cases.
-  open detail:
-    PM-08k decides which historical classifier fixtures are deleted, quarantined
-    as evaluation-only or rewritten as agent-loop transcript cases
-```
-
-Implementation:
-
-```text
-tests/fixtures/intent_routing:
-  split corpus expectations into:
-    intent_family
-    capabilities
-    tool_names
-    scope_hint
-    direct_plan expected/forbidden
-    fallback_behavior
-    policy_outcome optional
-    approval_possible optional
-    spoken_transcript_variants optional
-    ci_baseline
-    guardrail_baseline
-    opt_in_model_eval
-
-tests/unit:
-  make critical CI baseline assertions exact for tool_names and direct_plan
-  keep subset-style assertions only for explicitly marked extensible cases
-
-tests/evaluation:
-  keep real local model evaluation opt-in and non-CI
-  report confusion by category/language/scope
-  retain classifier comparison output only as historical/evaluation evidence
-  rewrite PM-09 readiness evidence around spoken-transcript-like agent-loop
-  requests, not a separate local classifier model pass
-```
-
-Acceptance:
-
-```text
-priority live-state categories have positive and negative examples in multiple
-languages;
-critical CI baseline cases assert exact expected tool_names and direct_plan
-state;
-calculator, daemon status, datetime, diagnostics, process search, VPN, disk,
-battery, CPU, memory, temperature, project inspection and ordinary conceptual
-near-misses are represented;
-spoken-transcript-like variants are represented for priority categories;
-relevant cases assert expected policy_outcome and approval_possible behavior;
-historical local classifier evaluation is either quarantined as evaluation-only
-or replaced with agent-loop transcript cases before PM-09 starts;
-guardrail tests prove conceptual questions do not accidentally route to tools;
-PM-09 cannot start until classifier-era corpus gates are either quarantined as
-historical/evaluation evidence or replaced by green spoken-transcript-like
-agent-loop cases.
-```
-
-Out of scope:
-
-```text
-requiring a real local model in CI
-large benchmark harness
-voice audio test data
+negative live-state near misses are valuable;
+spoken-transcript-like phrasing is useful as non-authoritative evidence;
+real local model evaluation remains opt-in and outside CI;
+voice readiness is proven by transcript-like API/e2e turns entering the same
+  bounded agent loop, policy gates and ToolGateway path as typed input.
 ```
 
 ### PM-08i — Interactive CLI shell UX hardening
@@ -4117,7 +3652,7 @@ medium confidence: >= 0.45 and < 0.75
 low confidence:    < 0.45
 ```
 
-PM-08 default behavior:
+Historical PM-08 selector behavior:
 
 ```text
 high confidence tool intent
@@ -4462,6 +3997,7 @@ verification:
     make test-integration
     make test-e2e
     make test-architecture
+    git diff --check
 ```
 
 ### Acceptance
@@ -4506,11 +4042,11 @@ semantic classifier or deterministic natural-language route resolver
 
 Add the first voice assistant path after PM-08d proves the text CLI/API surface
 can use chat, RAG, tools, approvals and cancellation, after PM-08f hardens tool
-answers around typed observations rather than loop-level stdout parsing, after
-PM-08g/PM-08h record routing/corpus evidence for spoken-transcript-like cases,
-and after PM-08i makes the interactive CLI shell usable enough to dogfood the
-same surface before voice. PM-08j must then make that Jarvis surface
-operationally repeatable through canonical startup/status/log/shutdown commands.
+answers around typed observations rather than loop-level stdout parsing, and
+after PM-08i makes the interactive CLI shell usable enough to dogfood the same
+surface before voice. PM-08g/PM-08h remain historical selector-era evidence, not
+voice runtime gates. PM-08j must then make that Jarvis surface operationally
+repeatable through canonical startup/status/log/shutdown commands.
 PM-08k must then replace classifier-first routing with agentic-loop-first
 request handling before spoken turns rely on the same path. PM-08l must then
 prove that path with DB-backed transcript-like API/e2e turns and startup
@@ -4523,7 +4059,7 @@ runtime. A spoken turn must become the same kind of user turn that CLI/API uses:
 audio input
   -> SpeechToTextPort
   -> existing conversation/message/request lifecycle
-  -> PM-08k bounded agent loop
+  -> hardened PM-08k/PM-08l bounded agent loop
   -> existing runtime/SSE stream
   -> TextToSpeechPort
   -> audio output
@@ -4563,28 +4099,28 @@ external speech API policy
 
 ### Dependencies
 
-PM-09 depends on all PM-08 sub-slices:
+PM-09 entry depends on the active production PM-08 surfaces, plus retained
+historical/evaluation evidence where the selector-era work is useful context but
+not a voice runtime gate:
 
 ```text
-PM-08a complete
-PM-08b complete
-PM-08c complete
 PM-08d complete
-PM-08e complete
 PM-08f complete
-PM-08g complete
-PM-08h complete
 PM-08i complete
 PM-08j complete
 PM-08k complete
 PM-08l complete
+PM-08a/PM-08b/PM-08c historical migration evidence retained
+PM-08e historical classifier evidence retained, not a runtime classifier gate
+PM-08g historical capability-routing evidence retained, not a runtime gate
+PM-08h historical corpus evidence retained, not a runtime gate
 ```
 
 In practice this means the text CLI already has a working normal chat surface
 for shared chat/RAG/tools handling, approval control, cancellation, typed tool
-observations, transcript-like corpus evidence and Codex-like interactive shell
-UX, plus a canonical local Jarvis startup path and an agentic-loop-first request
-contract, before voice is layered on top.
+observations and Codex-like interactive shell UX, plus a canonical local Jarvis
+startup path and a hardened PM-08k/PM-08l bounded agent-loop request contract,
+before voice is layered on top.
 
 Voice must use the PM-08k/PM-08l request path:
 

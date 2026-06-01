@@ -230,7 +230,7 @@ Work:
 - execute tools through `ToolGatewayPort`;
 - return observations to loop context;
 - enforce max steps, model calls, tool calls and consecutive failures;
-- stop deterministically on malformed actions or budget exhaustion.
+- route malformed actions, repeated failures and budget exhaustion through explicit PM-08l failure/recovery/finalization policy.
 
 Acceptance:
 
@@ -354,8 +354,8 @@ PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
 PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
-PM-08g Direct planner and capability routing registry cleanup
-PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate
+PM-08g Historical capability routing registry cleanup
+PM-08h Historical tool-intent corpus evidence
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
 PM-08k Agentic loop-first request handling cleanup
@@ -424,35 +424,33 @@ PM-08e:
 
 PM-08f:
 
-- keep the fast direct-tool path for common read-only questions, but stop using
-  loop-level command-output parsers as the user-facing answer contract;
+- keep typed tool observations as the durable answer contract after a tool has
+  executed through the bounded agent loop and ToolGatewayPort path;
 - propagate provider-neutral typed payload fields through
-  `ToolInvocationResult -> ToolObservation -> ToolObservationRef -> direct
-  formatter/context/events` while keeping bounded raw content for audit/debug
-  and ReAct fallback;
+  `ToolInvocationResult -> ToolObservation -> ToolObservationRef -> formatter,
+  context and events` while keeping bounded raw content for audit/debug and
+  model fallback;
 - use one typed contract:
   `structured_content`, `structured_schema`, `structured_schema_version`,
   `parse_status` and `parse_warnings`;
 - move OS, battery, disk, VPN, memory and process-output interpretation into
   capability-specific adapters/normalizers with platform fixture tests;
-- make direct answers consume typed fields only;
-- answer directly from `parsed` payloads, answer cautiously from `partial`
-  payloads, and route `unparsed` payloads to bounded ReAct/model analysis or a
-  clear unavailable result;
+- make user-visible answers consume typed fields only after policy/tool gates;
+- answer from `parsed` payloads, answer cautiously from `partial` payloads, and
+  route `unparsed` payloads to bounded model analysis or a clear unavailable
+  result;
 - when a tool returns raw or unrecognized output, either route the bounded
-  observation through normal ReAct/model analysis or return a clear
+  observation through normal bounded-loop analysis or return a clear
   unavailable/unparsed result.
 
 PM-08g:
 
-- move auto-routable tool metadata into one capability routing registry;
-- make the model-backed classifier validate `tool_names` against the available
-  registry instead of accepting any stable-looking label;
-- replace loose direct metadata with a typed `DirectToolPlan`;
-- keep direct execution eligibility as a deterministic runtime decision that
-  validates tool, capability, scenario, scope and classifier source together;
-- remove duplicated direct allowlists from selector/classifier/request metadata
-  paths.
+- retain capability-routing registry lessons as selector-era historical evidence;
+- keep tool-name validation lessons for PM-08l request-plan and ToolGateway
+  registry checks;
+- quarantine selector-era direct-routing metadata and duplicated allowlists as
+  historical material unless a future ADR reintroduces them explicitly;
+- do not treat PM-08g as a live direct-tool production path or PM-09 runtime gate.
 
 PM-08h:
 
@@ -560,8 +558,7 @@ Goal:
 ```text
 Add push-to-talk voice interaction on top of the existing runtime after PM-08d
 proves the text CLI/API surface can use auto-selected chat, RAG, tools,
-approvals and cancellation, PM-08f hardens typed observations, PM-08g/PM-08h
-stabilize tool metadata/corpus quality, PM-08i hardens the interactive CLI shell
+approvals and cancellation, PM-08f hardens typed observations, PM-08g/PM-08h remain historical selector-era evidence, PM-08i hardens the interactive CLI shell
 as the pre-voice dogfood surface, and PM-08j makes that surface operationally
 repeatable through canonical startup commands. PM-08k then replaces
 classifier-first routing with agentic-loop-first request handling so voice does
@@ -598,8 +595,8 @@ Acceptance:
   model, local binary or external API client;
 - external speech API providers are represented as a future adapter path but are
   not called by default or in CI;
-- spoken requests can route through PM-08 auto mode to chat/RAG/tools using the
-  same readiness-tested surface as typed turns.
+- spoken requests enter the PM-08k/PM-08l bounded agent loop through the
+  same request-plan policy surface as typed turns.
 
 ### Phase K — External integrations
 
@@ -734,8 +731,9 @@ Capability/permissions
       -> automatic loop selection
       -> CLI tool/RAG/approval readiness surface
           -> typed tool observations and direct-answer hardening
-          -> direct planner and capability routing registry cleanup
-          -> tool-intent corpus hardening
+          -> historical capability routing registry cleanup
+          -> historical tool-intent corpus evidence
+          -> agent-loop architecture hardening gate
       -> voice gateway foundation
       -> MCP/integrations
       -> bounded ReAct loop details
@@ -777,11 +775,12 @@ PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
 PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
-PM-08g Direct planner and capability routing registry cleanup
-PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate
+PM-08g Historical capability routing registry cleanup
+PM-08h Historical tool-intent corpus evidence
 PM-08i Interactive CLI shell UX hardening
 PM-08j Canonical Jarvis runtime startup
 PM-08k Agentic loop-first request handling cleanup
+PM-08l Agent loop architecture hardening gate
 Voice gateway foundation
 ```
 

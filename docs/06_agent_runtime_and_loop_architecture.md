@@ -28,10 +28,10 @@ Using ReAct everywhere would add:
 - premature tool/action semantics.
 
 Original Phase 1 uses deterministic memory-augmented workflow. Current
-post-MVP Alpha adds `tool_react_loop` as a separate, bounded strategy. The next
-post-MVP slice changes the user-facing default from an implicit
-`memory_augmented_answer` selection to server-side `auto` loop selection as
-defined by `docs/adr/ADR-035_automatic_loop_strategy_selection.md`.
+post-MVP Alpha adds `tool_react_loop` as the bounded agent-loop implementation
+vehicle. PM-08k supersedes selector-first production routing, and PM-08l hardens
+that loop with explicit states, a single final-answer path and typed observation
+recovery before PM-09 voice work starts.
 
 ## 3. Loop Strategy Concept
 
@@ -79,28 +79,16 @@ allow_memory_write: false
 allow_cloud: false by default
 ```
 
-## 5. LoopStrategySelector
+## 5. Bounded Agent Loop Policy Modes
 
-`LoopStrategySelector` is the backend component that resolves a user request
-from a user-facing mode into a concrete loop strategy.
+auto, chat and tools are policy modes of one bounded agent loop, not a semantic
+selector that chooses between separate natural-language strategies before the
+loop. `ToolReactLoop` remains the public implementation vehicle during PM-08l,
+but ToolReactLoop decomposition is now required: state transitions, event
+recording, final answer generation and observation recovery belong in explicit
+runtime components such as `FinalAnswerStep` and `ToolObservationRecoveryPolicy`.
 
 User-facing modes:
-
-```text
-auto
-chat
-tools
-```
-
-Concrete loop strategies:
-
-```text
-memory_augmented_answer
-tool_react_loop
-planner_executor_loop later
-```
-
-Mapping after PM-08k/ADR-037:
 
 ```text
 auto  -> bounded agent loop with normal tool policy
@@ -117,7 +105,7 @@ natural-language path: the runtime must not call a separate route classifier
 before the bounded agent loop. Historical classifier fixtures may remain as
 evaluation evidence, but they are not authorization and not a voice prerequisite.
 
-Expected PM-08k behavior:
+Expected PM-08k/PM-08l behavior:
 
 ```text
 ordinary chat or explanation
@@ -175,18 +163,22 @@ class AgentRuntimeState(TypedDict):
     user_id: str
     request_id: str
     user_input: str
-    recent_messages: list[Message]
-    retrieved_memories: list[MemoryHit]
-    selected_loop: str
-    loop_selection_reason: str
+    requested_mode: str
+    tool_policy: str
+    agent_phase: str
+    proposed_tool: str | None
+    proposal_status: str | None
     model_profile: str
     response_draft: str | None
     final_response: str | None
     policy_decisions: list[PolicyDecision]
+    tool_observation_refs: list[ToolObservationRef]
     errors: list[RuntimeErrorRecord]
 ```
 
-Future fields may include tool observations, plan state and task state.
+Future fields may include plan state and task state, but future planner steps
+must still execute through the same bounded loop, PolicyPort and ToolGatewayPort
+path.
 
 ## 7. Future ReAct Loop
 
@@ -250,15 +242,18 @@ All loops emit RuntimeStreamEvents:
 
 Tests must verify:
 
-- `auto` selected loop for chat, project-docs and tool-intent requests;
-- max_model_calls = 1 in Phase 1;
+- `auto`, `chat` and `tools` enter the bounded agent loop as policy modes;
+- chat mode disables tool calls while keeping the same request lifecycle;
+- auto mode can answer ordinary chat and project-docs questions without a tool observation;
+- tools mode requires a valid completed observation when tools are available and allowed;
+- max_model_calls = 1 in the original Phase 1 `memory_augmented_answer` loop;
 - original MVP loop does not make tool calls;
 - `tool_react_loop` uses ToolGatewayPort and explicit budgets;
-- RAG questions do not require a tool loop by default;
-- tool intent does not silently fallback to chat when tools are disabled;
+- RAG questions use ContextAssembler/content retrieval and do not require a tool observation by default;
+- live-state requests do not silently hallucinate when tools are disabled or unavailable;
 - no autonomous memory writes in Phase 1;
 - policy decision is recorded for model calls;
-- loop selection decisions are recorded without raw full prompts;
+- request-plan and loop events are recorded without raw full prompts;
 - RuntimeStreamEvents emitted in expected order.
 
 
@@ -271,9 +266,11 @@ The runtime step responsible for model input construction calls `ContextAssemble
 ```text
 receive_message
   -> persist user.message
-  -> select_loop_strategy via auto/chat/tools mode
-  -> assemble_context
-  -> call_model_router
+  -> build agent request plan from auto/chat/tools policy mode
+  -> enter bounded agent loop
+     -> context_assembling step calls ContextAssemblerPort
+     -> proposing/finalizing steps call ModelRouterPort
+     -> optional tool steps execute only through ToolGatewayPort
   -> stream_response
   -> persist assistant.message / events
 ```

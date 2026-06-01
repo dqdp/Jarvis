@@ -54,7 +54,44 @@ This prevents Phase 1 from accidentally becoming a ReAct/tool loop.
 
 ---
 
-## 4. Error categories
+## 4. PM-08l bounded agent-loop budget matrix
+
+Post-MVP `tool_react_loop` is the bounded agent-loop implementation vehicle.
+It has separate budgets from `memory_augmented_answer` and is hardened by the
+PM-08l contract before PM-09 voice work starts.
+
+auto, chat and tools are policy modes of one bounded agent loop:
+
+```text
+chat:
+  tools are disabled for the request
+  final answer may be produced without observations
+  proposed tool_call fails closed as tool_policy_disabled
+
+auto:
+  tools may be used when allowed and budgeted
+  final answer may be produced without observations
+  malformed non-tool proposal may fall back to final chat
+  malformed explicit tool_call fails closed
+  budget exhausted after useful completed observations may finalize
+
+tools:
+  at least one valid completed tool observation is required before final answer
+    when tools are available and allowed
+  no allowed tools, tools_enabled=false or max_tool_calls=0 fails closed before
+    final answer
+  policy denial before the first valid observation fails closed or asks
+    clarification
+  approval_required is a nonterminal waiting_approval state
+```
+
+Budget exhaustion before required observations must fail closed or clarify.
+The safe budget-exhaustion case goes through the same finalization path as every
+other final answer, not a special fallback branch.
+
+---
+
+## 5. Error categories
 
 Phase 1 recognizes these error categories:
 
@@ -87,7 +124,7 @@ model_error:
 
 ---
 
-## 5. Fatal vs degraded mode
+## 6. Fatal vs degraded mode
 
 Not every failure is fatal.
 
@@ -132,7 +169,7 @@ No accepted request without event log.
 
 ---
 
-## 6. Minimal required context
+## 7. Minimal required context
 
 Long-term memory is optional.
 
@@ -150,7 +187,7 @@ If this cannot be built, request fails.
 
 ---
 
-## 7. Component behavior
+## 8. Component behavior
 
 ### ConversationStore
 
@@ -187,7 +224,7 @@ No automatic fallback in Phase 1.
 
 ---
 
-## 8. Timeout policy
+## 9. Timeout policy
 
 Default timeouts:
 
@@ -230,7 +267,7 @@ no retry by default
 
 ---
 
-## 9. Retry policy
+## 10. Retry policy
 
 Accepted retry baseline:
 
@@ -252,7 +289,7 @@ embedding timeout/provider unavailable: one retry
 
 ---
 
-## 10. Partial streaming failure
+## 11. Partial streaming failure
 
 If provider stream fails after partial tokens have been sent:
 
@@ -279,7 +316,7 @@ The SSE client may have seen them, but they are not historical assistant output.
 
 ---
 
-## 11. Assistant message on failure
+## 12. Assistant message on failure
 
 On system failure, no assistant message is created by default.
 
@@ -295,7 +332,7 @@ Post-MVP may introduce configurable user-visible assistant error messages.
 
 ---
 
-## 12. Error events
+## 13. Error events
 
 Minimum error-related events:
 
@@ -322,7 +359,7 @@ unredacted sensitive payload
 
 ---
 
-## 13. API error mapping
+## 14. API error mapping
 
 Recommended mapping:
 
@@ -341,7 +378,7 @@ For accepted async requests, failures are surfaced through request status, SSE a
 
 ---
 
-## 14. Request status transitions
+## 15. Request status transitions
 
 Allowed MVP transitions:
 
@@ -372,7 +409,7 @@ A repeated `client_message_id` returns the existing request status.
 
 ---
 
-## 15. Budget exceeded behavior
+## 16. Budget exceeded behavior
 
 If context is too large:
 
@@ -399,7 +436,7 @@ not a system failure
 
 ---
 
-## 16. MVP vs deferred
+## 17. MVP vs deferred
 
 MVP includes:
 
@@ -436,7 +473,7 @@ advanced incident reporting
 ```
 
 
-## Configuration relation
+## 18. Configuration relation
 
 Runtime budgets and timeout/retry defaults are config-driven.
 

@@ -311,7 +311,7 @@ Needed before:
 ```text
 default CLI/API access to tools
 default CLI/API access to Project Docs RAG
-automatic routing between normal chat and tool-capable loops
+PM-08k/PM-08l bounded agent-loop request-plan policy modes
 agentic-loop-first request handling before voice
 ```
 
@@ -352,8 +352,8 @@ Testing:
 - implementation is split into PM-08a selector contract, PM-08b API lifecycle,
   PM-08c CLI mode controls, PM-08d CLI tool/RAG/approval readiness and PM-08e
   model-backed intent classifier adapter, followed by PM-08f typed
-  tool-observation/direct-answer hardening, PM-08g direct planner/registry
-  cleanup, PM-08h corpus hardening, PM-08i interactive CLI shell hardening and
+  tool-observation/direct-answer hardening, PM-08g/PM-08h historical selector-era
+  evidence, PM-08i interactive CLI shell hardening and
   PM-08j canonical Jarvis runtime startup plus PM-08k agentic-loop-first request
   handling cleanup plus PM-08l agent-loop architecture hardening before voice.
 
@@ -387,7 +387,7 @@ Current priority:
 ```text
 write/promote this ADR after PM-08d CLI tool/RAG/approval readiness, PM-08e
 model-backed classifier adapter, PM-08f typed tool-observation hardening,
-PM-08g direct planner/registry cleanup, PM-08h corpus hardening, PM-08i
+PM-08g/PM-08h historical selector-era evidence, PM-08i
 interactive CLI shell hardening, PM-08j canonical Jarvis runtime startup and
 PM-08k agentic-loop-first request handling cleanup plus PM-08l agent-loop
 architecture hardening before PM-09 voice gateway foundation
@@ -414,7 +414,8 @@ Baseline:
 
 - spoken turns submit transcripts through existing conversation/request
   lifecycle;
-- PM-08 `auto` routing is used for spoken turns;
+- spoken turns submit transcripts through the PM-08k/PM-08l bounded
+  agent-loop request-plan policy modes;
 - the gateway depends only on `SpeechToTextPort` and `TextToSpeechPort`, never
   on a concrete local model, command-line binary or external API client;
 - speech providers are selected by configuration and policy, not hard-coded in
@@ -432,7 +433,8 @@ Testing:
 - provider profile tests covering local and external-api provider kinds without
   making network calls;
 - voice turn e2e through fake STT/TTS/model providers;
-- architecture tests preventing voice from bypassing runtime or loop selection;
+- architecture tests preventing voice from bypassing API runtime or the bounded
+  agent-loop request-plan policy;
 - architecture tests preventing provider adapters from leaking into the voice
   gateway contract;
 - privacy tests proving raw audio is not stored by default.
@@ -635,16 +637,15 @@ Rationale:
 - shell needs approval before write capability;
 - RAG can proceed after context V2, but must remain separate from memory;
 - voice should wait until PM-08d auto-routing/CLI readiness, PM-08e
-  model-backed classifier behavior, PM-08f typed tool observations, PM-08g
-  direct planner/registry cleanup, PM-08h corpus hardening and PM-08i
-  interactive CLI shell hardening plus PM-08j canonical Jarvis runtime startup
-  and PM-08k agentic-loop-first request handling cleanup so spoken turns can
+  model-backed classifier behavior and PM-08f typed tool observations as historical
+  context, PM-08i interactive CLI shell hardening plus PM-08j canonical Jarvis
+  runtime startup and PM-08k/PM-08l bounded agent-loop hardening so spoken turns can
   use the same chat/RAG/tool/approval/cancel path as typed turns without
   inheriting fragile stdout parsing, unstable routing, an under-tested text
   shell, ad hoc local startup steps or a separate route classifier;
-- before PM-09 starts, PM-08h/PM-08k should include spoken-transcript-like cases
-  proving transcripts enter the same bounded agent loop while CI remains
-  fake/deterministic and network-free;
+- before PM-09 starts, PM-08l should include spoken-transcript-like cases proving
+  transcripts enter the same bounded agent loop while CI remains fake/deterministic
+  and network-free;
 - graph runtime evaluation is deferred until planner-executor, durable code
   sandbox, sleep/reflection or long-running workflow pressure justifies it.
 

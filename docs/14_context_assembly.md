@@ -259,19 +259,21 @@ ContextAssembler consumes active memories, but does not own memory lifecycle.
 
 ## 16. Relationship to Agent Loop
 
-Phase 1 loop:
+Current loop contract:
 
 ```text
 receive_message
   -> persist user.message
-  -> select_loop_strategy
-  -> assemble_context
-  -> call_model_router
+  -> build agent request plan from auto/chat/tools policy mode
+  -> enter bounded agent loop
+     -> context_assembling step calls ContextAssemblerPort
+     -> proposing/finalizing steps call ModelRouterPort
+     -> optional tool steps execute only through ToolGatewayPort
   -> stream_response
   -> persist assistant.message / events
 ```
 
-`assemble_context` replaces ad-hoc `retrieve_memory + build_prompt` logic.
+The context assembly step replaces ad-hoc `retrieve_memory + build_prompt` logic.
 
 ## 17. Contract tests
 

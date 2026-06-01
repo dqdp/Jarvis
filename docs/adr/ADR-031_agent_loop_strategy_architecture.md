@@ -233,8 +233,10 @@ It should:
 - parse proposals into domain `ToolProposal` objects;
 - call ToolGateway for execution;
 - feed `ToolObservation` refs back into context;
-- stop on budget exhaustion, malformed actions, repeated failures or final
-  answer.
+- route budget exhaustion, malformed actions, repeated failures and final answers
+  through explicit failure/recovery/finalization policy; PM-08l allows safe
+  finalization after useful completed observations, while required-observation
+  exhaustion must fail closed or clarify.
 
 It must not:
 

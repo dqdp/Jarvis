@@ -50,15 +50,19 @@ Completed PM-08 Alpha sequence so far:
 - PM-08d CLI tool/RAG/approval readiness surface;
 - PM-08e Model-backed intent classifier adapter;
 - PM-08f Typed tool observations and direct-answer hardening;
-- PM-08g Direct planner and capability routing registry cleanup;
-- PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate;
-- PM-08i interactive CLI shell UX hardening.
+- PM-08g Historical capability routing registry cleanup;
+- PM-08h Historical tool-intent corpus evidence;
+- PM-08i interactive CLI shell UX hardening;
+- PM-08j canonical Jarvis runtime startup;
+- PM-08k agentic-loop-first request handling cleanup.
+
+Current PM-08 work:
+
+- PM-08l agent-loop architecture hardening gate; PM-09 remains blocked until
+  the final DB-enabled PM-08l gate is green.
 
 Next priority:
 
-- PM-08j canonical Jarvis runtime startup;
-- PM-08k agentic-loop-first request handling cleanup;
-- PM-08l agent-loop architecture hardening gate;
 - PM-09 voice gateway foundation;
 
 Later priority candidates:

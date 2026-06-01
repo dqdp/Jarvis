@@ -458,20 +458,21 @@ Recommendation:
 no for normal usage
 ```
 
-Use server-side `auto` loop selection as documented in
-`docs/adr/ADR-035_automatic_loop_strategy_selection.md`.
+No for normal usage. `auto`, `chat` and `tools` are request policy modes of the
+same bounded agent loop after PM-08k/PM-08l; users should not choose internal
+loop strategies or direct-tool routes.
 
-Default behavior:
+Policy behavior:
 
 ```text
-ordinary chat -> memory_augmented_answer
-project docs question -> memory_augmented_answer with ContextAssembler RAG
-live project/system inspection -> tool_react_loop
+ordinary chat -> bounded agent loop, tools disabled unless explicitly allowed
+project-docs question -> bounded agent loop with ContextAssemblerPort context
+live project/system inspection -> bounded agent loop may propose tools through ToolGatewayPort
 ```
 
 CLI/API may expose `auto`, `chat` and `tools` overrides for debugging and
 advanced usage, but the normal CLI frontend should not require users to type
-`tool_react_loop` or know tool names.
+internal loop names or know tool names.
 
 ### Question 9 — When can cloud models be enabled?
 
@@ -498,8 +499,8 @@ PM-08c CLI auto mode and mode controls
 PM-08d CLI tool/RAG/approval readiness surface
 PM-08e Model-backed intent classifier adapter
 PM-08f Typed tool observations and direct-answer hardening
-PM-08g Direct planner and capability routing registry cleanup
-PM-08h Tool-intent corpus hardening and pre-voice corpus evaluation gate
+PM-08g Historical capability routing registry cleanup
+PM-08h Historical tool-intent corpus evidence
 PM-08i interactive CLI shell UX hardening
 PM-08j canonical Jarvis runtime startup
 PM-08k agentic-loop-first request handling cleanup

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted; superseded for production natural-language request handling by ADR-037 and PM-08l.
 
 Date: 2026-05-30
 
@@ -53,11 +53,11 @@ needed.
 Jarvis should follow the same user experience while keeping local-first safety,
 ports/adapters boundaries and deterministic tests.
 
-## Decision
+## Historical Decision
 
-Introduce automatic server-side loop selection.
+PM-08a introduced automatic server-side loop selection for the selector-era implementation. PM-08k/PM-08l supersede this as the production natural-language default.
 
-The default user-facing mode becomes:
+The historical default user-facing mode became:
 
 ```text
 auto
@@ -75,43 +75,27 @@ auto
       -> future planner_executor_loop
 ```
 
-The selector lives on the backend, not in the CLI. CLI and API clients may expose
+The historical selector lived on the backend, not in the CLI. CLI and API clients may expose
 explicit overrides for debugging or advanced use, but normal chat should not
 require them.
 
-## Selected approach
+## Historical Selected Approach
 
-Use a backend selector with a replaceable intent-classification port:
+PM-08a/PM-08e used a backend selector with a replaceable intent-classification port. The selector consumed constrained classifier output, applied policy-level validation and chose a concrete loop strategy.
 
-```text
-LoopStrategySelector
-  -> IntentClassifierPort
-  -> PolicyPort validation
-  -> concrete LoopStrategy
-```
-
-PM-08a introduces the port and selector together. The first implementation used
-in CI must be fake/deterministic so tests do not require a real LLM. Runtime
-must also support a local structured model-backed classifier adapter behind the
-same port. The deterministic classifier is a bootstrap/fallback adapter, not the
-target routing mechanism.
+PM-08a introduced the port and selector together. The first implementation used in CI was fake/deterministic so tests did not require a real LLM. Runtime also supported a local structured model-backed classifier adapter behind the same port. The deterministic classifier was a bootstrap/fallback adapter, not the target routing mechanism.
 
 This keeps the architecture from depending on keyword lists as the core routing
 mechanism. Keyword or lexical hints may exist inside an initial deterministic
 classifier adapter, but they are an implementation detail and a conservative
 fallback, not the long-term decision boundary.
 
-In other words, PM-08 must not implement a deterministic-only selector as the
-target architecture. It implements `LoopStrategySelector + IntentClassifierPort`
-first, then chooses the safest available classifier adapter for each runtime.
-In local interactive runtime, the preferred adapter is the local structured
-classifier when a structured local model profile is configured; otherwise the
-runtime falls back to the conservative deterministic adapter.
+In other words, historical PM-08a/PM-08e did not implement a deterministic-only selector. It implemented the selector/classifier boundary first, then chose the safest available classifier adapter for each runtime. In local interactive runtime, the preferred historical adapter was the local structured classifier when a structured local model profile was configured; otherwise runtime fell back to the conservative deterministic adapter.
 
 The classifier may propose intent and candidate capabilities, but it must not
 execute tools and must not grant permissions.
 
-The selector pipeline is:
+The historical selector pipeline was:
 
 ```text
 1. honor explicit user/API override when present;
@@ -121,13 +105,13 @@ The selector pipeline is:
 5. choose concrete loop strategy or fail/ask/fallback according to confidence.
 ```
 
-Before a request is persisted, the selected concrete loop must also be
+Historically, before a request was persisted, the selected concrete loop also had to be
 executable under the active runtime budget. `tool_react_loop` is unavailable
 when its runtime budget is missing, `allow_tools` is false, or
 `max_tool_calls <= 0`; this must produce a redacted loop-selection failure
 rather than an accepted request that fails later in runtime execution.
 
-## Routing model
+## Historical Routing Model
 
 The final persisted request metadata payload is intentionally compact:
 
@@ -184,9 +168,9 @@ classifier_unavailable
 The selected loop strategy is persisted in request metadata and emitted through
 redacted audit/runtime events. Raw full prompts are not logged by default.
 
-## Domain model
+## Historical Domain Model
 
-PM-08 introduces explicit domain objects for selection and classification.
+PM-08a historically introduced explicit domain objects for selection and classification.
 
 ### LoopSelectionMode
 
@@ -372,7 +356,7 @@ classifier_unavailable
 The runtime may execute a loop only when `decision_status` is `selected` or
 `fallback_chat`.
 
-## Confidence model
+## Historical Confidence Model
 
 Confidence is normalized to:
 
@@ -388,7 +372,7 @@ medium confidence: >= 0.45 and < 0.75
 low confidence:    < 0.45
 ```
 
-PM-08 default behavior:
+Historical PM-08a/PM-08e selector behavior:
 
 ```text
 high confidence tool intent
@@ -413,9 +397,9 @@ be a configuration change with tests, not hidden behavior. The presence of a
 model-backed classifier does not by itself make routing aggressive; confidence,
 policy and live-state fallback rules still govern the decision.
 
-## IntentClassifierPort
+## Historical IntentClassifierPort
 
-`IntentClassifierPort` resolves user intent into a constrained domain shape.
+Historically, `IntentClassifierPort` resolved user intent into a constrained domain shape.
 
 Input:
 
@@ -557,34 +541,22 @@ direct-answer optimizations are reintroduced later, they require a separate ADR
 and must prove they cannot truncate mixed natural-language input or bypass
 PolicyPort/ToolGatewayPort.
 
-## Direct tool execution and typed observations
+## Historical direct-tool execution and typed observations
 
-Automatic routing may choose a fast direct-tool path for known, low-risk,
-read-only questions such as:
+PM-08f-era selector work allowed a constrained direct-tool latency optimization
+for known, low-risk read-only questions such as current time, OS version,
+battery charge, disk free space, VPN status, process search and CPU overview.
+That path is historical after PM-08k/ADR-037 and PM-08l: natural-language typed
+input and future voice transcripts must enter the bounded agent loop. If the
+model proposes a tool, execution still goes through schema validation, policy,
+approvals and `ToolGatewayPort`; there is no separate direct-tool production
+route for normal language.
 
-```text
-current time
-OS version
-battery charge
-disk free space
-VPN status
-process name search
-CPU overview
-```
-
-This direct path is a latency optimization, not a replacement for the normal
-bounded ReAct loop. It must stay constrained:
-
-- only allowlisted capabilities/tools/scopes may use direct execution;
-- model-origin classifier output may propose candidate tools, but must not by
-  itself grant direct execution;
-- an explicit direct-scope allowlist may short-circuit obvious direct intents
-  before the structured classifier call;
-- ToolGateway and policy remain authoritative for execution.
-
+The typed observation contract from that work remains valid because it is used
+by the bounded loop, context assembly, CLI/API rendering and future UI surfaces.
 Direct answers must not depend on an expanding set of command-output regexes in
 `tool_react_loop`. Command output formats vary by OS version, locale and tool
-implementation. Therefore the target design is:
+implementation. Therefore the retained observation design is:
 
 ```text
 Tool adapter / normalizer
@@ -678,276 +650,70 @@ Process command lines, network evidence and similar host details are
 sensitivity-aware fields. They should be omitted or redacted by default unless
 the capability contract explicitly needs them and policy permits disclosure.
 
-## Capability routing metadata
+## Historical Capability Routing Metadata
 
-Every auto-routable capability/tool should expose routing metadata:
+PM-08g/PM-08h captured selector-era lessons about capability metadata, typed
+observations and corpus coverage. Those lessons remain useful, but they no
+longer define a production selector, direct planner or PM-09 readiness gate.
+After PM-08k/ADR-037 and PM-08l, normal natural-language typed input and future
+voice transcripts enter the bounded agent loop. Model-proposed tools are
+references only; execution requires schema validation, policy, approvals and
+`ToolGatewayPort`.
 
-```text
-capability
-intent_families
-description
-requires_live_state
-requires_execution
-requires_write
-risk_classes
-positive_examples
-negative_examples
-default_selection_policy
-```
-
-This metadata is used by classifier implementations. It is not an authorization
-source; policy still decides.
-
-When adding a new tool such as a code sandbox, the implementation must add:
+Durable metadata lessons retained for later work:
 
 ```text
-capability: tool.code_sandbox.execute
-intent_families: [code_execution]
-requires_live_state: false
-requires_execution: true
-requires_write: false unless mounted write outputs are enabled
-risk_classes: [compute_execution]
-positive_examples:
-  run this Python snippet
-  execute this test and show output
-  check this function with a sandboxed test
-negative_examples:
-  explain this code
-  write an example but do not run it
-default_selection_policy:
-  developer_local: approval_required or allow only for read-only sandbox
-  locked_down: approval_required or deny
-  automation: deny by default
+capability metadata should have one source of truth;
+model-proposed tool names are not execution authorization;
+registry metadata may describe tools for prompts and UI, but policy remains authoritative;
+request metadata and events must stay redacted;
+raw prompts, raw credentials and executable argv must not be stored as routing artifacts.
 ```
 
-The selector should not need bespoke code for the code sandbox. It should see a
-`code_execution` classification and candidate capability, then validate the
-capability through policy and route to the appropriate tool-capable loop.
+Historical PM-08h classifier/corpus evaluation remains opt-in and outside CI.
+ADR-037 and PM-08l supersede it as a PM-09 readiness requirement: voice readiness
+is proven by transcript-like requests entering the same bounded agent loop,
+policy gates and ToolGateway path as typed input.
 
-Before voice work starts, PM-08 must also harden this metadata path:
+## Current Production Behavior After PM-08k/PM-08l
+
+`auto`, `chat` and `tools` are policy modes of one bounded agent loop.
 
 ```text
-CapabilityRoutingRegistry
-  -> available_tools_summary for classifiers
-  -> registry-backed candidate tool validation
-  -> DirectToolPlanner
-      -> DirectToolPlan
-      -> ToolGateway execution through the selected loop
+ordinary chat or explanation
+  -> bounded agent loop may finalize without a tool observation
+
+project documentation question
+  -> bounded agent loop uses ContextAssembler/content retrieval, not a tool requirement
+
+live local inspection
+  -> bounded agent loop may propose a tool
+  -> schema validation / PolicyPort / approval / ToolGatewayPort
+  -> typed observation returns to the same loop
 ```
 
-The direct planner is not an execution engine. It only decides whether a selected
-tool-capable turn is eligible for the low-latency direct path. It must validate
-tool name, capability, scenario, scope hint and classifier source together, and
-it must reject stable-looking model output that is not present in the active
-capability registry. This prevents future channels such as voice from depending
-on scattered direct-tool allowlists or loose request metadata.
+Explicit `chat` and `tools` remain request policy controls. They do not choose a
+separate natural-language strategy before the loop and they cannot bypass
+capability policy, sensitivity ceilings, budgets or approval requirements.
 
-The multilingual routing corpus is also a pre-voice gate. Critical cases must
-assert exact tool names and direct-plan eligibility, while extensible cases may
-remain subset-based only when explicitly marked as such. Real local model
-evaluation remains opt-in and must not become a CI dependency.
+The historical selector examples in this ADR are superseded wherever they would
+imply concrete-loop routing before the bounded loop.
 
-Planning decisions for PM-08g/PM-08h:
+## Historical Boundary Rules
 
-```text
-CapabilityRoutingRegistry:
-  chosen over inline request_metadata summaries and purely dynamic ToolGateway
-  introspection. Settings still enable/disable capabilities, but registry
-  metadata is the single source of truth for auto-routing descriptions.
-  Tool descriptors declare static routing metadata; settings activate or disable
-  capabilities and families; the registry merges both into the active tool view.
-
-DirectToolPlan:
-  chosen over loose loop_selection_direct_tool_name metadata. The plan is a
-  redacted decision artifact, not an executable command payload.
-  Event logs and request metadata store only redacted plan summaries, not raw
-  prompts, raw command output or executable argv.
-
-ReAct-first tool choice:
-  accepted as the post-PM-08k default. Natural-language requests enter the
-  bounded ReAct/tool loop directly. The model inside that loop chooses whether
-  to answer or propose a tool call. Jarvis validates the proposal through
-  allowlists, schemas, PolicyPort and ToolGatewayPort.
-  Direct execution is removed from the default natural-language path. Any future
-  direct optimization needs a separate ADR and must prove it cannot truncate
-  mixed natural-language input or bypass sensitivity/policy/tool gates.
-
-model-origin direct execution:
-  denied by default. Model-origin tool proposals are execution requests, not
-  authorization. They must pass allowlist, schema, PolicyPort and ToolGatewayPort
-  validation before any adapter executes.
-
-model tool_name validation:
-  invalid tool names are rejected at the agent-loop/tool-gateway boundary. If no
-  valid tool proposal remains, the loop must surface an unavailable or
-  clarification outcome rather than guessing.
-
-corpus strictness:
-  exact for critical ci_baseline/direct-plan cases; subset-style only for cases
-  explicitly marked extensible.
-
-mandatory pre-voice corpus:
-  datetime, countdown, calculator, daemon status, OS, CPU, memory, disk,
-  battery, temperature, processes, network, VPN, project inspection, project
-  docs, ordinary conceptual near-misses, tools-disabled live-state cases and
-  spoken-transcript-like variants with filler words, wake-name prefixes, missing
-  punctuation, inconsistent casing, mixed-language terms and common ASR-style
-  wording noise. Misheard tool nouns are advisory evaluation cases until real STT
-  output shows recurring errors that should become hard-gate fixtures.
-
-local model evaluation:
-  historical PM-08h classifier evaluation is opt-in and outside CI. ADR-037
-  supersedes it as a PM-09 readiness requirement: voice readiness should be
-  proven by spoken-transcript-like requests entering the same bounded agent
-  loop, policy gates and ToolGateway path as typed input.
-
-PM-08f/PM-08g sequencing:
-  PM-08f stays focused on typed observations and loop parser removal. PM-08g is
-  the separate registry/planner cleanup slice, with its own red phase and
-  architecture tests.
-```
-
-## Default behavior
-
-### Ordinary chat
-
-Requests that look like explanation, brainstorming, drafting, summarization or
-general conversation use:
-
-```text
-memory_augmented_answer
-```
-
-This loop remains the reliable baseline and keeps:
-
-```text
-max_tool_calls = 0
-```
-
-### Project Docs RAG
-
-Project documentation questions do not require `tool_react_loop`.
-
-RAG is part of context assembly:
-
-```text
-memory_augmented_answer
-  -> ContextAssembler
-      -> ContentRetrievalPort
-```
-
-Examples:
-
-```text
-what does ADR-029 say about permissions?
-summarize our PM-07 RAG design
-where do docs describe shell sandbox rules?
-```
-
-The selector may tag these as `project_docs_question`, but the execution loop is
-still `memory_augmented_answer` unless a live tool is also required.
-
-### Live local inspection
-
-Requests that need current host or project state use:
-
-```text
-tool_react_loop
-```
-
-Examples:
-
-```text
-check CPU temperature
-show process status
-what is listening on port 8080?
-inspect the current git diff
-look for where LoopStrategyName is defined
-```
-
-The loop still executes only through `ToolGatewayPort`; it cannot import shell,
-diagnostics or tool adapters directly.
-
-### Write-like or risky operations
-
-Write-like requests are not silently executed by automatic routing.
-
-Examples:
-
-```text
-reindex project docs
-delete a memory
-change a file
-run a network command
-```
-
-The selector may identify required capabilities, but `PolicyPort` and approval
-rules remain authoritative. If approval is required, the normal approval flow is
-used. If the action is denied, the request fails with a clear policy result or
-the assistant explains that it cannot perform the action.
-
-### Tools disabled
-
-If a request clearly requires tools but tools are disabled by policy, Jarvis must
-not silently answer as if it had inspected live state.
-
-Allowed outcomes:
-
-```text
-return a policy/configuration error;
-or answer that live inspection is unavailable because tools are disabled.
-```
-
-Do not fallback to hallucinated diagnostics.
-
-## Explicit overrides
-
-API and CLI may expose explicit modes:
-
-```text
-auto
-chat
-tools
-```
-
-Mapping:
-
-```text
-auto  -> selector chooses concrete loop
-chat  -> memory_augmented_answer
-tools -> tool_react_loop
-```
-
-Explicit override is useful for debugging, tests and advanced users. It is not
-the normal user path.
-
-Overrides remain policy-gated:
-
-- `tools` fails when tools are disabled;
-- `tools` fails closed when runtime tool metadata cannot produce a concrete
-  candidate-tool allowlist;
-- `tools` fails when the selected tool loop has no executable runtime budget;
-- `chat` cannot execute tools;
-- `auto` cannot bypass capability policy;
-- `model_profile` override must still match the selected loop purpose.
-
-## Boundary rules
-
-Rules:
+The selector-era boundary rules were:
 
 - CLI does not classify intent for safety-critical routing.
 - API transport layer only accepts/validates requested mode; it does not own
   routing policy.
-- `LoopStrategySelector` depends on domain schemas, settings, tool metadata and
-  `IntentClassifierPort` output plus `PolicyPort`-level capability checks.
+- The historical selector depended on domain schemas, settings, tool metadata, constrained classifier output and policy-level capability checks.
 - `LoopStrategySelector` must not call model providers directly.
 - `LoopStrategySelector` must not execute tools.
 - `LoopStrategySelector` must not call storage adapters directly.
 - `LoopStrategySelector` must not assemble prompts.
 - `LoopStrategySelector` must not store memories or content chunks.
-- `IntentClassifierPort` implementations must return constrained domain
-  classifications, not free-form execution plans.
-- `IntentClassifierPort` implementations must not execute tools or mutate state.
+- Historical classifier implementations returned constrained domain classifications, not free-form execution plans.
+- Historical classifier implementations did not execute tools or mutate state.
 - `AgentRuntime` still executes only concrete loop strategies.
 - `memory_augmented_answer` must not gain hidden tool behavior.
 - `tool_react_loop` remains the only initial tool-capable user-turn loop.
@@ -956,9 +722,9 @@ Rules:
 
 ## Relation to model routing
 
-Loop selection and model routing are related but separate.
+Historical selector output and model routing were related but separate.
 
-The selector chooses:
+The historical selector chose:
 
 ```text
 selected_loop_strategy
@@ -991,9 +757,9 @@ keeps citations/context manifests deterministic.
 Future broad RAG or external source retrieval may add tools, but those source
 adapters must be documented separately.
 
-## Observability
+## Historical Observability
 
-Add redacted selection events:
+Historical selector-era observability added redacted selection events:
 
 ```text
 request.loop_selection.started
@@ -1056,27 +822,11 @@ Rejected.
 Routing must be consistent across CLI, HTTP API, future voice, scheduler and
 external clients.
 
-## Testing requirements
+## Historical Testing Requirements
 
-PM-08 must be test-first.
+Historical PM-08a/PM-08e selector work was test-first.
 
-Unit tests:
-
-```text
-test_selector_uses_intent_classifier_for_auto_mode
-test_fake_intent_classifier_drives_selector_decision
-test_auto_selects_memory_loop_for_ordinary_chat
-test_auto_selects_memory_loop_for_project_docs_question
-test_auto_selects_tool_loop_for_project_shell_read_intent
-test_auto_selects_tool_loop_for_system_diagnostics_intent
-test_auto_reports_tools_disabled_for_tool_intent
-test_classifier_low_confidence_falls_back_to_chat
-test_classifier_tool_intent_is_clamped_by_policy
-test_explicit_chat_override_selects_memory_loop
-test_explicit_tools_override_selects_tool_loop
-test_selector_does_not_treat_rag_as_tool_loop
-test_selector_outputs_reason_code_and_candidate_capabilities
-```
+Unit tests covered selector/classifier decisions for auto mode, ordinary chat, project-docs questions, tool intents, tools-disabled behavior, low-confidence fallback, policy clamping, explicit chat/tools overrides and the rule that RAG was not treated as a tool-loop trigger.
 
 Contract tests:
 
@@ -1119,9 +869,9 @@ test_cli_tool_intent_approval_flow_still_works
 
 No test may require a real LLM call.
 
-## Rollout plan
+## Historical Rollout Plan
 
-Implement PM-08 as ordered sub-slices:
+The selector-era PM-08 rollout used ordered sub-slices:
 
 ```text
 PM-08a Loop selection domain and selector contract
@@ -1131,11 +881,9 @@ PM-08d CLI tool/RAG/approval readiness surface
 ```
 
 1. Add domain/config representation for `auto`.
-2. Add `IntentClassifierPort` and constrained intent domain objects.
-3. Add fake and deterministic classifier implementations for tests and the first
-   conservative runtime baseline.
-4. Add `LoopStrategySelector` that consumes classifier output and validates it
-   against policy/configuration.
+2. Added constrained intent domain objects and the classifier port.
+3. Added fake and deterministic classifier implementations for tests and the first conservative runtime baseline.
+4. Added a selector that consumed classifier output and validated it against policy/configuration.
 5. Change request metadata resolution so missing `loop_strategy` means `auto`.
 6. Persist selected concrete loop strategy and requested mode in request
    metadata.
@@ -1150,9 +898,7 @@ PM-08d CLI tool/RAG/approval readiness surface
     flow.
 12. Ensure `/cancel` and Ctrl-C leave the interactive session usable.
 13. Keep `auto` as default for CLI and API.
-14. Add local structured classifier adapter after the port, selector,
-    observability and fallback behavior are green; keep fake/deterministic
-    classifiers for CI and failure fallback.
+14. Added local structured classifier adapter after selector-era observability and fallback behavior were green; kept fake/deterministic classifiers for CI and failure fallback.
 
 ## Deferred
 

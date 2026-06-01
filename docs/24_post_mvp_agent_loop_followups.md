@@ -74,6 +74,20 @@ continue or final answer
 
 ReAct must not be free-running.
 
+PM-08l makes this bounded loop the pre-voice runtime contract. auto, chat and
+tools are policy modes of one bounded agent loop, and PM-09 depends on the
+hardened PM-08l bounded agent-loop contract. ToolReactLoop decomposition is in
+scope for PM-08l: the public class may remain, but finalization and observation
+recovery should live in explicit runtime components such as `FinalAnswerStep`
+and `ToolObservationRecoveryPolicy`.
+
+The PM-08l finalization and recovery rule is precise:
+
+```text
+budget exhausted after useful completed observations may finalize
+budget exhaustion before required observations must fail closed or clarify
+```
+
 ---
 
 ## 4. Planner-executor loop

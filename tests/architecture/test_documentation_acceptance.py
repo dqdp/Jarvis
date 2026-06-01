@@ -236,6 +236,7 @@ def test_post_mvp_docs_do_not_defer_implemented_alpha_surface() -> None:
             "docs/adr/ADR-029_capability_and_permission_model.md",
             "docs/adr/ADR-030_toolgateway_boundary_and_tool_invocation_audit.md",
             "docs/adr/ADR-031_agent_loop_strategy_architecture.md",
+            "docs/adr/ADR-035_automatic_loop_strategy_selection.md",
             "docs/adr/ADR-034_content_retrieval_subsystem_and_project_docs_rag.md",
         ]
     )
@@ -361,6 +362,108 @@ def test_pm09_docs_gate_on_full_pm08_sequence_through_pm08l() -> None:
     assert "ADR-046 Graph runtime adapter" in docs_text
 
 
+def test_pm08l_contract_freeze_docs_supersede_selector_first_wording() -> None:
+    docs_text = "\n".join(
+        (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        for relative_path in [
+            "docs/06_agent_runtime_and_loop_architecture.md",
+            "docs/14_context_assembly.md",
+            "docs/23_error_handling_and_runtime_budgets.md",
+            "docs/24_post_mvp_agent_loop_followups.md",
+            "docs/32_known_limitations.md",
+            "docs/34_post_mvp_roadmap.md",
+            "docs/35_post_mvp_adr_backlog.md",
+            "docs/36_post_mvp_plan_review.md",
+            "docs/37_post_mvp_tdd_slices_plan.md",
+            "docs/40_pm08l_agent_loop_architecture_hardening_plan.md",
+            "docs/adr/ADR-031_agent_loop_strategy_architecture.md",
+            "docs/adr/ADR-035_automatic_loop_strategy_selection.md",
+        ]
+    )
+    normalized = " ".join(docs_text.split())
+
+    for phrase in [
+        "auto, chat and tools are policy modes of one bounded agent loop",
+        "budget exhausted after useful completed observations may finalize",
+        "budget exhaustion before required observations must fail closed or clarify",
+        "ToolReactLoop decomposition",
+        "FinalAnswerStep",
+        "ToolObservationRecoveryPolicy",
+    ]:
+        assert phrase in docs_text
+
+    stale_phrases = [
+        'The next post-MVP slice changes the user-facing default',
+        'LoopStrategySelector is the backend component that resolves a user request',
+        'auto -> LoopStrategySelector chooses concrete loop',
+        'stop deterministically on malformed actions or budget exhaustion',
+        '`auto` selected loop for chat',
+        'select_loop_strategy via auto/chat/tools mode',
+        'The slice must introduce `LoopStrategySelector` plus',
+        '`IntentClassifierPort`; CI uses fake classifier',
+        'uses a local structured model-backed adapter when available',
+        '-> memory_augmented_answer with ContentRetrievalPort context hits',
+        '-> tool_react_loop using system diagnostics tools',
+        '-> PM-08k bounded agent loop',
+        'run bounded agent loop\n  -> assemble_context through ContextAssemblerPort\n  -> call_model_router',
+        '-> select_loop_strategy',
+        'PM-08 must introduce the `IntentClassifierPort` boundary',
+        'Runtime should prefer a\nlocal structured model-backed classifier',
+        'PM-08 is delivered as eleven ordered sub-slices',
+        'Automatic routing may choose a fast direct-tool path',
+        'explicit direct-scope allowlist may short-circuit obvious direct intents',
+        'fast direct execution may stay',
+        'Introduce automatic server-side loop selection.',
+        'Use a backend selector with a replaceable intent-classification port:',
+        'LoopStrategySelector\n  -> IntentClassifierPort',
+        'PM-08 default behavior:',
+        'auto  -> selector chooses concrete loop',
+        'test_selector_uses_intent_classifier_for_auto_mode',
+        'Keep the fast direct-tool path',
+        'DirectToolPlanner approval',
+        'direct execution is useful for latency',
+        'runtime/direct_tools:',
+        'reads DirectToolPlan and delegates argument construction',
+        'PM-08g/PM-08h record routing/corpus evidence for spoken-transcript-like cases',
+        'available_tools_summary for classifiers',
+        'The multilingual routing corpus is also a pre-voice gate',
+        'Critical cases must\nassert exact tool names and direct-plan eligibility',
+        'ordinary chat\n\nRequests that look like',
+        'use:\n\n```text\nmemory_augmented_answer',
+        'The selector may tag these as `project_docs_question`',
+        'Requests that need current host or project state use:\n\n```text\ntool_react_loop',
+        'pre-voice quality gate for\nautomatic routing, direct planning and safe fallback behavior',
+        'requests route to the expected family, capabilities, tool names, direct plan',
+        'test_tool_intent_corpus_covers_direct_plan_scenarios',
+        'test_tool_intent_corpus_covers_model_classifier_fake_payloads',
+        'selected_loop: str',
+        'loop_selection_reason: str',
+        'registry-backed tool metadata',
+        'corpus evidence\nthat covers typed and spoken-transcript-like requests',
+        'direct execution is now restricted',
+        'PM-08g/PM-08h\nstabilize tool metadata/corpus quality',
+        'direct planner/registry cleanup, PM-08h corpus hardening',
+        'Use server-side `auto` loop selection',
+        'stop on budget exhaustion, malformed actions, repeated failures or final\n  answer',
+        "PM-09 depends on all PM-08 sub-slices",
+        "ordinary chat -> memory_augmented_answer",
+        "project docs question -> memory_augmented_answer",
+        "live project/system inspection -> tool_react_loop",
+        "keep the fast direct-tool path",
+        "direct execution eligibility as a deterministic runtime decision",
+        "PM-08 `auto` routing is used for spoken turns",
+        "runtime or loop selection",
+        "## Routing model",
+        "spoken requests can route through PM-08 auto mode to chat/RAG/tools",
+        "automatic routing between normal chat and tool-capable loops",
+    ]
+    for phrase in stale_phrases:
+        assert phrase not in docs_text
+
+    assert "PM-09 cannot start until the DB-enabled preflight gates are green" in docs_text
+    assert "PM-09 depends on the hardened PM-08l bounded agent-loop contract" in normalized
+
+
 def test_pm08k_docs_start_with_industry_research_gate() -> None:
     pm08k = (DOCS_ROOT / "38_pm08k_classifier_contract_simplification.md").read_text(
         encoding="utf-8",
@@ -429,7 +532,8 @@ def test_pm08k_docs_quarantine_classifier_first_pm09_gates() -> None:
     normalized = " ".join(docs_text.split())
 
     assert "not a PM-09 gate" in normalized
-    assert "not define PM-09\n    readiness" in docs_text
-    assert "historical/evaluation evidence or replaced by green" in docs_text
+    assert "no longer define PM-09 readiness" in normalized
+    assert "not a PM-09 runtime gate" in normalized
+    assert "historical/evaluation evidence" in normalized
     assert "calibration report before changing defaults" not in docs_text
     assert "local classifier model evaluation defines PM-09 readiness" not in docs_text
