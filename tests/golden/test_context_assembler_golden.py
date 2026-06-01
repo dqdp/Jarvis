@@ -392,6 +392,19 @@ def test_context_assembler_uses_output_contract_override() -> None:
     assert "Return a direct, useful answer" not in prompt_text
 
 
+def test_context_manifest_id_distinguishes_output_contract_override() -> None:
+    default_context = asyncio.run(_assembler().assemble(_request()))
+    proposal_context = asyncio.run(
+        _assembler().assemble(
+            _request(output_contract="Return only a JSON object for the agent loop."),
+        ),
+    )
+
+    assert default_context.manifest.context_manifest_id != (
+        proposal_context.manifest.context_manifest_id
+    )
+
+
 def test_context_messages_include_prompt_sections_before_conversation() -> None:
     context = asyncio.run(
         _assembler(memories=[MemoryHit(memory=_memory("project"), score=0.9)]).assemble(

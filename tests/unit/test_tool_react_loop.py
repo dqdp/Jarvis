@@ -20,7 +20,7 @@ from assistant_core.domain.loops import (
 from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.domain.tools import ToolObservationStatus
-from assistant_core.runtime.loops.tool_react import ToolReactLoop
+from assistant_core.runtime.loops.tool_react import TOOL_PROPOSAL_SCHEMA, ToolReactLoop
 
 
 pytestmark = pytest.mark.unit
@@ -98,9 +98,7 @@ def test_tool_react_loop_allows_final_answer_when_tools_are_disabled_by_plan() -
         loop = ToolReactLoop(
             conversation_store=FakeConversationStore(),
             context_assembler=FakeContextAssembler(),
-            model_router=FakeStructuredRouter(
-                [{"action": "final_answer", "final_answer": "chat answer"}],
-            ),
+            model_router=FakeChatRouter("chat answer"),
             event_log=FakeEventLog(),
             tool_gateway=object(),
         )
@@ -117,6 +115,36 @@ def test_tool_react_loop_allows_final_answer_when_tools_are_disabled_by_plan() -
     assert result.used_tool_calls == 0
 
 
+def test_tool_react_loop_uses_chat_model_when_tools_are_disabled_by_plan() -> None:
+    class ContractContextAssembler(FakeContextAssembler):
+        seen_contract: str | None = "not-called"
+
+        async def assemble(self, request):
+            self.seen_contract = getattr(request, "output_contract", None)
+            return await super().assemble(request)
+
+    async def scenario():
+        assembler = ContractContextAssembler()
+        router = FakeChatRouter("plain chat answer")
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=assembler,
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        result = await loop.run_turn(_request(metadata={"agent_tool_policy": "disabled"}))
+        return result, router, assembler
+
+    result, router, assembler = asyncio.run(scenario())
+
+    assert result.response_text == "plain chat answer"
+    assert result.used_model_calls == 1
+    assert router.chat_calls == 1
+    assert router.structured_calls == 0
+    assert assembler.seen_contract is None
+
+
 def test_tool_react_loop_ignores_legacy_direct_plan_when_tools_disabled_by_plan() -> None:
     class Gateway:
         invoked = False
@@ -130,9 +158,7 @@ def test_tool_react_loop_ignores_legacy_direct_plan_when_tools_disabled_by_plan(
         loop = ToolReactLoop(
             conversation_store=FakeConversationStore(),
             context_assembler=FakeContextAssembler(),
-            model_router=FakeStructuredRouter(
-                [{"action": "final_answer", "final_answer": "chat answer"}],
-            ),
+            model_router=FakeChatRouter("chat answer"),
             event_log=FakeEventLog(),
             tool_gateway=gateway,
         )
@@ -160,7 +186,7 @@ def test_tool_react_loop_ignores_legacy_direct_plan_when_tools_disabled_by_plan(
     assert invoked is False
 
 
-def test_tool_react_loop_blocks_tool_call_when_tools_are_disabled_by_plan() -> None:
+def test_tool_react_loop_does_not_offer_tools_when_tools_are_disabled_by_plan() -> None:
     class Gateway:
         invoked = False
 
@@ -173,17 +199,17 @@ def test_tool_react_loop_blocks_tool_call_when_tools_are_disabled_by_plan() -> N
         loop = ToolReactLoop(
             conversation_store=FakeConversationStore(),
             context_assembler=FakeContextAssembler(),
-            model_router=FakeStructuredRouter(
-                [{"action": "tool_call", "tool_name": "datetime.now", "arguments": {}}],
-            ),
+            model_router=FakeChatRouter("chat answer"),
             event_log=FakeEventLog(),
             tool_gateway=gateway,
         )
-        with pytest.raises(RuntimeError, match="tool_policy_disabled"):
-            await loop.run_turn(_request(metadata={"agent_tool_policy": "disabled"}))
-        return gateway.invoked
+        result = await loop.run_turn(_request(metadata={"agent_tool_policy": "disabled"}))
+        return result, gateway.invoked
 
-    assert asyncio.run(scenario()) is False
+    result, invoked = asyncio.run(scenario())
+
+    assert result.response_text == "chat answer"
+    assert invoked is False
 
 
 def test_tool_react_loop_blocks_tool_call_when_request_plan_metadata_is_missing() -> None:
@@ -277,7 +303,7 @@ def test_tool_react_loop_requires_tool_call_for_required_tool_policy() -> None:
             conversation_store=FakeConversationStore(),
             context_assembler=FakeContextAssembler(),
             model_router=FakeStructuredRouter(
-                [{"action": "final_answer", "final_answer": "not enough"}],
+                [{"action": "final_answer"}],
             ),
             event_log=FakeEventLog(),
             tool_gateway=object(),
@@ -295,12 +321,12 @@ def test_tool_react_loop_requires_tool_call_for_required_tool_policy() -> None:
     asyncio.run(scenario())
 
 
-def test_tool_react_loop_passes_tool_proposal_contract_to_context_assembler() -> None:
+def test_tool_react_loop_checks_final_chat_budget_before_final_context_assembly() -> None:
     class ContractContextAssembler(FakeContextAssembler):
-        seen_contract: str | None = None
+        calls = 0
 
         async def assemble(self, request):
-            self.seen_contract = getattr(request, "output_contract", None)
+            self.calls += 1
             return await super().assemble(request)
 
     async def scenario():
@@ -308,8 +334,44 @@ def test_tool_react_loop_passes_tool_proposal_contract_to_context_assembler() ->
         loop = ToolReactLoop(
             conversation_store=FakeConversationStore(),
             context_assembler=assembler,
-            model_router=FakeStructuredRouter(
-                [{"action": "final_answer", "final_answer": "done"}],
+            model_router=FakeStructuredAndChatRouter(
+                [{"action": "final_answer"}],
+                chat_response="would exceed budget",
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        with pytest.raises(RuntimeError, match="max_model_calls_exceeded"):
+            await loop.run_turn(
+                _request(
+                    budget=replace(_budget(), max_model_calls=1),
+                    metadata=_tool_plan_metadata("datetime.now"),
+                )
+            )
+        return assembler.calls
+
+    assert asyncio.run(scenario()) == 1
+
+
+def test_tool_react_loop_passes_tool_proposal_contract_to_context_assembler() -> None:
+    class ContractContextAssembler(FakeContextAssembler):
+        seen_contracts: list[str | None]
+
+        def __init__(self) -> None:
+            self.seen_contracts = []
+
+        async def assemble(self, request):
+            self.seen_contracts.append(getattr(request, "output_contract", None))
+            return await super().assemble(request)
+
+    async def scenario():
+        assembler = ContractContextAssembler()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=assembler,
+            model_router=FakeStructuredAndChatRouter(
+                [{"action": "final_answer"}],
+                chat_response="done",
             ),
             event_log=FakeEventLog(),
             tool_gateway=object(),
@@ -322,36 +384,113 @@ def test_tool_react_loop_passes_tool_proposal_contract_to_context_assembler() ->
                 },
             )
         )
-        return result, assembler.seen_contract
+        return result, assembler.seen_contracts
 
-    result, contract = asyncio.run(scenario())
+    result, contracts = asyncio.run(scenario())
 
     assert result.response_text == "done"
+    contract = contracts[0]
     assert contract is not None
     assert "Return only a JSON object" in contract
+    assert 'Use {"action":"final_answer"} when ready to answer without another tool.' in contract
+    assert '"final_answer":"..."' not in contract
     assert "datetime.now" in contract
     assert "Do not wrap the JSON in markdown" in contract
+
+
+def test_tool_react_loop_uses_chat_model_for_final_answer_after_proposal() -> None:
+    class ContractContextAssembler(FakeContextAssembler):
+        seen_contracts: list[str | None]
+
+        def __init__(self) -> None:
+            self.seen_contracts = []
+
+        async def assemble(self, request):
+            self.seen_contracts.append(getattr(request, "output_contract", None))
+            return await super().assemble(request)
+
+    async def scenario():
+        assembler = ContractContextAssembler()
+        router = FakeStructuredAndChatRouter(
+            [{"action": "final_answer"}],
+            chat_response="main model answer",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=assembler,
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        result = await loop.run_turn(
+            _request(
+                metadata={
+                    "agent_tool_policy": "available",
+                    "agent_allowed_tool_names": ["datetime.now"],
+                },
+            )
+        )
+        return result, router, assembler
+
+    result, router, assembler = asyncio.run(scenario())
+
+    assert result.response_text == "main model answer"
+    assert result.used_model_calls == 2
+    assert router.structured_calls == 1
+    assert router.chat_calls == 1
+    assert assembler.seen_contracts[0] is not None
+    assert "Return only a JSON object" in assembler.seen_contracts[0]
+    assert assembler.seen_contracts[1] is None
 
 
 def test_parse_tool_proposal_accepts_tool_call_and_final_answer() -> None:
     tool_call = parse_tool_proposal(
         {"action": "tool_call", "tool_name": "fake.echo", "arguments": {"message": "hi"}},
     )
-    final = parse_tool_proposal({"action": "final_answer", "final_answer": "done"})
+    final = parse_tool_proposal({"action": "final_answer"})
 
     assert tool_call == ToolProposal(
         action="tool_call",
         tool_name="fake.echo",
         arguments={"message": "hi"},
     )
-    assert final.final_answer == "done"
+    assert final.final_answer is None
 
 
 def test_tool_react_loop_rejects_malformed_tool_proposal() -> None:
     with pytest.raises(ToolProposalParseError):
         parse_tool_proposal({"action": "tool_call", "arguments": {"message": "hi"}})
     with pytest.raises(ToolProposalParseError):
-        parse_tool_proposal({"action": "final_answer"})
+        parse_tool_proposal({"action": "tool_call", "tool_name": "datetime.now"})
+    with pytest.raises(ToolProposalParseError):
+        parse_tool_proposal({"action": "final_answer", "final_answer": "old structured text"})
+    with pytest.raises(ToolProposalParseError):
+        parse_tool_proposal(
+            {"action": "final_answer", "tool_name": "datetime.now", "arguments": {}},
+        )
+    with pytest.raises(ToolProposalParseError):
+        parse_tool_proposal(
+            {
+                "action": "tool_call",
+                "tool_name": "datetime.now",
+                "arguments": {},
+                "answer": "extra text",
+            },
+        )
+
+
+def test_tool_proposal_schema_does_not_request_final_answer_text() -> None:
+    schema_text = str(TOOL_PROPOSAL_SCHEMA)
+    assert "final_answer" in schema_text
+    assert "tool_name" in schema_text
+    assert "arguments" in schema_text
+    final_answer_schema = next(
+        item
+        for item in TOOL_PROPOSAL_SCHEMA["oneOf"]
+        if item["properties"]["action"]["const"] == "final_answer"
+    )
+    assert set(final_answer_schema["properties"]) == {"action"}
+    assert final_answer_schema["additionalProperties"] is False
 
 
 def test_tool_react_loop_rejects_unknown_tool_name() -> None:
@@ -559,7 +698,7 @@ def test_tool_react_loop_enforces_wall_clock_budget() -> None:
         loop = ToolReactLoop(
             conversation_store=FakeConversationStore(),
             context_assembler=FakeContextAssembler(),
-            model_router=SlowStructuredRouter([{"action": "final_answer", "final_answer": "late"}]),
+            model_router=SlowStructuredRouter([{"action": "final_answer"}]),
             event_log=FakeEventLog(),
             tool_gateway=object(),
         )
@@ -582,8 +721,9 @@ def test_tool_react_loop_streams_final_answer_token_and_terminal_event() -> None
         loop = ToolReactLoop(
             conversation_store=FakeConversationStore(),
             context_assembler=FakeContextAssembler(),
-            model_router=FakeStructuredRouter(
-                [{"action": "final_answer", "final_answer": "streamed answer"}],
+            model_router=FakeStructuredAndChatRouter(
+                [{"action": "final_answer"}],
+                chat_response="streamed answer",
             ),
             event_log=FakeEventLog(),
             tool_gateway=object(),
@@ -657,15 +797,16 @@ def test_tool_react_loop_streams_public_tool_lifecycle_events() -> None:
         loop = ToolReactLoop(
             conversation_store=FakeConversationStore(),
             context_assembler=FakeContextAssembler(),
-            model_router=FakeStructuredRouter(
+            model_router=FakeStructuredAndChatRouter(
                 [
                     {
                         "action": "tool_call",
                         "tool_name": "tool.shell.read.project",
                         "arguments": {},
                     },
-                    {"action": "final_answer", "final_answer": "done"},
+                    {"action": "final_answer"},
                 ],
+                chat_response="done",
             ),
             event_log=event_log,
             tool_gateway=Gateway(event_log),
@@ -684,6 +825,7 @@ def test_tool_react_loop_streams_public_tool_lifecycle_events() -> None:
     assert tool_events[0].data["tool_name"] == "tool.shell.read.project"
     assert tool_events[0].data["argv"] == ["rg", "needle", "docs"]
     assert "raw output must not stream" not in repr(tool_events[0].data)
+    assert events[-1].event_type == EventType.REQUEST_PROCESSING_COMPLETED.value
 
 
 def test_tool_react_loop_streams_context_phase_events() -> None:
@@ -736,8 +878,9 @@ def test_tool_react_loop_streams_context_phase_events() -> None:
         loop = ToolReactLoop(
             conversation_store=FakeConversationStore(),
             context_assembler=RetrievalEventContextAssembler(event_log),
-            model_router=FakeStructuredRouter(
-                [{"action": "final_answer", "final_answer": "done"}],
+            model_router=FakeStructuredAndChatRouter(
+                [{"action": "final_answer"}],
+                chat_response="done",
             ),
             event_log=event_log,
             tool_gateway=object(),
@@ -751,6 +894,7 @@ def test_tool_react_loop_streams_context_phase_events() -> None:
     assert EventType.CONTEXT_ASSEMBLY_STARTED.value in event_types
     assert EventType.MEMORY_RETRIEVED.value in event_types
     assert EventType.CONTENT_RETRIEVED.value in event_types
+    assert events[-1].event_type == EventType.REQUEST_PROCESSING_COMPLETED.value
     content_event = next(
         event for event in events if event.event_type == EventType.CONTENT_RETRIEVED.value
     )
@@ -845,6 +989,43 @@ class FakeStructuredRouter:
 
         self.calls += 1
         return StructuredModelResponse(value=self.responses[self.calls - 1])
+
+
+class FakeChatRouter:
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.chat_calls = 0
+        self.structured_calls = 0
+
+    async def chat(self, request):
+        from assistant_core.domain.models import ChatModelResponse
+
+        self.chat_calls += 1
+        return ChatModelResponse(text=self.response)
+
+    async def structured(self, request):
+        self.structured_calls += 1
+        raise AssertionError("tools-disabled chat mode must not call structured")
+
+
+class FakeStructuredAndChatRouter:
+    def __init__(self, responses: list[dict], *, chat_response: str) -> None:
+        self.responses = responses
+        self.chat_response = chat_response
+        self.structured_calls = 0
+        self.chat_calls = 0
+
+    async def structured(self, request):
+        from assistant_core.domain.models import StructuredModelResponse
+
+        self.structured_calls += 1
+        return StructuredModelResponse(value=self.responses[self.structured_calls - 1])
+
+    async def chat(self, request):
+        from assistant_core.domain.models import ChatModelResponse
+
+        self.chat_calls += 1
+        return ChatModelResponse(text=self.chat_response)
 
 
 class FakeEventLog:

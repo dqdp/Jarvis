@@ -21,6 +21,7 @@ class ContextAssemblyRequest:
     current_message_sensitivity: Sensitivity = Sensitivity.PROJECT
     current_user_message_id: str | None = None
     causation_event_id: str | None = None
+    purpose: str | None = None
     permission_mode: PermissionMode | str | None = None
     max_messages: int | None = None
     max_input_tokens: int | None = None

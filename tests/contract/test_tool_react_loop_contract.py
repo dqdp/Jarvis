@@ -17,7 +17,7 @@ from assistant_core.domain.conversations import (
 from assistant_core.domain.events import EventType
 from assistant_core.domain.loops import LoopBudget, LoopExecutionRequest, LoopStrategyName
 from assistant_core.domain.messages import ChatMessage, MessageRole, TextPart
-from assistant_core.domain.models import StructuredModelResponse
+from assistant_core.domain.models import ChatModelResponse, StructuredModelResponse
 from assistant_core.domain.policy import Capability, PolicyDecision, PolicyDecisionOutcome, RiskClass
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
@@ -52,13 +52,20 @@ class AllowPolicy:
 
 
 class ScriptedRouter:
-    def __init__(self, responses: list[dict]) -> None:
+    def __init__(self, responses: list[dict], *, chat_text: str | None = None) -> None:
         self.responses = responses
         self.calls = 0
+        self.chat_text = chat_text or "chat answer"
+        self.chat_calls = 0
 
     async def structured(self, request):
         self.calls += 1
-        return StructuredModelResponse(value=self.responses[self.calls - 1])
+        value = self.responses[self.calls - 1]
+        return StructuredModelResponse(value=value)
+
+    async def chat(self, request):
+        self.chat_calls += 1
+        return ChatModelResponse(text=self.chat_text)
 
 
 def _typed_json_result(
@@ -604,17 +611,19 @@ def _loop(
 
 def test_tool_react_loop_executes_fake_tool_then_final_answer() -> None:
     async def scenario():
+        router = ScriptedRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "fake.echo",
+                    "arguments": {"message": "hello"},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_text="tool says hello",
+        )
         loop, store, assembler, event_log = _loop(
-            router=ScriptedRouter(
-                [
-                    {
-                        "action": "tool_call",
-                        "tool_name": "fake.echo",
-                        "arguments": {"message": "hello"},
-                    },
-                    {"action": "final_answer", "final_answer": "tool says hello"},
-                ],
-            ),
+            router=router,
         )
         result = await loop.run_turn(
             _request(
@@ -623,16 +632,17 @@ def test_tool_react_loop_executes_fake_tool_then_final_answer() -> None:
             )
         )
         events = await event_log.query(EventFilter(request_id="request-tool-react"))
-        return result, store, assembler, events
+        return result, store, assembler, router, events
 
-    result, store, assembler, events = asyncio.run(scenario())
+    result, store, assembler, router, events = asyncio.run(scenario())
 
     assert result.response_text == "tool says hello"
-    assert result.used_model_calls == 2
+    assert result.used_model_calls == 3
     assert result.used_tool_calls == 1
     assert store.messages[-1].content == "tool says hello"
     assert all(message.content != "hello" for message in store.messages[:-1])
-    assert assembler.tool_ref_counts == [0, 1]
+    assert assembler.tool_ref_counts == [0, 1, 1]
+    assert router.chat_calls == 1
     assert EventType.TOOL_CALL_COMPLETED in [event.event_type for event in events]
 
 
@@ -642,8 +652,9 @@ def test_tool_react_loop_executes_datetime_tool_then_final_answer() -> None:
             router=ScriptedRouter(
                 [
                     {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
-                    {"action": "final_answer", "final_answer": "time checked"},
+                    {"action": "final_answer"},
                 ],
+                chat_text="time checked",
             ),
         )
         result = await loop.run_turn(
@@ -661,10 +672,37 @@ def test_tool_react_loop_executes_datetime_tool_then_final_answer() -> None:
     assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
 
 
+def test_tool_react_loop_uses_chat_model_when_tools_are_disabled() -> None:
+    async def scenario():
+        router = ScriptedRouter([], chat_text="plain answer")
+        loop, _store, assembler, event_log = _loop(router=router)
+        result = await loop.run_turn(
+            _request(
+                metadata={
+                    "agent_tool_policy": "disabled",
+                    "agent_allowed_tool_names": [],
+                },
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, router, assembler, events
+
+    result, router, assembler, events = asyncio.run(scenario())
+
+    assert result.response_text == "plain answer"
+    assert result.used_model_calls == 1
+    assert result.used_tool_calls == 0
+    assert router.chat_calls == 1
+    assert router.calls == 0
+    assert assembler.tool_ref_counts == [0]
+    assert EventType.TOOL_CALL_STARTED not in [event.event_type for event in events]
+
+
 def test_tool_react_loop_ignores_legacy_direct_plan_metadata() -> None:
     async def scenario():
         router = ScriptedRouter(
-            [{"action": "final_answer", "final_answer": "answer from agent loop"}],
+            [{"action": "final_answer"}],
+            chat_text="answer from agent loop",
         )
         loop, _store, assembler, event_log = _loop(router=router)
         result = await loop.run_turn(
@@ -684,8 +722,9 @@ def test_tool_react_loop_ignores_legacy_direct_plan_metadata() -> None:
 
     assert result.response_text == "answer from agent loop"
     assert router.calls == 1
-    assert assembler.tool_ref_counts == [0]
-    assert result.used_model_calls == 1
+    assert router.chat_calls == 1
+    assert assembler.tool_ref_counts == [0, 0]
+    assert result.used_model_calls == 2
     assert result.used_tool_calls == 0
     assert EventType.TOOL_OBSERVATION_RECORDED not in [event.event_type for event in events]
 
@@ -766,8 +805,9 @@ def test_tool_react_loop_retries_after_granted_approval() -> None:
                         "tool_name": "fake.echo",
                         "arguments": {"message": "hello"},
                     },
-                    {"action": "final_answer", "final_answer": "approved"},
+                    {"action": "final_answer"},
                 ],
+                chat_text="approved",
             ),
             event_log=event_log,
             tool_gateway=gateway,
@@ -826,8 +866,9 @@ def test_tool_react_loop_marks_request_waiting_approval_until_decision() -> None
                         "tool_name": "fake.echo",
                         "arguments": {"message": "hello"},
                     },
-                    {"action": "final_answer", "final_answer": "approved"},
+                    {"action": "final_answer"},
                 ],
+                chat_text="approved",
             ),
             event_log=event_log,
             tool_gateway=gateway,
@@ -990,8 +1031,9 @@ def test_tool_react_loop_records_step_events_and_observation_refs() -> None:
                         "tool_name": "fake.echo",
                         "arguments": {"message": "hello"},
                     },
-                    {"action": "final_answer", "final_answer": "done"},
+                    {"action": "final_answer"},
                 ],
+                chat_text="done",
             ),
         )
         result = await loop.run_turn(_request(metadata=_tool_plan_metadata("fake.echo")))

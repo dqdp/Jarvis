@@ -34,11 +34,19 @@ The production path must not run a semantic pre-router before the agent loop:
 Deterministic code remains for control and safety only:
 
 - slash commands, cancel/exit and approval controls;
+- voice-channel lifecycle events such as wake word/name detection,
+  push-to-talk, silence timeout, stop/cancel/barge-in and short activation
+  acknowledgement;
 - mode validation for `auto`, `chat` and `tools`;
 - non-TTY/plain CLI behavior;
 - tool allowlists and argument schemas;
 - policy, permission, sensitivity, budgets and approvals;
 - redaction, audit and event-shape constraints.
+
+These direct control-plane paths may update channel or session state without
+entering ReAct because they are not user requests for knowledge or tool
+execution. Once a voice or text input contains a substantive user request, it
+must enter the same bounded agent loop as every other natural-language request.
 
 ## Current Hotspots
 
@@ -248,7 +256,7 @@ Verification gate:
 
 ```text
 .venv/bin/python -m pytest -m unit tests/unit/test_runtime_request_metadata.py
-.venv/bin/python -m architecture tests/architecture/test_boundaries.py
+.venv/bin/python -m pytest -m architecture tests/architecture/test_boundaries.py
 git diff --check
 ```
 
@@ -278,9 +286,9 @@ Verification gate:
 
 ```text
 .venv/bin/python -m pytest -m unit tests/unit/test_runtime_request_metadata.py
-.venv/bin/python -m contract tests/contract/test_api_lifecycle_contract.py
-.venv/bin/python -m contract tests/contract/test_app_factory_contract.py
-.venv/bin/python -m architecture tests/architecture/test_boundaries.py
+.venv/bin/python -m pytest -m contract tests/contract/test_api_lifecycle_contract.py
+.venv/bin/python -m pytest -m contract tests/contract/test_app_factory_contract.py
+.venv/bin/python -m pytest -m architecture tests/architecture/test_boundaries.py
 git diff --check
 ```
 
@@ -299,7 +307,8 @@ auto/chat/tools without direct natural-language execution.
 Scope:
 
 - use main reasoning/chat profile for final-answer reasoning;
-- keep structured output only as bounded proposal formatting where needed;
+- keep structured output only as bounded proposal formatting where needed:
+  `{"action":"final_answer"}` is a readiness signal, not the user-facing answer;
 - enforce `chat`, `auto` and `tools` mode semantics;
 - use request-plan allowed tools instead of selector candidate tools;
 - remove direct plan consumption from the loop;
@@ -310,9 +319,9 @@ Verification gate:
 
 ```text
 .venv/bin/python -m pytest -m unit tests/unit/test_tool_react_loop.py
-.venv/bin/python -m contract tests/contract/test_tool_react_loop_contract.py
-.venv/bin/python -m contract tests/contract/test_sse_stream_contract.py
-.venv/bin/python -m architecture tests/architecture/test_boundaries.py
+.venv/bin/python -m pytest -m contract tests/contract/test_tool_react_loop_contract.py
+.venv/bin/python -m pytest -m contract tests/contract/test_sse_stream_contract.py
+.venv/bin/python -m pytest -m architecture tests/architecture/test_boundaries.py
 git diff --check
 ```
 
@@ -341,8 +350,8 @@ Verification gate:
 
 ```text
 .venv/bin/python -m pytest -m unit tests/unit
-.venv/bin/python -m contract tests/contract
-.venv/bin/python -m architecture tests/architecture
+.venv/bin/python -m pytest -m contract tests/contract
+.venv/bin/python -m pytest -m architecture tests/architecture
 git diff --check
 ```
 
@@ -368,7 +377,7 @@ Verification gate:
 
 ```text
 .venv/bin/python -m pytest
-.venv/bin/python -m architecture tests/architecture
+.venv/bin/python -m pytest -m architecture tests/architecture
 git diff --check
 ```
 

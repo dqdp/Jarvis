@@ -108,7 +108,11 @@ async def _accepted_turn(conversation_store: PostgresConversationStore):
     return submission
 
 
-async def _run_project_shell_loop(structured_responses: list[dict]):
+async def _run_project_shell_loop(
+    structured_responses: list[dict],
+    *,
+    chat_response: str = "fake response",
+):
     database_url = _database_url()
     assert_test_database_url(database_url)
     await _truncate_e2e(database_url)
@@ -130,7 +134,8 @@ async def _run_project_shell_loop(structured_responses: list[dict]):
         invocation_repository=invocation_repository,
         event_log=event_log,
         providers={
-            "local_openai_compatible": FakeModelProvider(
+            "local_main": FakeModelProvider(
+                chat_response=chat_response,
                 structured_text_responses=[json.dumps(response) for response in structured_responses],
             ),
             "local_embedding": FakeEmbeddingProvider(),
@@ -193,7 +198,7 @@ async def _run_project_shell_loop(structured_responses: list[dict]):
             user_input=submission.user_message.content,
             active_project_namespace="project.personal_assistant",
             loop_strategy="tool_react_loop",
-            model_profile="local_structured",
+            model_profile="local_main",
             permission_mode="developer_local",
             working_directory=str(Path.cwd()),
             metadata={
@@ -224,8 +229,9 @@ def test_agent_can_use_project_rg_tool_and_answer_with_observation() -> None:
                         "cwd": str(Path.cwd()),
                     },
                 },
-                {"action": "final_answer", "final_answer": "ToolGatewayPort is documented."},
+                {"action": "final_answer"},
             ],
+            chat_response="ToolGatewayPort is documented.",
         ),
     )
 

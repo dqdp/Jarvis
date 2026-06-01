@@ -90,8 +90,17 @@ def _tool_plan_metadata(*tool_names: str, policy: str = "available") -> dict[str
 
 class BlockingStreamModelProvider(FakeModelProvider):
     def __init__(self) -> None:
-        super().__init__(stream_tokens=["unreachable"])
+        super().__init__(
+            stream_tokens=["unreachable"],
+            structured_text_responses=[json.dumps({"action": "final_answer"})],
+        )
         self.started = asyncio.Event()
+
+    async def structured(self, request):
+        self.structured_calls += 1
+        self.started.set()
+        await asyncio.Event().wait()
+        return json.dumps({"action": "final_answer"})
 
     async def stream_chat(self, request):
         self.stream_calls += 1
@@ -110,7 +119,11 @@ def test_runtime_app_factory_builds_dogfood_app_with_fake_providers() -> None:
 
         await _truncate_runtime_app(database_url)
         settings = ConfigLoader(Path("config")).load("test")
-        model_provider = FakeModelProvider(stream_tokens=["OK"])
+        model_provider = FakeModelProvider(
+            chat_response="OK",
+            stream_tokens=["unreachable"],
+            structured_text_responses=[json.dumps({"action": "final_answer"})],
+        )
         embedding_provider = FakeEmbeddingProvider()
         runtime_app = create_runtime_app(
             database_url=database_url,
@@ -168,13 +181,24 @@ def test_runtime_app_factory_builds_dogfood_app_with_fake_providers() -> None:
                 json.loads(health_raw),
                 _sse_events(stream_raw),
                 json.loads(request_raw),
+                model_provider.chat_calls,
                 model_provider.stream_calls,
+                model_provider.structured_calls,
                 embedding_provider.embed_calls,
             )
         finally:
             await runtime_app.dispose()
 
-    health_status, health, stream_events, request_status, stream_calls, embed_calls = asyncio.run(
+    (
+        health_status,
+        health,
+        stream_events,
+        request_status,
+        chat_calls,
+        stream_calls,
+        structured_calls,
+        embed_calls,
+    ) = asyncio.run(
         scenario(),
     )
 
@@ -183,7 +207,9 @@ def test_runtime_app_factory_builds_dogfood_app_with_fake_providers() -> None:
     assert health["readiness"]["checks"]["content_store"] == "ok"
     assert stream_events[-1] == "request.processing.completed"
     assert request_status["status"] == "completed"
-    assert stream_calls == 1
+    assert chat_calls == 1
+    assert stream_calls == 0
+    assert structured_calls == 1
     assert embed_calls == 1
 
 
@@ -443,7 +469,8 @@ def test_runtime_app_factory_registers_tool_react_loop() -> None:
             database_url=database_url,
             settings=settings,
             providers={
-                "local_structured": FakeModelProvider(
+                "local_main": FakeModelProvider(
+                    chat_response="factory",
                     structured_text_responses=[
                         json.dumps(
                             {
@@ -452,9 +479,10 @@ def test_runtime_app_factory_registers_tool_react_loop() -> None:
                                 "arguments": {},
                             },
                         ),
-                        json.dumps({"action": "final_answer", "final_answer": "factory"}),
+                        json.dumps({"action": "final_answer"}),
                     ],
                 ),
+                "local_structured": FakeModelProvider(),
                 "local_embedding": FakeEmbeddingProvider(),
             },
         )
@@ -484,7 +512,7 @@ def test_runtime_app_factory_registers_tool_react_loop() -> None:
                     user_id=settings.app.default_user_id,
                     user_input=submission.user_message.content,
                     active_project_namespace=conversation.active_project_namespace,
-                    model_profile="local_structured",
+                    model_profile="local_main",
                     loop_strategy=LoopStrategyName.TOOL_REACT_LOOP.value,
                     metadata=_tool_plan_metadata("datetime.now"),
                 ),
@@ -515,7 +543,8 @@ def test_runtime_app_factory_registers_project_shell_read_tool() -> None:
             database_url=database_url,
             settings=settings,
             providers={
-                "local_structured": FakeModelProvider(
+                "local_main": FakeModelProvider(
+                    chat_response="shell ok",
                     structured_text_responses=[
                         json.dumps(
                             {
@@ -527,9 +556,10 @@ def test_runtime_app_factory_registers_project_shell_read_tool() -> None:
                                 },
                             },
                         ),
-                        json.dumps({"action": "final_answer", "final_answer": "shell ok"}),
+                        json.dumps({"action": "final_answer"}),
                     ],
                 ),
+                "local_structured": FakeModelProvider(),
                 "local_embedding": FakeEmbeddingProvider(),
             },
         )
@@ -559,7 +589,7 @@ def test_runtime_app_factory_registers_project_shell_read_tool() -> None:
                     user_id=settings.app.default_user_id,
                     user_input=submission.user_message.content,
                     active_project_namespace=conversation.active_project_namespace,
-                    model_profile="local_structured",
+                    model_profile="local_main",
                     loop_strategy=LoopStrategyName.TOOL_REACT_LOOP.value,
                     permission_mode="developer_local",
                     working_directory=str(Path.cwd()),
@@ -591,7 +621,7 @@ def test_runtime_app_factory_registers_system_diagnostics_tool() -> None:
             database_url=database_url,
             settings=settings,
             providers={
-                "local_structured": FakeModelProvider(
+                "local_main": FakeModelProvider(
                     structured_text_responses=[
                         json.dumps(
                             {
@@ -605,6 +635,7 @@ def test_runtime_app_factory_registers_system_diagnostics_tool() -> None:
                         ),
                     ],
                 ),
+                "local_structured": FakeModelProvider(),
                 "local_embedding": FakeEmbeddingProvider(),
             },
         )
@@ -635,10 +666,11 @@ def test_runtime_app_factory_registers_system_diagnostics_tool() -> None:
                         user_id=settings.app.default_user_id,
                         user_input=submission.user_message.content,
                         active_project_namespace=conversation.active_project_namespace,
-                        model_profile="local_structured",
+                        model_profile="local_main",
                         loop_strategy=LoopStrategyName.TOOL_REACT_LOOP.value,
                         permission_mode="developer_local",
                         working_directory=str(Path.cwd()),
+                        metadata=_tool_plan_metadata("tool.system.read.process"),
                     ),
                 )
             except RuntimeError:
@@ -701,6 +733,7 @@ def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
         await _truncate_runtime_app(database_url)
         settings = ConfigLoader(Path("config")).load("test")
         structured_provider = FakeModelProvider(
+            chat_response="api",
             structured_text_responses=[
                 json.dumps(
                     {
@@ -709,7 +742,7 @@ def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
                         "arguments": {},
                     },
                 ),
-                json.dumps({"action": "final_answer", "final_answer": "api"}),
+                json.dumps({"action": "final_answer"}),
             ],
         )
         runtime_app = create_runtime_app(
@@ -765,7 +798,7 @@ def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
 
     assert status_code == 202
     assert stream_events[-1] == "request.processing.completed"
-    assert stream_payloads[-1][1]["event_id"]
+    assert stream_payloads[-1][1]["assistant_message_id"]
     assert EventType.TOOL_CALL_COMPLETED in event_types
     assert structured_calls == 2
 
@@ -781,6 +814,7 @@ def test_runtime_app_factory_api_runs_safe_route_through_agent_loop() -> None:
         await _truncate_runtime_app(database_url)
         settings = ConfigLoader(Path("config")).load("test")
         structured_provider = FakeModelProvider(
+            chat_response="time",
             structured_text_responses=[
                 json.dumps(
                     {
@@ -789,7 +823,7 @@ def test_runtime_app_factory_api_runs_safe_route_through_agent_loop() -> None:
                         "arguments": {},
                     },
                 ),
-                json.dumps({"action": "final_answer", "final_answer": "time"}),
+                json.dumps({"action": "final_answer"}),
             ],
         )
         runtime_app = create_runtime_app(

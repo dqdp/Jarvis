@@ -150,8 +150,6 @@ class ToolProposal:
                 raise ToolProposalParseError("tool_call requires tool_name")
             if not isinstance(self.arguments, dict):
                 raise ToolProposalParseError("tool_call arguments must be a mapping")
-        if self.action == "final_answer" and not self.final_answer:
-            raise ToolProposalParseError("final_answer requires final_answer")
 
 
 @dataclass(frozen=True)
@@ -219,14 +217,21 @@ def parse_tool_proposal(value: dict[str, Any]) -> ToolProposal:
         raise ToolProposalParseError("tool proposal must be a mapping")
     action = value.get("action")
     if action == "final_answer":
-        return ToolProposal(action="final_answer", final_answer=value.get("final_answer"))
+        _require_exact_tool_proposal_keys(value, {"action"})
+        return ToolProposal(action="final_answer")
     if action == "tool_call":
+        _require_exact_tool_proposal_keys(value, {"action", "tool_name", "arguments"})
         return ToolProposal(
             action="tool_call",
             tool_name=value.get("tool_name"),
             arguments=value.get("arguments", {}),
         )
     raise ToolProposalParseError("unsupported tool proposal action")
+
+
+def _require_exact_tool_proposal_keys(value: dict[str, Any], allowed_keys: set[str]) -> None:
+    if set(value) != allowed_keys:
+        raise ToolProposalParseError("tool proposal contains unsupported keys")
 
 
 def _require_positive(name: str, value: int) -> None:

@@ -55,6 +55,8 @@ def manifest(
                 NAMESPACE_URL,
                 context_manifest_seed(
                     request.request_id,
+                    getattr(request, "purpose", None),
+                    getattr(request, "output_contract", None),
                     used_message_ids,
                     used_memory_ids,
                     [ref.chunk_id for ref in content_refs],
@@ -110,12 +112,17 @@ def sources_by_sensitivity_map(
 
 def context_manifest_seed(
     request_id: str,
+    purpose: str | None,
+    output_contract: str | None,
     used_message_ids: list[str],
     used_memory_ids: list[str],
     used_content_chunk_ids: list[str],
     tool_observation_ids: list[str],
 ) -> str:
-    seed = f"jarvis-context:{request_id}:{used_message_ids}:{used_memory_ids}"
+    seed = (
+        f"jarvis-context:{request_id}:purpose={purpose or 'default'}:"
+        f"output_contract={output_contract or 'default'}:{used_message_ids}:{used_memory_ids}"
+    )
     if used_content_chunk_ids:
         seed = f"{seed}:{used_content_chunk_ids}"
     if tool_observation_ids:

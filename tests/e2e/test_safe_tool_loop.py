@@ -82,7 +82,7 @@ async def _accepted_turn(conversation_store: PostgresConversationStore):
     return submission
 
 
-async def _run_tool_loop(structured_responses: list[dict]):
+async def _run_tool_loop(structured_responses: list[dict], *, chat_response: str = "fake response"):
     database_url = _database_url()
     assert_test_database_url(database_url)
     await _truncate_e2e(database_url)
@@ -104,7 +104,8 @@ async def _run_tool_loop(structured_responses: list[dict]):
         invocation_repository=invocation_repository,
         event_log=event_log,
         providers={
-            "local_openai_compatible": FakeModelProvider(
+            "local_main": FakeModelProvider(
+                chat_response=chat_response,
                 structured_text_responses=[json.dumps(response) for response in structured_responses],
             ),
             "local_embedding": FakeEmbeddingProvider(),
@@ -155,7 +156,7 @@ async def _run_tool_loop(structured_responses: list[dict]):
             user_input=submission.user_message.content,
             active_project_namespace="project.personal_assistant",
             loop_strategy="tool_react_loop",
-            model_profile="local_structured",
+            model_profile="local_main",
             metadata={
                 "agent_tool_policy": "available",
                 "agent_allowed_tool_names": ["fake.echo"],
@@ -181,8 +182,9 @@ def test_safe_tool_loop_user_turn_with_fake_tool_completes() -> None:
                     "tool_name": "fake.echo",
                     "arguments": {"message": "hello"},
                 },
-                {"action": "final_answer", "final_answer": "hello"},
+                {"action": "final_answer"},
             ],
+            chat_response="hello",
         ),
     )
 

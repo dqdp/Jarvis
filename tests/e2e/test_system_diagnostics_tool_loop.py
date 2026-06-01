@@ -122,6 +122,7 @@ async def _accepted_turn(conversation_store: PostgresConversationStore):
 async def _run_system_diagnostics_loop(
     structured_responses: list[dict],
     *,
+    chat_response: str = "fake response",
     sensor_snapshot: SensorSnapshot | None = None,
 ):
     database_url = _database_url()
@@ -145,7 +146,8 @@ async def _run_system_diagnostics_loop(
         invocation_repository=invocation_repository,
         event_log=event_log,
         providers={
-            "local_openai_compatible": FakeModelProvider(
+            "local_main": FakeModelProvider(
+                chat_response=chat_response,
                 structured_text_responses=[json.dumps(response) for response in structured_responses],
             ),
             "local_embedding": FakeEmbeddingProvider(),
@@ -228,7 +230,7 @@ async def _run_system_diagnostics_loop(
             user_input=submission.user_message.content,
             active_project_namespace="project.personal_assistant",
             loop_strategy="tool_react_loop",
-            model_profile="local_structured",
+            model_profile="local_main",
             permission_mode="developer_local",
             working_directory=str(Path.cwd()),
             metadata={
@@ -262,8 +264,9 @@ def test_agent_can_use_process_snapshot_and_answer_with_observation() -> None:
                         "cwd": str(Path.cwd()),
                     },
                 },
-                {"action": "final_answer", "final_answer": "Ollama and Jarvis are running."},
+                {"action": "final_answer"},
             ],
+            chat_response="Ollama and Jarvis are running.",
         ),
     )
 
@@ -283,8 +286,9 @@ def test_agent_can_use_temperature_snapshot_when_available() -> None:
                     "tool_name": "tool.system.read.sensors",
                     "arguments": {"argv": ["thermal-sysfs"], "cwd": str(Path.cwd())},
                 },
-                {"action": "final_answer", "final_answer": "CPU temperature is 54 C."},
+                {"action": "final_answer"},
             ],
+            chat_response="CPU temperature is 54 C.",
         ),
     )
 
@@ -303,8 +307,9 @@ def test_agent_handles_unavailable_temperature_backend() -> None:
                     "tool_name": "tool.system.read.sensors",
                     "arguments": {"argv": ["thermal-sysfs"], "cwd": str(Path.cwd())},
                 },
-                {"action": "final_answer", "final_answer": "Temperature backend is unavailable."},
+                {"action": "final_answer"},
             ],
+            chat_response="Temperature backend is unavailable.",
             sensor_snapshot=SensorSnapshot.unavailable(source="thermal-sysfs", reason="not available"),
         ),
     )
