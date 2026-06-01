@@ -32,7 +32,12 @@ def test_ollama_config_uses_local_models_and_endpoints() -> None:
 
     assert settings.model_profiles["local_main"].provider == "ollama"
     assert settings.model_profiles["local_main"].model == "qwen3.5:9b"
-    assert settings.model_profiles["local_structured"].model == "qwen3.5:2b"
+    assert settings.model_profiles["local_structured"].enabled is False
+    assert settings.model_profiles["local_structured"].provider == "ollama"
+    assert (
+        settings.model_profiles["local_structured"].model
+        == settings.model_profiles["local_main"].model
+    )
     assert settings.model_profiles["local_embedding"].model == "embeddinggemma:latest"
     assert settings.model_profiles["local_main"].max_output_tokens == 1024
     assert settings.model_profiles["local_structured"].max_output_tokens == 1024

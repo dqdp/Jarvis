@@ -43,8 +43,9 @@ CONFIG_PROFILE=ollama make run
 make cli
 ```
 
-The Ollama profile uses `qwen3.5:9b` for chat, `qwen3.5:2b` for structured
-classification, and `embeddinggemma:latest` for embeddings.
+The Ollama profile uses `qwen3.5:9b` for chat
+and the agent loop, keeps the separate `local_structured` runtime model
+disabled, and uses `embeddinggemma:latest` for embeddings.
 PM-08k supersedes classifier-first routing for the production request path:
 normal typed input and future voice transcripts should enter the bounded agent
 loop, with tool execution controlled by PolicyPort and ToolGatewayPort.

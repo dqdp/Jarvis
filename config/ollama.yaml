@@ -10,11 +10,12 @@ model_profiles:
     supports_streaming: true
 
   local_structured:
+    enabled: false
     provider: ollama
-    model: qwen3.5:2b
+    model: qwen3.5:9b
     endpoint: http://127.0.0.1:11434
-    timeout_seconds: 60
-    max_input_tokens: 8000
+    timeout_seconds: 120
+    max_input_tokens: 12000
     max_output_tokens: 1024
     temperature: 0.0
 

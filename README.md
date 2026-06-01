@@ -196,7 +196,7 @@ docs/adr/
 - ModelRouter is internal module/package in Phase 1.
 - Local inference is external and accessed through `local_openai_compatible`,
   `local_embedding` or native Ollama provider adapters behind ModelRouter.
-- Required profiles: `local_main`, `local_structured`, `local_embedding`.
+- Required profile keys: `local_main`, `local_structured`, `local_embedding`; production profiles may keep `local_structured` disabled when no separate structured model is required.
 - `cloud_reasoning` may exist in config but is disabled by default.
 - No automatic fallback, especially no cloud fallback.
 - Embeddings go through `EmbeddingPort`, defaulting to `ModelRouter.embed(local_embedding)`.
@@ -292,8 +292,9 @@ Implementation notes:
   `assistant_core.app_factory:create_asgi_app --factory`, `make migrate` and
   `make run`.
 - Local Ollama dogfood is available through `config/ollama.yaml`. The current
-  local profile uses `qwen3.5:9b` for chat, `qwen3.5:2b` for structured
-  classification, and `embeddinggemma:latest` for embeddings.
+  local profile uses `qwen3.5:9b` for chat and
+  the agent loop, disables the separate `local_structured` runtime model, and
+  uses `embeddinggemma:latest` for embeddings.
 - PM-08k rejects runtime LLM route adjudication and broad deterministic intent
   routing as the default direction. Natural-language typed input and future
   voice transcripts should enter the same bounded agent loop. Deterministic
@@ -346,8 +347,8 @@ Post-MVP planning is tracked in:
 ## Local Ollama and CLI additions in v22
 
 - `config/ollama.yaml` wires local Ollama profiles without cloud fallback.
-- `qwen3.5:9b` is the current chat model and `qwen3.5:2b` is the current
-  local agent-loop model on the target machine.
+- `qwen3.5:9b` is the current chat and local
+  agent-loop model on the target machine.
 - `qwen3.5:2b`, `qwen3.5:0.8b` and other smaller structured-model candidates
   remain historical/evaluation profiles. PM-08k rejects a production
   classifier-first route gate before the agent loop, so these models are not a

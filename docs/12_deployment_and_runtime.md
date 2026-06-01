@@ -116,8 +116,9 @@ make run-ollama
 ```
 
 The `ollama` profile uses the locally available chat/agent-loop model
-`qwen3.5:9b`, the historical structured/evaluation model `qwen3.5:2b`, and the
-embedding model `embeddinggemma:latest`. This is a runtime profile behind the
+`qwen3.5:9b`, disables a separate
+`local_structured` runtime model, and uses the embedding model
+`embeddinggemma:latest`. This is a runtime profile behind the
 existing `ModelRouterPort`; CI still uses fake model and embedding providers and
 does not require real LLM calls.
 PM-08k changes the request-handling direction: local structured classifier

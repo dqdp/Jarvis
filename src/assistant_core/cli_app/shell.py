@@ -200,6 +200,13 @@ class PromptToolkitLineReader:
         return self._session
 
 
+def _compact_model_label(model: str) -> str:
+    if model.startswith("hf.co/"):
+        _prefix, _separator, tag = model.rpartition(":")
+        if tag:
+            return tag
+    return model
+
 def render_status_line(
     *,
     mode: str,
@@ -217,14 +224,17 @@ def render_status_line(
         f"phase={_clip(phase or 'idle', 24)}",
     ]
     if model:
-        parts.append(f"model={_clip(model, 32)}")
+        parts.append(f"model={_clip(_compact_model_label(model), 32)}")
     if context_remaining:
         parts.append(f"ctx={_clip(context_remaining, 8)}")
     if cwd:
         parts.append(f"cwd={_clip(_cwd_scope(cwd), 28)}")
     if conversation_id:
         parts.append(f"conv={_clip(conversation_id, 28)}")
-    return _fit_width(" | ".join(parts), width)
+    line = " | ".join(parts)
+    if len(line) > width:
+        line = "|".join(parts)
+    return _fit_width(line, width)
 
 
 def display_loop_mode(loop_strategy: str | None) -> str:

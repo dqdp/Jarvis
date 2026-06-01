@@ -130,8 +130,8 @@ tracked as an adapter-level follow-up, not an MVP blocker.
 - [x] Runtime budgets and windowing are config-driven.
 - [x] Standard `make migrate` and `make run` targets exist.
 - [x] Local Ollama dogfood profile exists with `qwen3.5:9b` as the current
-  chat/agent-loop model, `qwen3.5:2b` as the historical structured/evaluation
-  model, and `embeddinggemma:latest` as the embedding model.
+  chat/agent-loop model, disabled separate `local_structured` runtime model,
+  and `embeddinggemma:latest` as the embedding model.
 - [x] CLI command target exists for health, manual memory and chat smoke
   verification through the HTTP API.
 - [x] CLI has an interactive terminal chat shell with conversation reset and
