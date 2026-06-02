@@ -62,8 +62,8 @@ Completed PM-08 Alpha sequence so far:
 
 Current transition:
 
-- PM-09 remains blocked until the final DB-enabled PM-08l verification/review
-  gate is green and committed.
+- PM-08l is complete; PM-09 voice may start from the hardened PM-08k/PM-08l
+  bounded agent-loop contract and canonical Jarvis startup surface.
 
 Next priority:
 

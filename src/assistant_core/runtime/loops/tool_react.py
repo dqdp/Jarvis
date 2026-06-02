@@ -21,6 +21,7 @@ from assistant_core.domain.loops import (
     ToolObservationRef,
     ToolProposal,
     ToolProposalParseError,
+    ToolRequestPlan,
     parse_tool_proposal,
 )
 from assistant_core.domain.models import StructuredModelRequest
@@ -156,7 +157,7 @@ class ToolReactLoop:
         used_tool_calls = 0
         completed_tool_observations = 0
         consecutive_failures = 0
-        request_plan = _tool_request_plan(request.metadata)
+        request_plan = ToolRequestPlan.from_metadata(request.metadata)
         context_manifest_refs: list[str] = []
         tool_observation_refs: list[ToolObservationRef] = []
         loop_deadline = asyncio.get_running_loop().time() + float(
@@ -404,6 +405,30 @@ class ToolReactLoop:
                 )
                 completed_tool_observations += 1
                 consecutive_failures = 0
+                if _should_use_final_chat_without_proposal(
+                    request_plan,
+                    used_tool_calls=used_tool_calls,
+                    completed_observations=completed_tool_observations,
+                    budget=request.budget,
+                ):
+                    final_step_started = await self._append_final_step_started_after_observation(
+                        request,
+                        step_index=step_index,
+                        source_step_id=step_id,
+                        causation_id=step_started.event_id,
+                    )
+                    active_step_started = final_step_started
+                    active_step_id = final_step_started.payload["step_id"]
+                    return await self._final_answer_step.run(
+                        request,
+                        step_started=final_step_started,
+                        used_model_calls=used_model_calls,
+                        used_tool_calls=used_tool_calls,
+                        context_manifest_refs=context_manifest_refs,
+                        tool_observation_refs=tool_observation_refs,
+                        loop_deadline=loop_deadline,
+                        source_step_id=step_id,
+                    )
             except Exception as exc:
                 consecutive_failures += 1
                 failure_exc = exc
@@ -650,6 +675,30 @@ class ToolReactLoop:
             step=AgentLoopStep.FINAL,
         )
 
+    async def _append_final_step_started_after_observation(
+        self,
+        request: LoopExecutionRequest,
+        *,
+        step_index: int,
+        source_step_id: str,
+        causation_id: str,
+    ) -> EventEnvelope:
+        return await self._append_event(
+            EventType.AGENT_STEP_STARTED,
+            request,
+            payload={
+                "strategy_name": request.strategy_name.value,
+                "step_id": str(uuid4()),
+                "step_index": step_index,
+                "action": "final_answer",
+                "source_step_id": source_step_id,
+                "source": "tool_observation_completed",
+            },
+            causation_id=causation_id,
+            state=AgentLoopState.FINALIZING,
+            step=AgentLoopStep.FINAL,
+        )
+
     async def _fail(
         self,
         request: LoopExecutionRequest,
@@ -794,21 +843,6 @@ _USER_STREAM_EVENT_TYPES = {
 _KNOWN_TOOL_POLICIES = {"disabled", "available", "required"}
 
 
-def _tool_request_plan(metadata: dict[str, Any]) -> tuple[str | None, frozenset[str] | None]:
-    raw_policy = metadata.get("agent_tool_policy")
-    policy = raw_policy if isinstance(raw_policy, str) else None
-    raw_allowed = metadata.get("agent_allowed_tool_names")
-    if isinstance(raw_allowed, list):
-        allowed = frozenset(item for item in raw_allowed if isinstance(item, str) and item)
-    elif isinstance(raw_allowed, tuple):
-        allowed = frozenset(item for item in raw_allowed if isinstance(item, str) and item)
-    elif policy in {"available", "required"}:
-        allowed = frozenset()
-    else:
-        allowed = None
-    return policy, allowed
-
-
 def _tool_requires_live_state(metadata: dict[str, Any], tool_name: str) -> bool:
     raw_live_state_names = metadata.get("agent_live_state_tool_names")
     if isinstance(raw_live_state_names, list):
@@ -848,11 +882,12 @@ def _live_state_unavailable_response(observation_ref: ToolObservationRef) -> str
 
 
 def _tool_proposal_output_contract(
-    request_plan: tuple[str | None, frozenset[str] | None],
+    request_plan: ToolRequestPlan,
     *,
     completed_observations: int,
 ) -> str:
-    policy, allowed = request_plan
+    policy = request_plan.policy
+    allowed = request_plan.allowed_tool_names
     lines = [
         "Return only a JSON object for the agent loop.",
         'Use {"action":"final_answer"} when ready to answer without another tool.',
@@ -874,27 +909,29 @@ def _tool_proposal_output_contract(
 
 
 def _should_use_final_chat_without_proposal(
-    request_plan: tuple[str | None, frozenset[str] | None],
+    request_plan: ToolRequestPlan,
     *,
     used_tool_calls: int,
     completed_observations: int,
     budget: LoopBudget,
 ) -> bool:
-    policy, _allowed = request_plan
+    policy = request_plan.policy
     if policy == "disabled":
         return True
     if used_tool_calls < budget.max_tool_calls:
         return False
-    return not (policy == "required" and completed_observations <= 0)
+    return not (
+        request_plan.final_answer_requires_observation() and completed_observations <= 0
+    )
 
 
 def _should_fallback_to_final_chat_after_malformed_proposal(
     value: Any,
-    request_plan: tuple[str | None, frozenset[str] | None],
+    request_plan: ToolRequestPlan,
     *,
     completed_observations: int,
 ) -> bool:
-    policy, _allowed = request_plan
+    policy = request_plan.policy
     if policy not in {"available", "required"}:
         return False
     if policy == "required" and completed_observations <= 0:
@@ -905,20 +942,20 @@ def _should_fallback_to_final_chat_after_malformed_proposal(
 
 
 def _ensure_final_answer_allowed(
-    request_plan: tuple[str | None, frozenset[str] | None],
+    request_plan: ToolRequestPlan,
     *,
     completed_observations: int,
 ) -> None:
-    policy, _allowed = request_plan
-    if policy == "required" and completed_observations <= 0:
+    if request_plan.final_answer_requires_observation() and completed_observations <= 0:
         raise RuntimeError("required_tool_call_missing")
 
 
 def _ensure_tool_call_allowed_by_plan(
-    request_plan: tuple[str | None, frozenset[str] | None],
+    request_plan: ToolRequestPlan,
     proposal: ToolProposal,
 ) -> None:
-    policy, allowed = request_plan
+    policy = request_plan.policy
+    allowed = request_plan.allowed_tool_names
     if policy is None:
         raise RuntimeError("request_plan_missing_tool_policy")
     if policy not in _KNOWN_TOOL_POLICIES:

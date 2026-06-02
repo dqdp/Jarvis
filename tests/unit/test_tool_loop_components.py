@@ -144,6 +144,23 @@ def test_approval_waiter_returns_after_granted_approval() -> None:
     assert asyncio.run(scenario()) == 1
 
 
+def test_approval_waiter_cancels_pending_approval_when_wall_time_expires() -> None:
+    async def scenario():
+        store = FakeApprovalStore(_approval(ApprovalStatus.PENDING))
+        with pytest.raises(RuntimeError, match="max_wall_time_exceeded"):
+            await ApprovalWaiter(store).wait(
+                "approval-1",
+                loop_deadline=asyncio.get_running_loop().time(),
+                actor_id="user-1",
+            )
+        return store.approval.status, store.cancel_calls
+
+    status, cancel_calls = asyncio.run(scenario())
+
+    assert status == ApprovalStatus.CANCELLED
+    assert cancel_calls == [("approval-1", "user-1", "request timed out")]
+
+
 def test_tool_proposal_executor_waits_for_approval_and_reinvokes_with_approval_id() -> None:
     async def scenario():
         gateway = FakeGateway()

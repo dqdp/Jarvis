@@ -165,9 +165,9 @@ Phase 1 не предназначена для:
     natural-language path and removes classifier-first routing before voice.
     PM-08l then hardens the agent-loop state machine, finalization,
     tool-observation recovery and DB-backed transcript-like API evidence. PM-09
-    voice gateway foundation remains blocked until the final PM-08l
-    verification/review gate is green. LangGraph remains a follow-up for later
-    durable workflows.
+    voice gateway foundation starts from the completed PM-08k/PM-08l bounded
+    agent-loop contract and canonical Jarvis startup surface. LangGraph remains
+    a follow-up for later durable workflows.
 11. Redis/NATS не вводятся как обязательная зависимость Phase 1.
 12. SSE — primary streaming transport.
 13. RuntimeStreamEvent schema transport-agnostic.

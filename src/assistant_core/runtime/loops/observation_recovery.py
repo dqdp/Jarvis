@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from assistant_core.domain.loops import ToolRequestPlan
 from assistant_core.domain.tools import (
     SAFE_TOOL_OBSERVATION_ERROR_CODES,
     ToolObservationStatus,
@@ -39,7 +40,7 @@ class ToolObservationRecoveryPolicy:
     def decide(
         self,
         *,
-        request_plan: tuple[str | None, frozenset[str] | None],
+        request_plan: ToolRequestPlan,
         observation_status: ToolObservationStatus,
         observation_error_code: str | None = None,
         tool_call_id: str | None = None,
@@ -61,11 +62,10 @@ class ToolObservationRecoveryPolicy:
             details["observation_error_code"] = observation_error_code
         if tool_call_id is not None:
             details["tool_call_id"] = tool_call_id
-        policy, _allowed = request_plan
         if (
             observation_status in _RECOVERABLE_OBSERVATION_STATUSES
             and observation_error_code not in _NON_RECOVERABLE_ERROR_CODES
-            and _final_answer_allowed_after_observation(policy, completed_observations)
+            and request_plan.final_answer_allowed_after_observation(completed_observations)
             and consecutive_failures <= max_consecutive_failures
         ):
             return ToolObservationRecoveryDecision(
@@ -92,14 +92,6 @@ _NON_RECOVERABLE_ERROR_CODES = {
     "tool_disabled",
 }
 _DENIED_PASSTHROUGH_ERROR_CODES = set(SAFE_TOOL_OBSERVATION_ERROR_CODES) - {"tool_error"}
-
-
-def _final_answer_allowed_after_observation(policy: str | None, completed_observations: int) -> bool:
-    if policy == "available":
-        return True
-    if policy == "required" and completed_observations > 0:
-        return True
-    return False
 
 
 def _error_code(status: ToolObservationStatus) -> str:

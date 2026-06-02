@@ -23,15 +23,36 @@ class ApprovalWaiter:
                 await asyncio.sleep(
                     min(0.05, max(0.001, loop_deadline - asyncio.get_running_loop().time())),
                 )
-        except asyncio.CancelledError:
-            approval = await self._approval_store.get_approval(approval_id)
-            if approval is not None and approval.status.value == "pending":
-                await self._approval_store.cancel_approval(
+        except RuntimeError as exc:
+            if str(exc) == "max_wall_time_exceeded":
+                await self._cancel_pending(
                     approval_id,
                     actor_id=actor_id,
-                    reason="request cancelled",
+                    reason="request timed out",
                 )
             raise
+        except asyncio.CancelledError:
+            await self._cancel_pending(
+                approval_id,
+                actor_id=actor_id,
+                reason="request cancelled",
+            )
+            raise
+
+    async def _cancel_pending(
+        self,
+        approval_id: str,
+        *,
+        actor_id: str | None,
+        reason: str,
+    ) -> None:
+        approval = await self._approval_store.get_approval(approval_id)
+        if approval is not None and approval.status.value == "pending":
+            await self._approval_store.cancel_approval(
+                approval_id,
+                actor_id=actor_id,
+                reason=reason,
+            )
 
 
 def _raise_if_wall_time_exceeded(deadline: float) -> None:

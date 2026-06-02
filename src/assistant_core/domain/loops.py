@@ -184,6 +184,35 @@ class ToolProposal:
 
 
 @dataclass(frozen=True)
+class ToolRequestPlan:
+    policy: str | None
+    allowed_tool_names: frozenset[str] | None
+
+    @classmethod
+    def from_metadata(cls, metadata: dict[str, Any]) -> ToolRequestPlan:
+        raw_policy = metadata.get("agent_tool_policy")
+        policy = raw_policy if isinstance(raw_policy, str) else None
+        raw_allowed = metadata.get("agent_allowed_tool_names")
+        if isinstance(raw_allowed, (list, tuple)):
+            allowed = frozenset(item for item in raw_allowed if isinstance(item, str) and item)
+        elif policy in {"available", "required"}:
+            allowed = frozenset()
+        else:
+            allowed = None
+        return cls(policy=policy, allowed_tool_names=allowed)
+
+    def final_answer_allowed_after_observation(self, completed_observations: int) -> bool:
+        if self.policy == "available":
+            return True
+        if self.policy == "required" and completed_observations > 0:
+            return True
+        return False
+
+    def final_answer_requires_observation(self) -> bool:
+        return self.policy == "required"
+
+
+@dataclass(frozen=True)
 class ToolObservationRef:
     tool_call_id: str
     tool_name: str

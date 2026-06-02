@@ -1244,7 +1244,7 @@ def test_runtime_app_factory_api_unavailable_tool_turn_replays_after_new_app_ins
     assert second_provider.chat_calls == 0
 
 
-def test_runtime_app_factory_api_denied_approval_finishes_controlled() -> None:
+def test_runtime_app_factory_api_denied_approval_replays_after_new_app_instance() -> None:
     database_url = _database_url()
     assert_test_database_url(database_url)
     run_migrations(database_url)
@@ -1258,7 +1258,7 @@ def test_runtime_app_factory_api_denied_approval_finishes_controlled() -> None:
             settings,
             permissions=replace(settings.permissions, mode=PermissionMode.LOCKED_DOWN),
         )
-        provider = FakeModelProvider(
+        first_provider = FakeModelProvider(
             chat_response="should not reach final answer",
             structured_text_responses=[
                 json.dumps(
@@ -1277,11 +1277,12 @@ def test_runtime_app_factory_api_denied_approval_finishes_controlled() -> None:
             database_url=database_url,
             settings=settings,
             providers={
-                "local_main": provider,
+                "local_main": first_provider,
                 "local_structured": FakeModelProvider(),
                 "local_embedding": FakeEmbeddingProvider(),
             },
         )
+        first_disposed = False
         try:
             app = runtime_app.app
             _, conversation_raw = await _request(
@@ -1324,6 +1325,30 @@ def test_runtime_app_factory_api_denied_approval_finishes_controlled() -> None:
                 "GET",
                 f"/v1/requests/{submitted['request_id']}/stream",
             )
+            await runtime_app.dispose()
+            first_disposed = True
+
+            second_provider = FakeModelProvider(
+                chat_response="should not run",
+                structured_text_responses=[json.dumps({"action": "final_answer"})],
+            )
+            second_app = create_runtime_app(
+                database_url=database_url,
+                settings=settings,
+                providers={
+                    "local_main": second_provider,
+                    "local_structured": FakeModelProvider(),
+                    "local_embedding": FakeEmbeddingProvider(),
+                },
+            )
+            try:
+                _, replay_raw = await _request(
+                    second_app.app,
+                    "GET",
+                    f"/v1/requests/{submitted['request_id']}/stream",
+                )
+            finally:
+                await second_app.dispose()
             return (
                 status_code,
                 waiting,
@@ -1331,10 +1356,13 @@ def test_runtime_app_factory_api_denied_approval_finishes_controlled() -> None:
                 json.loads(deny_raw),
                 failed,
                 _sse_events(stream_raw),
-                provider,
+                _sse_events(replay_raw),
+                first_provider,
+                second_provider,
             )
         finally:
-            await runtime_app.dispose()
+            if not first_disposed:
+                await runtime_app.dispose()
 
     (
         status_code,
@@ -1343,7 +1371,9 @@ def test_runtime_app_factory_api_denied_approval_finishes_controlled() -> None:
         denied_approval,
         failed,
         stream_events,
-        provider,
+        replay_events,
+        first_provider,
+        second_provider,
     ) = asyncio.run(scenario())
 
     assert status_code == 202
@@ -1354,4 +1384,9 @@ def test_runtime_app_factory_api_denied_approval_finishes_controlled() -> None:
     assert failed["error"]["code"] == "approval_denied"
     assert stream_events[-1] == EventType.REQUEST_PROCESSING_FAILED.value
     assert EventType.APPROVAL_DENIED.value in stream_events
-    assert provider.structured_calls == 1
+    assert replay_events[-1] == EventType.REQUEST_PROCESSING_FAILED.value
+    assert EventType.APPROVAL_DENIED.value in replay_events
+    assert first_provider.structured_calls == 1
+    assert first_provider.chat_calls == 0
+    assert second_provider.structured_calls == 0
+    assert second_provider.chat_calls == 0
