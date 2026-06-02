@@ -136,7 +136,7 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         requires_execution=True,
         requires_write=False,
         risk_classes=frozenset({RiskClass.SAFE}),
-        sensitivity_ceiling=Sensitivity.PUBLIC,
+        sensitivity_ceiling=Sensitivity.PROJECT,
     ),
     RoutingToolDescriptor(
         tool_name="daemon.status",

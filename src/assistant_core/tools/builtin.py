@@ -58,7 +58,7 @@ def calculator_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
                 "maxLength": 128,
             },
             adapter_name="builtin.calculator.evaluate",
-            sensitivity_ceiling=Sensitivity.PUBLIC,
+            sensitivity_ceiling=Sensitivity.PROJECT,
             enabled=enabled,
         ),
         handler=lambda arguments: _evaluate_expression(str(arguments["expression"])),

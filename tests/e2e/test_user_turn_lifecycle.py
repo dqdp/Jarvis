@@ -308,7 +308,7 @@ def test_transcript_like_tool_turn_uses_toolgateway() -> None:
     assert len(invocations) == 3
 
 
-def test_transcript_like_tool_turn_falls_back_to_final_chat_after_tool_budget() -> None:
+def test_transcript_like_tool_turn_finalizes_without_repeating_completed_tool_call() -> None:
     _, stream_events, request_status, messages, events, invocations = _run_user_turn_lifecycle(
         content="Джарвис, сколько времени?",
         client_message_id="client-transcript-tool-budget",
@@ -326,5 +326,5 @@ def test_transcript_like_tool_turn_falls_back_to_final_chat_after_tool_budget() 
     loop_completed = next(
         event for event in events if event.event_type == EventType.AGENT_LOOP_COMPLETED
     )
-    assert loop_completed.payload["used_tool_calls"] == 2
+    assert loop_completed.payload["used_tool_calls"] == 1
     assert len(invocations) == 3

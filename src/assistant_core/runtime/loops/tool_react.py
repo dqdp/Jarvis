@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -160,6 +161,7 @@ class ToolReactLoop:
         request_plan = ToolRequestPlan.from_metadata(request.metadata)
         context_manifest_refs: list[str] = []
         tool_observation_refs: list[ToolObservationRef] = []
+        completed_tool_call_signatures: set[tuple[str, str]] = set()
         loop_deadline = asyncio.get_running_loop().time() + float(
             request.budget.max_wall_time_seconds,
         )
@@ -320,6 +322,18 @@ class ToolReactLoop:
                         loop_deadline=loop_deadline,
                     )
 
+                if _tool_call_signature(proposal) in completed_tool_call_signatures:
+                    return await self._final_answer_step.run(
+                        request,
+                        step_started=step_started,
+                        used_model_calls=used_model_calls,
+                        used_tool_calls=used_tool_calls,
+                        context_manifest_refs=context_manifest_refs,
+                        tool_observation_refs=tool_observation_refs,
+                        loop_deadline=loop_deadline,
+                        output_contract=_repeated_tool_call_output_contract(proposal),
+                    )
+
                 await self._record_tool_state(
                     request=request,
                     proposal=proposal,
@@ -371,7 +385,10 @@ class ToolReactLoop:
                         )
                         active_step_started = final_step_started
                         active_step_id = final_step_started.payload["step_id"]
-                        if tool_requires_live_state:
+                        if _should_complete_live_state_unavailable_deterministically(
+                            observation_ref,
+                            tool_requires_live_state=tool_requires_live_state,
+                        ):
                             return await self._final_answer_step.complete_deterministic(
                                 request,
                                 step_started=final_step_started,
@@ -404,6 +421,7 @@ class ToolReactLoop:
                     observation_ref=observation_ref,
                 )
                 completed_tool_observations += 1
+                completed_tool_call_signatures.add(_tool_call_signature(proposal))
                 consecutive_failures = 0
                 if _should_use_final_chat_without_proposal(
                     request_plan,
@@ -881,6 +899,16 @@ def _live_state_unavailable_response(observation_ref: ToolObservationRef) -> str
     return f"Live state from {observation_ref.tool_name} is unavailable ({code})."
 
 
+def _should_complete_live_state_unavailable_deterministically(
+    observation_ref: ToolObservationRef,
+    *,
+    tool_requires_live_state: bool,
+) -> bool:
+    if not tool_requires_live_state:
+        return False
+    return observation_ref.error_code != "invalid_arguments"
+
+
 def _tool_proposal_output_contract(
     request_plan: ToolRequestPlan,
     *,
@@ -967,6 +995,22 @@ def _ensure_tool_call_allowed_by_plan(
             raise ToolProposalParseError("tool_call requires tool_name")
         if allowed is not None and proposal.tool_name not in allowed:
             raise RuntimeError("tool_not_allowed_by_request_plan")
+
+
+def _tool_call_signature(proposal: ToolProposal) -> tuple[str, str]:
+    return (
+        proposal.tool_name or "",
+        json.dumps(proposal.arguments, sort_keys=True, separators=(",", ":"), default=str),
+    )
+
+
+def _repeated_tool_call_output_contract(proposal: ToolProposal) -> str:
+    tool_name = proposal.tool_name or "<unknown>"
+    return (
+        f"The model proposed repeating the already completed tool call {tool_name}. "
+        "Do not call that tool again. Use the existing tool observation as evidence "
+        "and answer the user directly."
+    )
 
 
 def _failed_stream_payload(

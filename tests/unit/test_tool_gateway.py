@@ -292,7 +292,7 @@ def test_sensitivity_ceiling_denies_before_policy_or_execution() -> None:
                 request_id="req-tool-1",
                 conversation_id="conv-tool-1",
                 user_id="user-tool-1",
-                sensitivity=Sensitivity.PROJECT,
+                sensitivity=Sensitivity.PERSONAL,
             ),
         ),
     )

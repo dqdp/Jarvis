@@ -451,6 +451,8 @@ def test_natural_language_calculator_request_has_no_direct_plan() -> None:
     assert resolution.metadata["requested_loop_mode"] == "auto"
     assert resolution.metadata["selected_loop_strategy"] == "tool_react_loop"
     assert resolution.metadata["agent_tool_policy"] == "available"
+    assert "calculator.evaluate" in resolution.agent_request_plan.allowed_tool_names
+    assert "calculator.evaluate" in resolution.metadata["agent_allowed_tool_names"]
     assert "loop_selection_direct_tool_plan" not in resolution.metadata
     assert "direct_tool_plan" not in resolution.agent_request_plan.redacted_metadata()
 

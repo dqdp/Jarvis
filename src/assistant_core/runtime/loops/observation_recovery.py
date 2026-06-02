@@ -70,7 +70,7 @@ class ToolObservationRecoveryPolicy:
         ):
             return ToolObservationRecoveryDecision(
                 action=ToolObservationRecoveryAction.FINALIZE,
-                error_code=_error_code(observation_status),
+                error_code=_recoverable_error_code(observation_status, observation_error_code),
                 error_message=_error_message(observation_status),
                 details=details,
             )
@@ -87,7 +87,6 @@ _RECOVERABLE_OBSERVATION_STATUSES = {
     ToolObservationStatus.TIMEOUT,
 }
 _NON_RECOVERABLE_ERROR_CODES = {
-    "invalid_arguments",
     "unknown_tool",
     "tool_disabled",
 }
@@ -96,6 +95,15 @@ _DENIED_PASSTHROUGH_ERROR_CODES = set(SAFE_TOOL_OBSERVATION_ERROR_CODES) - {"too
 
 def _error_code(status: ToolObservationStatus) -> str:
     return f"tool_observation_{status.value}"
+
+
+def _recoverable_error_code(
+    status: ToolObservationStatus,
+    observation_error_code: str | None,
+) -> str:
+    if observation_error_code == "invalid_arguments":
+        return observation_error_code
+    return _error_code(status)
 
 
 def _terminal_error_code(status: ToolObservationStatus, observation_error_code: str | None) -> str:

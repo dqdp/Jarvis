@@ -600,7 +600,7 @@ def test_tool_observation_recovery_policy_matrix_matches_pm08l_contract() -> Non
     assert optional_failed.action == ToolObservationRecoveryAction.FINALIZE
     assert optional_failed.details["tool_call_id"] == "tool-call-failed"
     assert optional_timeout.action == ToolObservationRecoveryAction.FINALIZE
-    assert optional_invalid_arguments.action == ToolObservationRecoveryAction.FAIL
+    assert optional_invalid_arguments.action == ToolObservationRecoveryAction.FINALIZE
     assert optional_invalid_arguments.error_code == "invalid_arguments"
     assert required_failed.action == ToolObservationRecoveryAction.FAIL
     assert optional_denied.action == ToolObservationRecoveryAction.FAIL
@@ -1048,7 +1048,7 @@ def test_tool_react_loop_required_failed_observation_fails_with_typed_reason() -
     )
 
 
-def test_tool_react_loop_invalid_tool_arguments_fail_closed() -> None:
+def test_tool_react_loop_recovers_to_final_answer_after_optional_invalid_arguments() -> None:
     class Gateway:
         async def get_tool(self, tool_name: str):
             return None
@@ -1070,7 +1070,7 @@ def test_tool_react_loop_invalid_tool_arguments_fail_closed() -> None:
         event_log = FakeEventLog()
         router = FakeStructuredAndChatRouter(
             [{"action": "tool_call", "tool_name": "fake.echo", "arguments": {"unexpected": "value"}}],
-            chat_response="must not be used",
+            chat_response="fallback after invalid arguments",
         )
         loop = ToolReactLoop(
             conversation_store=FakeConversationStore(),
@@ -1079,18 +1079,70 @@ def test_tool_react_loop_invalid_tool_arguments_fail_closed() -> None:
             event_log=event_log,
             tool_gateway=Gateway(),
         )
-        with pytest.raises(RuntimeError, match="invalid_arguments"):
-            await loop.run_turn(_request(metadata=_tool_plan_metadata("fake.echo")))
-        failed_event = next(
-            event for event in event_log.events if event.event_type == EventType.REQUEST_PROCESSING_FAILED
+        result = await loop.run_turn(_request(metadata=_tool_plan_metadata("fake.echo")))
+        return result, router, event_log.events
+
+    result, router, events = asyncio.run(scenario())
+
+    assert result.response_text == "fallback after invalid arguments"
+    assert router.chat_calls == 1
+    assert result.tool_observation_refs[0].error_code == "invalid_arguments"
+    assert EventType.REQUEST_PROCESSING_FAILED not in [event.event_type for event in events]
+
+
+def test_tool_react_loop_uses_finalizer_for_live_state_invalid_arguments() -> None:
+    class Gateway:
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            return ToolObservation.empty(
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.FAILED,
+                sensitivity=request.sensitivity,
+                started_at=now,
+                completed_at=now,
+                error={"code": "invalid_arguments", "message": "tool arguments failed validation"},
+            )
+
+    async def scenario():
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.network",
+                    "arguments": {"unexpected": "value"},
+                }
+            ],
+            chat_response="general answer without diagnostics",
         )
-        return router, failed_event
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=Gateway(),
+        )
+        result = await loop.run_turn(
+            _request(
+                metadata=_tool_plan_metadata(
+                    "tool.system.read.network",
+                    live_state_tool_names=("tool.system.read.network",),
+                ),
+            )
+        )
+        return result, router, event_log.events
 
-    router, failed_event = asyncio.run(scenario())
+    result, router, events = asyncio.run(scenario())
 
-    assert router.chat_calls == 0
-    assert failed_event.payload["error"]["code"] == "invalid_arguments"
-    assert failed_event.payload["error"]["details"]["observation_status"] == "failed"
+    assert result.response_text == "general answer without diagnostics"
+    assert router.chat_calls == 1
+    assert result.tool_observation_refs[0].error_code == "invalid_arguments"
+    assert EventType.REQUEST_PROCESSING_FAILED not in [event.event_type for event in events]
 
 
 def test_tool_react_loop_disabled_registered_tool_fails_closed() -> None:
@@ -1607,6 +1659,57 @@ def test_tool_react_loop_finalizes_after_completed_observation_when_step_budget_
     assert result.used_tool_calls == 1
     assert gateway.calls == 1
     assert router.structured_calls == 1
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_finalizes_instead_of_repeating_completed_tool_call() -> None:
+    class Gateway:
+        calls = 0
+
+        async def invoke(self, request):
+            from datetime import UTC, datetime
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls += 1
+            now = datetime.now(UTC)
+            return ToolObservation.empty(
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                sensitivity=request.sensitivity,
+                started_at=now,
+                completed_at=now,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+            ],
+            chat_response="final from first observation",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            _request(
+                budget=replace(_budget(), max_steps=4, max_tool_calls=2),
+                metadata=_tool_plan_metadata("datetime.now"),
+            )
+        )
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "final from first observation"
+    assert result.used_tool_calls == 1
+    assert gateway.calls == 1
+    assert router.structured_calls == 2
     assert router.chat_calls == 1
 
 
