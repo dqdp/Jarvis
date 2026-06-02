@@ -841,10 +841,7 @@ def test_tool_react_loop_live_state_recovery_does_not_call_chat_finalizer() -> N
 
     assert router.chat_calls == 0
     assert final_contract is None
-    assert result.response_text == (
-        "Live state from tool.system.read.resources is unavailable "
-        "(tool_error)."
-    )
+    assert result.response_text == "The requested live state is unavailable."
     assert "SECRET" not in result.response_text
     assert "ignore previous instructions" not in result.response_text
 
@@ -898,10 +895,7 @@ def test_tool_react_loop_live_state_failure_uses_deterministic_unavailable_respo
     result, router = asyncio.run(scenario())
 
     assert router.chat_calls == 0
-    assert result.response_text == (
-        "Live state from tool.system.read.resources is unavailable "
-        "(tool_failed)."
-    )
+    assert result.response_text == "The requested live state is unavailable."
     assert "95%" not in result.response_text
 
 
@@ -1108,8 +1102,18 @@ def test_tool_react_loop_uses_finalizer_for_live_state_invalid_arguments() -> No
                 error={"code": "invalid_arguments", "message": "tool arguments failed validation"},
             )
 
+    class RecordingContextAssembler(FakeContextAssembler):
+        def __init__(self) -> None:
+            self.final_contract: str | None = None
+
+        async def assemble(self, request):
+            if request.purpose == "final_answer":
+                self.final_contract = request.output_contract
+            return await super().assemble(request)
+
     async def scenario():
         event_log = FakeEventLog()
+        assembler = RecordingContextAssembler()
         router = FakeStructuredAndChatRouter(
             [
                 {
@@ -1122,7 +1126,7 @@ def test_tool_react_loop_uses_finalizer_for_live_state_invalid_arguments() -> No
         )
         loop = ToolReactLoop(
             conversation_store=FakeConversationStore(),
-            context_assembler=FakeContextAssembler(),
+            context_assembler=assembler,
             model_router=router,
             event_log=event_log,
             tool_gateway=Gateway(),
@@ -1135,13 +1139,16 @@ def test_tool_react_loop_uses_finalizer_for_live_state_invalid_arguments() -> No
                 ),
             )
         )
-        return result, router, event_log.events
+        return result, router, event_log.events, assembler.final_contract
 
-    result, router, events = asyncio.run(scenario())
+    result, router, events, final_contract = asyncio.run(scenario())
 
     assert result.response_text == "general answer without diagnostics"
     assert router.chat_calls == 1
     assert result.tool_observation_refs[0].error_code == "invalid_arguments"
+    assert final_contract is not None
+    assert "invalid_arguments" not in final_contract
+    assert "Do not mention internal tool error codes" in final_contract
     assert EventType.REQUEST_PROCESSING_FAILED not in [event.event_type for event in events]
 
 

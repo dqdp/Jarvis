@@ -385,10 +385,7 @@ def test_agent_recovers_from_optional_cpu_diagnostics_failure() -> None:
 
     assert not isinstance(result, Exception)
     assert request.status == RequestStatus.COMPLETED
-    assert result.response_text == (
-        "Live state from tool.system.read.resources is unavailable "
-        "(tool_failed)."
-    )
+    assert result.response_text == "The requested live state is unavailable."
     assert diagnostics_executor.calls[0]["argv"] == ["top", "-b", "-n", "1"]
     assert EventType.TOOL_SYSTEM_DIAGNOSTICS_FAILED in [event.event_type for event in events]
     observation_event = next(
