@@ -253,6 +253,17 @@ class PostgresConversationStore:
 
         return list(reversed([_row_to_message(row) for row in rows]))
 
+    async def get_message(self, message_id: str) -> ConversationMessage | None:
+        async with self.engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    sa.select(_messages).where(_messages.c.message_id == _uuid(message_id)),
+                )
+            ).mappings().first()
+        if row is None:
+            return None
+        return _row_to_message(row)
+
     async def submit_user_message(
         self,
         command: MessageSubmissionCommand,

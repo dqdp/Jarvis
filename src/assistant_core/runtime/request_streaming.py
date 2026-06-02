@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from assistant_core.domain.events import EventType
+from assistant_core.domain.messages import MessageRole
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.ports.event_log import EventFilter
 
@@ -323,6 +324,44 @@ async def event_log_stream(event_log, request_record):
         yield event_stream_event(event)
     if not yielded_terminal:
         yield terminal_stream_event(request_record)
+
+
+async def durable_replay_stream(event_log, conversation_store, request_record):
+    async for item in event_log_stream(event_log, request_record):
+        if item.event_type == EventType.REQUEST_PROCESSING_COMPLETED.value:
+            token_event = await completed_assistant_token_event(
+                conversation_store,
+                request_record,
+            )
+            if token_event is not None:
+                yield token_event
+        yield item
+
+
+async def completed_assistant_token_event(
+    conversation_store,
+    request_record,
+) -> RequestStreamEvent | None:
+    if request_record.status != RequestStatus.COMPLETED:
+        return None
+    if request_record.assistant_message_id is None:
+        return None
+    get_message = getattr(conversation_store, "get_message", None)
+    if not callable(get_message):
+        return None
+    message = await get_message(request_record.assistant_message_id)
+    if message is None:
+        return None
+    if message.request_id != request_record.request_id:
+        return None
+    if message.role != MessageRole.ASSISTANT:
+        return None
+    if not message.content:
+        return None
+    return RequestStreamEvent(
+        "token",
+        {"request_id": request_record.request_id, "delta": message.content},
+    )
 
 
 async def terminal_stream_event_from_log(event_log, request_record) -> RequestStreamEvent:

@@ -17,8 +17,8 @@ from assistant_core.runtime.request_streaming import (
     TERMINAL_EVENT_TYPES,
     TERMINAL_REQUEST_STATUSES,
     RequestStreamEvent,
+    durable_replay_stream,
     event_stream_event,
-    event_log_stream,
     has_terminal_event,
     terminal_stream_event,
     terminal_stream_event_from_log,
@@ -125,7 +125,11 @@ class RequestExecutionManager:
                         if event.event_type in TERMINAL_EVENT_TYPES:
                             return
                     if index == 0:
-                        async for item in event_log_stream(self._event_log, request_record):
+                        async for item in durable_replay_stream(
+                            self._event_log,
+                            self._conversation_store,
+                            request_record,
+                        ):
                             yield item
                     elif not has_terminal_event(self._stream_buffer.raw_events_until(request_id, index)):
                         yield await terminal_stream_event_from_log(self._event_log, request_record)

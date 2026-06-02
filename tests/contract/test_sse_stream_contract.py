@@ -1129,6 +1129,34 @@ def test_completed_request_stream_reconnect_does_not_rerun_provider(stream_parts
     assert stream_calls == 1
 
 
+def test_completed_request_stream_reconnect_replays_assistant_text(stream_parts) -> None:
+    async def scenario():
+        make_app, _ = stream_parts
+        provider = FakeModelProvider(stream_tokens=["durable answer"])
+        app = make_app(provider)
+        submitted = await _accepted_message(
+            app,
+            client_message_id="client-completed-replay-text",
+            content="complete before stream",
+        )
+        await _wait_request_status(app, submitted["request_id"], "completed")
+        status, raw = await _request(
+            app,
+            "GET",
+            f"/v1/requests/{submitted['request_id']}/stream",
+        )
+        return status, _sse_events(raw), provider.stream_calls
+
+    status, events, stream_calls = asyncio.run(scenario())
+
+    assert status == 200
+    assert [data["delta"] for event, data in events if event == "token"] == [
+        "durable answer",
+    ]
+    assert events[-1][0] == "request.processing.completed"
+    assert stream_calls == 1
+
+
 def test_completed_request_reconnect_uses_durable_replay_after_live_buffer_cleanup(
     stream_parts,
 ) -> None:

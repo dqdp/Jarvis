@@ -23,6 +23,7 @@ from assistant_core.runtime.agent_runtime import RuntimeStreamEvent, RuntimeTurn
 from assistant_core.runtime.request_execution import RequestExecutionManager
 from assistant_core.runtime.request_lifecycle import RequestLifecycleService
 from assistant_core.runtime.request_stream_buffer import RequestStreamBuffer
+from assistant_core.runtime.request_streaming import durable_replay_stream
 
 
 pytestmark = pytest.mark.unit
@@ -68,6 +69,22 @@ def _message() -> ConversationMessage:
     )
 
 
+def _assistant_message(*, content: str = "stored answer") -> ConversationMessage:
+    now = datetime.now(UTC)
+    return ConversationMessage(
+        message_id="message-assistant",
+        conversation_id="conversation-1",
+        request_id="request-1",
+        event_id=None,
+        client_message_id=None,
+        role=MessageRole.ASSISTANT,
+        content=content,
+        content_hash="assistant-hash",
+        sensitivity=Sensitivity.PROJECT,
+        created_at=now,
+    )
+
+
 def _conversation() -> Conversation:
     now = datetime.now(UTC)
     return Conversation(
@@ -85,6 +102,7 @@ class FakeConversationStore:
     def __init__(self) -> None:
         self.request = _request_record()
         self.status_updates = []
+        self.messages = {"message-user": _message()}
 
     async def get_assistant_request(self, request_id: str):
         assert request_id == self.request.request_id
@@ -93,6 +111,9 @@ class FakeConversationStore:
     async def load_recent_messages(self, query):
         assert query.conversation_id == self.request.conversation_id
         return [_message()]
+
+    async def get_message(self, message_id: str):
+        return self.messages.get(message_id)
 
     async def get_conversation(self, conversation_id: str):
         assert conversation_id == self.request.conversation_id
@@ -410,6 +431,46 @@ def test_request_execution_seed_does_not_publish_terminal_events_before_tokens()
         EventType.REQUEST_PROCESSING_COMPLETED.value,
     ]
     assert events[-1].data["assistant_message_id"] == "message-assistant"
+
+
+def test_durable_replay_stream_reconstructs_assistant_token_before_terminal_event() -> None:
+    async def scenario():
+        store = FakeConversationStore()
+        store.request = replace(
+            store.request,
+            status=RequestStatus.COMPLETED,
+            assistant_message_id="message-assistant",
+        )
+        store.messages["message-assistant"] = _assistant_message(content="stored answer")
+        event_log = FakeEventLog()
+        event_log.events.extend(
+            [
+                _event(
+                    EventType.REQUEST_PROCESSING_STARTED,
+                    {"event_id": "started"},
+                ),
+                _event(
+                    EventType.REQUEST_PROCESSING_COMPLETED,
+                    {"assistant_message_id": "message-assistant"},
+                ),
+            ],
+        )
+        return [
+            event
+            async for event in durable_replay_stream(event_log, store, store.request)
+        ]
+
+    events = asyncio.run(scenario())
+
+    assert [event.event_type for event in events] == [
+        EventType.REQUEST_PROCESSING_STARTED.value,
+        "token",
+        EventType.REQUEST_PROCESSING_COMPLETED.value,
+    ]
+    assert events[1].data == {
+        "request_id": "request-1",
+        "delta": "stored answer",
+    }
 
 
 def test_runtime_turn_command_builder_uses_request_metadata_and_user_message() -> None:

@@ -59,6 +59,8 @@ class ConversationStorePort(Protocol):
         query: RecentMessagesQuery,
     ) -> list[ConversationMessage]: ...
 
+    async def get_message(self, message_id: str) -> ConversationMessage | None: ...
+
     async def submit_user_message(
         self,
         command: MessageSubmissionCommand,
