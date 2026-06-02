@@ -13,7 +13,12 @@ from assistant_core.runtime.routing import (
     IntentFamily,
     RoutingToolDescriptor,
 )
-from assistant_core.tools.builtin import calculator_tool, daemon_status_tool, datetime_now_tool
+from assistant_core.tools.builtin import (
+    calculator_tool,
+    daemon_status_tool,
+    datetime_now_tool,
+    datetime_until_tool,
+)
 from assistant_core.tools.registry import ToolRegistry
 
 
@@ -99,7 +104,9 @@ def test_app_factory_request_plan_guard_rejects_gateway_metadata_drift() -> None
         drifted_datetime.spec,
         capability=Capability.TOOL_SHELL_READ,
     )
-    registry = ToolRegistry([drifted_datetime, calculator_tool(), daemon_status_tool()])
+    registry = ToolRegistry(
+        [drifted_datetime, datetime_until_tool(), calculator_tool(), daemon_status_tool()]
+    )
 
     with pytest.raises(RuntimeError, match="request-plan tool metadata differs.*datetime.now"):
         _validate_request_plan_tool_surface(settings, registry)

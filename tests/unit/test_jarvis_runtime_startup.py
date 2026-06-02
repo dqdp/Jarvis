@@ -11,7 +11,12 @@ import pytest
 from assistant_core.config.settings import ConfigLoader
 from assistant_core.domain.policy import Capability, RiskClass
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.tools.builtin import calculator_tool, daemon_status_tool, datetime_now_tool
+from assistant_core.tools.builtin import (
+    calculator_tool,
+    daemon_status_tool,
+    datetime_now_tool,
+    datetime_until_tool,
+)
 from assistant_core.tools.registry import ToolRegistry
 from assistant_core.tools.shell_read import project_shell_read_tool_from_config
 from assistant_core.tools.system_diagnostics import system_diagnostics_tools_from_config
@@ -78,6 +83,7 @@ def test_runtime_app_validates_request_plan_tool_policy_shape_matches_gateway_re
             adapter,
             calculator_tool(),
             daemon_status_tool(),
+            datetime_until_tool(),
             project_shell_read_tool_from_config(settings.capabilities),
             *system_diagnostics_tools_from_config(settings.capabilities),
         ],

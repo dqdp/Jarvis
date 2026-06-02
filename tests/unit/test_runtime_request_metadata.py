@@ -218,6 +218,7 @@ def test_agent_request_plan_filters_allowed_tools_by_sensitivity_ceiling() -> No
     assert "calculator.evaluate" not in allowed
     assert "daemon.status" not in allowed
     assert "datetime.now" not in allowed
+    assert "datetime.until" not in allowed
     assert "tool.shell.read.project" not in allowed
     assert "tool.system.read.resources" in allowed
 
@@ -414,6 +415,7 @@ def test_default_auto_request_builds_agent_loop_plan_without_classifier() -> Non
     assert resolution.metadata["model_profile"] == "local_main"
     assert resolution.agent_request_plan.tool_policy is AgentToolPolicy.AVAILABLE
     assert "datetime.now" in resolution.metadata["agent_live_state_tool_names"]
+    assert "datetime.until" in resolution.metadata["agent_live_state_tool_names"]
     assert "tool.system.read.resources" in resolution.metadata["agent_live_state_tool_names"]
     assert "calculator.evaluate" not in resolution.metadata["agent_live_state_tool_names"]
     assert resolution.agent_request_plan.live_state_tool_names == tuple(

@@ -42,6 +42,35 @@ def datetime_now_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
     )
 
 
+def datetime_until_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
+    return BuiltinToolAdapter(
+        spec=ToolSpec(
+            name="datetime.until",
+            display_name="Time Until",
+            description="Computes a deterministic time interval from a source timestamp to a supported target.",
+            capability=Capability.TOOL_SAFE,
+            risk_classes=frozenset({RiskClass.SAFE}),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "from_iso": {"type": "string"},
+                    "target": {"type": "string", "enum": ["next_new_year"]},
+                    "unit": {
+                        "type": "string",
+                        "enum": ["seconds", "minutes", "hours", "days"],
+                    },
+                },
+                "required": ["target", "unit"],
+                "additionalProperties": False,
+            },
+            adapter_name="builtin.datetime.until",
+            sensitivity_ceiling=Sensitivity.PROJECT,
+            enabled=enabled,
+        ),
+        handler=_datetime_until,
+    )
+
+
 def calculator_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
     return BuiltinToolAdapter(
         spec=ToolSpec(
@@ -86,6 +115,43 @@ def daemon_status_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
         ),
         handler=lambda _arguments: {"status": "ok"},
     )
+
+
+def _datetime_until(arguments: dict[str, Any]) -> dict[str, Any]:
+    raw_source = arguments.get("from_iso")
+    source = (
+        datetime.fromisoformat(str(raw_source))
+        if raw_source
+        else datetime.now().astimezone()
+    )
+    target_name = str(arguments["target"])
+    if target_name != "next_new_year":
+        raise ValueError("unsupported datetime target")
+    target = source.replace(
+        year=source.year + 1,
+        month=1,
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    total_seconds = max(0, int((target - source).total_seconds()))
+    unit = str(arguments["unit"])
+    values: dict[str, int | float] = {
+        "seconds": total_seconds,
+        "minutes": total_seconds / 60,
+        "hours": total_seconds / 3600,
+        "days": total_seconds / 86400,
+    }
+    return {
+        "from_iso": source.isoformat(),
+        "target": target_name,
+        "target_iso": target.isoformat(),
+        "seconds": total_seconds,
+        "unit": unit,
+        "value": values[unit],
+    }
 
 
 def _evaluate_expression(expression: str) -> str:

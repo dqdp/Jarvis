@@ -15,6 +15,7 @@ from assistant_core.tools.builtin import (
     calculator_tool,
     daemon_status_tool,
     datetime_now_tool,
+    datetime_until_tool,
 )
 from assistant_core.tools.fake import fake_echo_tool, fake_fail_tool
 from assistant_core.tools.gateway import ToolGateway
@@ -56,6 +57,7 @@ def _gateway(
                 fake_echo_tool(),
                 fake_fail_tool(),
                 datetime_now_tool(),
+                datetime_until_tool(),
                 calculator_tool(),
                 daemon_status_tool(),
             ],
@@ -91,6 +93,7 @@ def test_tool_gateway_lists_enabled_tools() -> None:
         "calculator.evaluate",
         "daemon.status",
         "datetime.now",
+        "datetime.until",
         "fake.echo",
         "fake.fail",
     ]
@@ -125,6 +128,52 @@ def test_tool_gateway_invokes_datetime_now() -> None:
     assert observation.status == ToolObservationStatus.COMPLETED
     assert observation.content_type == "application/json"
     assert "iso" in observation.content
+
+
+def test_tool_gateway_invokes_datetime_until_next_new_year() -> None:
+    gateway, _policy, _event_log = _gateway()
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(
+                "datetime.until",
+                {
+                    "from_iso": "2026-12-31T23:59:50+03:00",
+                    "target": "next_new_year",
+                    "unit": "seconds",
+                },
+                sensitivity=Sensitivity.PUBLIC,
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert observation.content_type == "application/json"
+    assert '"seconds": 10' in observation.content
+    assert '"target_iso": "2027-01-01T00:00:00+03:00"' in observation.content
+
+
+def test_tool_gateway_invokes_datetime_until_without_source_timestamp() -> None:
+    gateway, _policy, _event_log = _gateway()
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(
+                "datetime.until",
+                {
+                    "target": "next_new_year",
+                    "unit": "seconds",
+                },
+                sensitivity=Sensitivity.PUBLIC,
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert observation.content_type == "application/json"
+    assert '"target": "next_new_year"' in observation.content
+    assert '"unit": "seconds"' in observation.content
+    assert '"seconds":' in observation.content
 
 
 def test_tool_gateway_invokes_calculator_evaluate() -> None:

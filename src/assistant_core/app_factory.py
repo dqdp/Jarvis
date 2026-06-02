@@ -45,7 +45,12 @@ from assistant_core.storage.event_log import PostgresEventLog
 from assistant_core.storage.memory_store import PostgresMemoryStore
 from assistant_core.storage.migrations import run_migrations
 from assistant_core.storage.model_invocations import PostgresModelInvocationRepository
-from assistant_core.tools.builtin import calculator_tool, daemon_status_tool, datetime_now_tool
+from assistant_core.tools.builtin import (
+    calculator_tool,
+    daemon_status_tool,
+    datetime_now_tool,
+    datetime_until_tool,
+)
 from assistant_core.tools.fake import fake_echo_tool, fake_fail_tool, fake_timeout_tool
 from assistant_core.tools.gateway import ToolGateway
 from assistant_core.tools.registry import ToolRegistry
@@ -127,6 +132,7 @@ def create_runtime_app(
             fake_fail_tool(),
             fake_timeout_tool(),
             datetime_now_tool(),
+            datetime_until_tool(),
             calculator_tool(),
             daemon_status_tool(),
             project_shell_read_tool_from_config(settings.capabilities),

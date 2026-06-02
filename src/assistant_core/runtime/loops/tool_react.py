@@ -39,6 +39,10 @@ from assistant_core.ports.tools import ToolGatewayPort
 from assistant_core.runtime.loops.event_recorder import LoopEventRecorder
 from assistant_core.runtime.loops.failure_policy import LoopFailureDecision, LoopFailurePolicy
 from assistant_core.runtime.loops.final_answer import FinalAnswerStep, FinalAnswerStepError
+from assistant_core.runtime.loops.datetime_interval import (
+    datetime_until_deterministic_response as _datetime_until_deterministic_response,
+    required_datetime_until_followup as _required_datetime_until_followup,
+)
 from assistant_core.runtime.loops.observation_recovery import (
     ToolObservationRecoveryAction,
     ToolObservationRecoveryDecision,
@@ -275,6 +279,22 @@ class ToolReactLoop:
                     if _wall_time_expired(loop_deadline):
                         raise RuntimeError("max_wall_time_exceeded") from exc
                     raise
+                except Exception as exc:
+                    if (
+                        completed_tool_observations > 0
+                        and _is_structured_output_validation_error(exc)
+                    ):
+                        return await self._final_answer_step.run(
+                            request,
+                            step_started=step_started,
+                            used_model_calls=used_model_calls,
+                            used_tool_calls=used_tool_calls,
+                            context_manifest_refs=context_manifest_refs,
+                            tool_observation_refs=tool_observation_refs,
+                            loop_deadline=loop_deadline,
+                            output_contract=_malformed_proposal_after_tool_output_contract(),
+                        )
+                    raise
                 await self._append_event(
                     EventType.MODEL_RESPONSE_RECEIVED,
                     request,
@@ -293,7 +313,41 @@ class ToolReactLoop:
                         completed_observations=completed_tool_observations,
                     ):
                         raise
-                    try:
+                    followup_proposal = _required_datetime_until_followup(
+                        request,
+                        request_plan,
+                        tuple(tool_observation_refs),
+                    )
+                    if followup_proposal is not None:
+                        proposal = followup_proposal
+                    else:
+                        try:
+                            return await self._final_answer_step.run(
+                                request,
+                                step_started=step_started,
+                                used_model_calls=used_model_calls,
+                                used_tool_calls=used_tool_calls,
+                                context_manifest_refs=context_manifest_refs,
+                                tool_observation_refs=tool_observation_refs,
+                                loop_deadline=loop_deadline,
+                            )
+                        except RuntimeError as final_exc:
+                            if str(final_exc) == "max_model_calls_exceeded":
+                                raise RuntimeError("max_model_calls_exceeded") from exc
+                            raise
+                if proposal.action == "final_answer":
+                    followup_proposal = _required_datetime_until_followup(
+                        request,
+                        request_plan,
+                        tuple(tool_observation_refs),
+                    )
+                    if followup_proposal is not None:
+                        proposal = followup_proposal
+                    else:
+                        _ensure_final_answer_allowed(
+                            request_plan,
+                            completed_observations=completed_tool_observations,
+                        )
                         return await self._final_answer_step.run(
                             request,
                             step_started=step_started,
@@ -303,36 +357,30 @@ class ToolReactLoop:
                             tool_observation_refs=tool_observation_refs,
                             loop_deadline=loop_deadline,
                         )
-                    except RuntimeError as final_exc:
-                        if str(final_exc) == "max_model_calls_exceeded":
-                            raise RuntimeError("max_model_calls_exceeded") from exc
-                        raise
-                if proposal.action == "final_answer":
-                    _ensure_final_answer_allowed(
-                        request_plan,
-                        completed_observations=completed_tool_observations,
-                    )
-                    return await self._final_answer_step.run(
-                        request,
-                        step_started=step_started,
-                        used_model_calls=used_model_calls,
-                        used_tool_calls=used_tool_calls,
-                        context_manifest_refs=context_manifest_refs,
-                        tool_observation_refs=tool_observation_refs,
-                        loop_deadline=loop_deadline,
-                    )
 
                 if _tool_call_signature(proposal) in completed_tool_call_signatures:
-                    return await self._final_answer_step.run(
+                    followup_proposal = _required_datetime_until_followup(
                         request,
-                        step_started=step_started,
-                        used_model_calls=used_model_calls,
-                        used_tool_calls=used_tool_calls,
-                        context_manifest_refs=context_manifest_refs,
-                        tool_observation_refs=tool_observation_refs,
-                        loop_deadline=loop_deadline,
-                        output_contract=_repeated_tool_call_output_contract(proposal),
+                        request_plan,
+                        tuple(tool_observation_refs),
                     )
+                    if (
+                        followup_proposal is not None
+                        and _tool_call_signature(followup_proposal)
+                        not in completed_tool_call_signatures
+                    ):
+                        proposal = followup_proposal
+                    else:
+                        return await self._final_answer_step.run(
+                            request,
+                            step_started=step_started,
+                            used_model_calls=used_model_calls,
+                            used_tool_calls=used_tool_calls,
+                            context_manifest_refs=context_manifest_refs,
+                            tool_observation_refs=tool_observation_refs,
+                            loop_deadline=loop_deadline,
+                            output_contract=_repeated_tool_call_output_contract(proposal),
+                        )
 
                 await self._record_tool_state(
                     request=request,
@@ -423,6 +471,29 @@ class ToolReactLoop:
                 completed_tool_observations += 1
                 completed_tool_call_signatures.add(_tool_call_signature(proposal))
                 consecutive_failures = 0
+                deterministic_response = _datetime_until_deterministic_response(
+                    request,
+                    observation_ref,
+                )
+                if deterministic_response is not None:
+                    final_step_started = await self._append_final_step_started_after_observation(
+                        request,
+                        step_index=step_index,
+                        source_step_id=step_id,
+                        causation_id=step_started.event_id,
+                    )
+                    active_step_started = final_step_started
+                    active_step_id = final_step_started.payload["step_id"]
+                    return await self._final_answer_step.complete_deterministic(
+                        request,
+                        step_started=final_step_started,
+                        response_text=deterministic_response,
+                        used_model_calls=used_model_calls,
+                        used_tool_calls=used_tool_calls,
+                        context_manifest_refs=context_manifest_refs,
+                        tool_observation_refs=tool_observation_refs,
+                        source_step_id=step_id,
+                    )
                 if _should_use_final_chat_without_proposal(
                     request_plan,
                     used_tool_calls=used_tool_calls,
@@ -935,6 +1006,11 @@ def _tool_proposal_output_contract(
         lines.append("No tools are allowed for this request; use final_answer only.")
     if policy == "required" and completed_observations <= 0:
         lines.append("A tool call is required before the final answer.")
+    if allowed and {"datetime.now", "datetime.until"}.issubset(set(allowed)):
+        lines.append(
+            "For countdown, duration, or time-until questions, use datetime.now and "
+            "then datetime.until; do not calculate time intervals in final_answer."
+        )
     return " ".join(lines)
 
 
@@ -1013,6 +1089,18 @@ def _repeated_tool_call_output_contract(proposal: ToolProposal) -> str:
         "Do not call that tool again. Use the existing tool observation as evidence "
         "and answer the user directly."
     )
+
+
+def _malformed_proposal_after_tool_output_contract() -> str:
+    return (
+        "The previous structured tool-proposal response was invalid after a completed "
+        "tool observation. Do not request more tools. Use the completed tool "
+        "observation as evidence and answer the user directly."
+    )
+
+
+def _is_structured_output_validation_error(exc: Exception) -> bool:
+    return type(exc).__name__ == "StructuredOutputValidationError"
 
 
 def _failed_stream_payload(

@@ -60,7 +60,7 @@ class CapabilityRoutingRegistry:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> CapabilityRoutingRegistry:
-        enabled = {"datetime.now", "calculator.evaluate", "daemon.status"}
+        enabled = {"datetime.now", "datetime.until", "calculator.evaluate", "daemon.status"}
         if "tool.shell.read" in settings.capabilities:
             enabled.add("tool.shell.read.project")
         system_read = settings.capabilities.get("tool.system.read", {})
@@ -121,6 +121,17 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         capability=Capability.TOOL_SAFE,
         intent_families=frozenset({IntentFamily.SAFE_BUILTIN_TOOL}),
         description="current local date and time",
+        requires_live_state=True,
+        requires_execution=True,
+        requires_write=False,
+        risk_classes=frozenset({RiskClass.SAFE}),
+        sensitivity_ceiling=Sensitivity.PROJECT,
+    ),
+    RoutingToolDescriptor(
+        tool_name="datetime.until",
+        capability=Capability.TOOL_SAFE,
+        intent_families=frozenset({IntentFamily.SAFE_BUILTIN_TOOL}),
+        description="deterministic time interval calculation for supported calendar targets",
         requires_live_state=True,
         requires_execution=True,
         requires_write=False,

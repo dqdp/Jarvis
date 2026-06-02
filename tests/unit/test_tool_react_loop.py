@@ -23,6 +23,7 @@ from assistant_core.domain.loops import (
 from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.domain.tools import ToolObservationStatus
+from assistant_core.models.router import StructuredOutputValidationError
 from assistant_core.runtime.loops.failure_policy import LoopFailureDecision
 from assistant_core.runtime.loops.observation_recovery import (
     ToolObservationRecoveryAction,
@@ -1718,6 +1719,455 @@ def test_tool_react_loop_finalizes_instead_of_repeating_completed_tool_call() ->
     assert gateway.calls == 1
     assert router.structured_calls == 2
     assert router.chat_calls == 1
+
+
+def test_tool_react_loop_finalizes_when_structured_output_breaks_after_completed_tool() -> None:
+    class Gateway:
+        calls = 0
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls += 1
+            now = datetime.now(UTC)
+            return ToolObservation(
+                tool_call_id="tool-call-calculator",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content="63.79338842975207",
+                content_type="text/plain",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=17,
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    class BrokenSecondProposalRouter(FakeStructuredAndChatRouter):
+        async def structured(self, request):
+            self.structured_calls += 1
+            if self.structured_calls == 1:
+                from assistant_core.domain.models import StructuredModelResponse
+
+                return StructuredModelResponse(
+                    value={
+                        "action": "tool_call",
+                        "tool_name": "calculator.evaluate",
+                        "arguments": {"expression": "15438 / 242"},
+                    },
+                )
+            raise StructuredOutputValidationError("invalid structured output")
+
+    async def scenario():
+        gateway = Gateway()
+        router = BrokenSecondProposalRouter([], chat_response="15438 / 242 = 63.79338842975207")
+        event_log = FakeEventLog()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(_request(metadata=_tool_plan_metadata("calculator.evaluate")))
+        return result, gateway, router, event_log.events
+
+    result, gateway, router, events = asyncio.run(scenario())
+
+    assert result.response_text == "15438 / 242 = 63.79338842975207"
+    assert result.used_tool_calls == 1
+    assert gateway.calls == 1
+    assert router.structured_calls == 2
+    assert router.chat_calls == 1
+    assert EventType.REQUEST_PROCESSING_FAILED not in [event.event_type for event in events]
+
+
+def test_tool_react_loop_requires_datetime_until_before_finalizing_countdown() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                content = '{"iso": "2026-06-02T18:14:39+03:00"}'
+            else:
+                content = (
+                    '{"from_iso": "2026-06-02T18:14:39+03:00", '
+                    '"target": "next_new_year", '
+                    '"target_iso": "2027-01-01T00:00:00+03:00", '
+                    '"seconds": 18337521, '
+                    '"unit": "seconds", '
+                    '"value": 18337521}'
+                )
+            return ToolObservation(
+                tool_call_id=f"tool-call-{request.tool_name}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+            ],
+            chat_response="unused chat response",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        request = replace(
+            _request(
+                metadata=_tool_plan_metadata(
+                    "datetime.now",
+                    "datetime.until",
+                    live_state_tool_names=("datetime.now", "datetime.until"),
+                )
+            ),
+            user_input="сколько секунд до нового года?",
+        )
+        result = await loop.run_turn(request)
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "До Нового года 2027 года осталось 18 337 521 секунд."
+    assert [tool_name for tool_name, _arguments in gateway.calls] == [
+        "datetime.now",
+        "datetime.until",
+    ]
+    assert gateway.calls[1][1] == {
+        "from_iso": "2026-06-02T18:14:39+03:00",
+        "target": "next_new_year",
+        "unit": "seconds",
+    }
+    assert result.used_tool_calls == 2
+    assert router.structured_calls == 2
+    assert router.chat_calls == 0
+
+
+def test_tool_react_loop_does_not_force_datetime_until_for_current_time_question() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append(request.tool_name)
+            now = datetime.now(UTC)
+            content = '{"iso": "2026-06-02T18:14:39+03:00"}'
+            return ToolObservation(
+                tool_call_id=f"tool-call-{request.tool_name}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+            ],
+            chat_response="Сейчас 18:14.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        request = replace(
+            _request(
+                metadata=_tool_plan_metadata(
+                    "datetime.now",
+                    "datetime.until",
+                    live_state_tool_names=("datetime.now", "datetime.until"),
+                )
+            ),
+            user_input="сколько времени?",
+        )
+        result = await loop.run_turn(request)
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "Сейчас 18:14."
+    assert gateway.calls == ["datetime.now"]
+    assert result.used_tool_calls == 1
+    assert router.structured_calls == 2
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_requires_datetime_until_before_malformed_countdown_finalization() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append(request.tool_name)
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                content = '{"iso": "2026-06-02T18:14:39+03:00"}'
+            else:
+                content = (
+                    '{"from_iso": "2026-06-02T18:14:39+03:00", '
+                    '"target": "next_new_year", '
+                    '"target_iso": "2027-01-01T00:00:00+03:00", '
+                    '"seconds": 18337521, '
+                    '"unit": "seconds", '
+                    '"value": 18337521}'
+                )
+            return ToolObservation(
+                tool_call_id=f"tool-call-{request.tool_name}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer", "final_answer": "old structured answer text"},
+            ],
+            chat_response="unused chat response",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        request = replace(
+            _request(
+                metadata=_tool_plan_metadata(
+                    "datetime.now",
+                    "datetime.until",
+                    live_state_tool_names=("datetime.now", "datetime.until"),
+                )
+            ),
+            user_input="сколько секунд до нового года?",
+        )
+        result = await loop.run_turn(request)
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "До Нового года 2027 года осталось 18 337 521 секунд."
+    assert gateway.calls == ["datetime.now", "datetime.until"]
+    assert result.used_tool_calls == 2
+    assert router.structured_calls == 2
+    assert router.chat_calls == 0
+
+
+def test_tool_react_loop_uses_datetime_until_without_source_when_now_iso_is_unavailable() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                content = '{"redacted": true}'
+            else:
+                content = (
+                    '{"target": "next_new_year", '
+                    '"target_iso": "2027-01-01T00:00:00+03:00", '
+                    '"seconds": 18337521, '
+                    '"unit": "seconds", '
+                    '"value": 18337521}'
+                )
+            return ToolObservation(
+                tool_call_id=f"tool-call-{request.tool_name}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+            ],
+            chat_response="unused chat response",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        request = replace(
+            _request(
+                metadata=_tool_plan_metadata(
+                    "datetime.now",
+                    "datetime.until",
+                    live_state_tool_names=("datetime.now", "datetime.until"),
+                )
+            ),
+            user_input="сколько секунд до нового года?",
+        )
+        result = await loop.run_turn(request)
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "До Нового года 2027 года осталось 18 337 521 секунд."
+    assert [tool_name for tool_name, _arguments in gateway.calls] == [
+        "datetime.now",
+        "datetime.until",
+    ]
+    assert gateway.calls[1][1] == {
+        "target": "next_new_year",
+        "unit": "seconds",
+    }
+    assert result.used_tool_calls == 2
+    assert router.structured_calls == 2
+    assert router.chat_calls == 0
+
+
+def test_tool_react_loop_uses_datetime_until_instead_of_repeating_now_for_countdown() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append(request.tool_name)
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                content = '{"iso": "2026-06-02T18:14:39+03:00"}'
+            else:
+                content = (
+                    '{"from_iso": "2026-06-02T18:14:39+03:00", '
+                    '"target": "next_new_year", '
+                    '"target_iso": "2027-01-01T00:00:00+03:00", '
+                    '"seconds": 18337521, '
+                    '"unit": "seconds", '
+                    '"value": 18337521}'
+                )
+            return ToolObservation(
+                tool_call_id=f"tool-call-{request.tool_name}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+            ],
+            chat_response="unused chat response",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        request = replace(
+            _request(
+                metadata=_tool_plan_metadata(
+                    "datetime.now",
+                    "datetime.until",
+                    live_state_tool_names=("datetime.now", "datetime.until"),
+                )
+            ),
+            user_input="сколько секунд до нового года?",
+        )
+        result = await loop.run_turn(request)
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "До Нового года 2027 года осталось 18 337 521 секунд."
+    assert gateway.calls == ["datetime.now", "datetime.until"]
+    assert result.used_tool_calls == 2
+    assert router.structured_calls == 2
+    assert router.chat_calls == 0
 
 
 def test_tool_react_loop_falls_back_to_chat_when_available_proposal_is_non_tool_shape() -> None:
