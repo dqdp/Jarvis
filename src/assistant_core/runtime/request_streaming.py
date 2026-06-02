@@ -455,3 +455,7 @@ def public_stream_data(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
 
 def has_terminal_event(events: list[tuple[str, dict[str, Any]]]) -> bool:
     return any(event_type in TERMINAL_EVENT_TYPES for event_type, _ in events)
+
+
+def has_token_event(events: list[tuple[str, dict[str, Any]]]) -> bool:
+    return any(event_type == "token" for event_type, _ in events)

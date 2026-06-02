@@ -17,8 +17,10 @@ from assistant_core.runtime.request_streaming import (
     TERMINAL_EVENT_TYPES,
     TERMINAL_REQUEST_STATUSES,
     RequestStreamEvent,
+    completed_assistant_token_event,
     durable_replay_stream,
     event_stream_event,
+    has_token_event,
     has_terminal_event,
     terminal_stream_event,
     terminal_stream_event_from_log,
@@ -131,8 +133,20 @@ class RequestExecutionManager:
                             request_record,
                         ):
                             yield item
-                    elif not has_terminal_event(self._stream_buffer.raw_events_until(request_id, index)):
-                        yield await terminal_stream_event_from_log(self._event_log, request_record)
+                    else:
+                        seen_events = self._stream_buffer.raw_events_until(request_id, index)
+                        if not has_terminal_event(seen_events):
+                            if not has_token_event(seen_events):
+                                token_event = await completed_assistant_token_event(
+                                    self._conversation_store,
+                                    request_record,
+                                )
+                                if token_event is not None:
+                                    yield token_event
+                            yield await terminal_stream_event_from_log(
+                                self._event_log,
+                                request_record,
+                            )
                     return
 
                 task = self._tasks.get(request_id)

@@ -433,6 +433,52 @@ def test_request_execution_seed_does_not_publish_terminal_events_before_tokens()
     assert events[-1].data["assistant_message_id"] == "message-assistant"
 
 
+def test_request_execution_partial_replay_reconstructs_missing_completed_token() -> None:
+    async def scenario():
+        settings = ConfigLoader("config").load("test")
+        store = FakeConversationStore()
+        store.request = replace(
+            store.request,
+            status=RequestStatus.COMPLETED,
+            assistant_message_id="message-assistant",
+        )
+        store.messages["message-assistant"] = _assistant_message(content="stored answer")
+        event_log = FakeEventLog()
+        event_log.events.extend(
+            [
+                _event(
+                    EventType.REQUEST_PROCESSING_STARTED,
+                    {"event_id": "started"},
+                ),
+                _event(
+                    EventType.REQUEST_PROCESSING_COMPLETED,
+                    {"assistant_message_id": "message-assistant"},
+                ),
+            ],
+        )
+        manager = RequestExecutionManager(
+            runtime=FastRuntime(),
+            conversation_store=store,
+            event_log=event_log,
+            settings=settings,
+        )
+        await manager._stream_buffer.publish(  # noqa: SLF001
+            "request-1",
+            EventType.REQUEST_PROCESSING_STARTED.value,
+            {"event_id": "started"},
+        )
+        return [event async for event in manager.stream("request-1")]
+
+    events = asyncio.run(scenario())
+
+    assert [event.event_type for event in events] == [
+        EventType.REQUEST_PROCESSING_STARTED.value,
+        "token",
+        EventType.REQUEST_PROCESSING_COMPLETED.value,
+    ]
+    assert events[1].data["delta"] == "stored answer"
+
+
 def test_durable_replay_stream_reconstructs_assistant_token_before_terminal_event() -> None:
     async def scenario():
         store = FakeConversationStore()
