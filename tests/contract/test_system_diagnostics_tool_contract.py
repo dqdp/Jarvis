@@ -159,6 +159,24 @@ def _request(
     )
 
 
+def _request_with_arguments(
+    tmp_path: Path,
+    arguments: dict[str, Any],
+    *,
+    tool_name: str = "tool.system.read.process",
+    sensitivity: Sensitivity = Sensitivity.INFRA,
+) -> ToolCallRequest:
+    return ToolCallRequest(
+        tool_name=tool_name,
+        arguments=arguments,
+        request_id="req-system-diagnostics-contract",
+        conversation_id="conv-system-diagnostics-contract",
+        user_id="user-system-diagnostics-contract",
+        working_directory=str(tmp_path),
+        sensitivity=sensitivity,
+    )
+
+
 def _json_content(observation) -> dict[str, Any]:
     return json.loads(observation.content)
 
@@ -230,6 +248,37 @@ def test_system_diagnostics_tool_does_not_use_cwd_argument_as_request_scope(
     assert observation.error["code"] == "working_directory_required"
     assert executor.calls == []
     assert policy.requests == []
+
+
+def test_system_diagnostics_tool_rejects_unknown_arguments_before_policy_or_execution(
+    tmp_path: Path,
+) -> None:
+    call_log: list[str] = []
+    executor = RecordingDiagnosticsExecutor(call_log=call_log)
+    gateway, policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        policy=AllowPolicy(call_log=call_log),
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request_with_arguments(
+                tmp_path,
+                {
+                    "argv": ["ps", "-Ao", "pid,comm,command"],
+                    "cwd": str(tmp_path),
+                    "github_pat_secret_key": "value",
+                },
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.FAILED
+    assert observation.error["code"] == "invalid_arguments"
+    assert policy.requests == []
+    assert executor.calls == []
+    assert call_log == []
 
 
 def test_system_diagnostics_tool_returns_bounded_stdout(tmp_path: Path) -> None:
@@ -497,6 +546,142 @@ def test_system_diagnostics_tool_returns_typed_memory_payload(tmp_path: Path) ->
     assert observation.structured_content["available"] == "18000 MiB"
     assert observation.structured_content["swap_total"] == "2048 MiB"
     assert observation.structured_content["swap_used"] == "256 MiB"
+
+
+def test_system_diagnostics_resources_defaults_to_safe_snapshot_when_arguments_are_empty(
+    tmp_path: Path,
+) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(
+            exit_code=0,
+            stdout=(
+                "CPU usage: 12.5% user, 7.5% sys, 80.0% idle\n"
+                "PhysMem: 16G used (2G wired), 16G unused.\n"
+            ),
+            stderr="",
+        ),
+    )
+    gateway, policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        family=SystemDiagnosticsFamily.RESOURCES,
+        platform="darwin",
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request_with_arguments(
+                tmp_path,
+                {},
+                tool_name="tool.system.read.resources",
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert executor.calls[0]["argv"] == ["top", "-l", "1", "-n", "0"]
+    assert executor.calls[0]["cwd"] == tmp_path
+    assert policy.requests[0].capability == Capability.TOOL_SYSTEM_READ_RESOURCES
+    assert _json_content(observation)["stdout"].startswith("CPU usage:")
+
+
+def test_system_diagnostics_resources_ignores_model_hint_arguments_for_default_snapshot(
+    tmp_path: Path,
+) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(exit_code=0, stdout="CPU usage: 1% user, 99% idle\n", stderr=""),
+    )
+    gateway, _policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        family=SystemDiagnosticsFamily.RESOURCES,
+        platform="darwin",
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request_with_arguments(
+                tmp_path,
+                {"metric": "cpu_and_memory"},
+                tool_name="tool.system.read.resources",
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert executor.calls[0]["argv"] == ["top", "-l", "1", "-n", "0"]
+
+
+def test_system_diagnostics_resources_rejects_invalid_metric_before_policy_or_execution(
+    tmp_path: Path,
+) -> None:
+    call_log: list[str] = []
+    executor = RecordingDiagnosticsExecutor(call_log=call_log)
+    gateway, policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        family=SystemDiagnosticsFamily.RESOURCES,
+        platform="darwin",
+        policy=AllowPolicy(call_log=call_log),
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request_with_arguments(
+                tmp_path,
+                {"metric": "github_pat_secret_key"},
+                tool_name="tool.system.read.resources",
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.FAILED
+    assert observation.error["code"] == "invalid_arguments"
+    assert policy.requests == []
+    assert executor.calls == []
+    assert call_log == []
+
+
+@pytest.mark.parametrize(
+    ("family", "tool_name", "platform"),
+    [
+        (SystemDiagnosticsFamily.PROCESS, "tool.system.read.process", "linux"),
+        (SystemDiagnosticsFamily.HARDWARE, "tool.system.read.hardware", "darwin"),
+        (SystemDiagnosticsFamily.NETWORK, "tool.system.read.network", "darwin"),
+        (SystemDiagnosticsFamily.SENSORS, "tool.system.read.sensors", "linux"),
+    ],
+)
+def test_system_diagnostics_non_resources_tools_reject_empty_arguments_before_policy_or_execution(
+    tmp_path: Path,
+    family: SystemDiagnosticsFamily,
+    tool_name: str,
+    platform: str,
+) -> None:
+    call_log: list[str] = []
+    executor = RecordingDiagnosticsExecutor(call_log=call_log)
+    gateway, policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        family=family,
+        platform=platform,
+        policy=AllowPolicy(call_log=call_log),
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request_with_arguments(
+                tmp_path,
+                {},
+                tool_name=tool_name,
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.FAILED
+    assert observation.error["code"] == "invalid_arguments"
+    assert policy.requests == []
+    assert executor.calls == []
+    assert call_log == []
 
 
 def test_system_diagnostics_tool_returns_typed_vpn_payload(tmp_path: Path) -> None:

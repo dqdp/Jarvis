@@ -496,6 +496,21 @@ class SystemDiagnosticsTool:
         self._max_stderr_bytes = max_stderr_bytes
         self._max_lines = max_lines
         self._timeout_seconds = timeout_seconds
+        input_properties: dict[str, Any] = {
+            "argv": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 256},
+                "minItems": 1,
+                "maxItems": 16,
+            },
+            "cwd": {"type": "string", "maxLength": 512},
+        }
+        if self._family == SystemDiagnosticsFamily.RESOURCES:
+            input_properties["metric"] = {
+                "type": "string",
+                "enum": ["resources", "cpu_and_memory"],
+                "maxLength": 32,
+            }
         self.spec = ToolSpec(
             name=_SYSTEM_DIAGNOSTICS_TOOL_NAMES[self._family],
             display_name=f"System {self._family.value.title()} Diagnostics",
@@ -504,16 +519,8 @@ class SystemDiagnosticsTool:
             risk_classes=frozenset({RiskClass.READ_ONLY}),
             input_schema={
                 "type": "object",
-                "properties": {
-                    "argv": {
-                        "type": "array",
-                        "items": {"type": "string", "maxLength": 256},
-                        "minItems": 1,
-                        "maxItems": 16,
-                    },
-                    "cwd": {"type": "string", "maxLength": 512},
-                },
-                "required": ["argv", "cwd"],
+                "properties": input_properties,
+                "required": [] if self._family == SystemDiagnosticsFamily.RESOURCES else ["argv"],
                 "additionalProperties": False,
             },
             adapter_name=f"system_diagnostics.{self._family.value}",
@@ -568,10 +575,17 @@ class SystemDiagnosticsTool:
                 parse_status=sensor_payload(content).parse_status,
             )
 
+        if decision.cwd is None:
+            raise ToolExecutionDenied(
+                "invalid_working_directory",
+                "diagnostics working directory is unavailable",
+                metadata=self.classify(arguments).metadata,
+            )
+
         try:
             result = await self._executor.execute(
                 argv=list(decision.argv),
-                cwd=Path(decision.cwd or _arguments_cwd(arguments)),
+                cwd=Path(decision.cwd),
                 env=dict(_MINIMAL_ENV),
                 timeout_seconds=self._timeout_seconds,
             )
@@ -640,8 +654,11 @@ class SystemDiagnosticsTool:
         )
 
     def _classify_arguments(self, arguments: dict[str, Any]) -> SystemDiagnosticsDecision:
-        argv = _arguments_argv(arguments)
-        cwd = _arguments_cwd(arguments)
+        try:
+            argv = _arguments_argv(arguments, family=self._family, platform=self._platform)
+            cwd = _arguments_cwd(arguments, allowed_roots=self._allowed_roots)
+        except ValueError as exc:
+            return _deny("invalid_arguments", str(exc), tuple(), None)
         decision = self._classifier.classify(argv, cwd=cwd)
         if decision.allowed and decision.family != self._family:
             return _deny(
@@ -811,18 +828,49 @@ def _parse_nvidia_smi_temperatures(stdout: str) -> SensorSnapshot:
     return SensorSnapshot(source="nvidia-smi", readings=readings)
 
 
-def _arguments_argv(arguments: dict[str, Any]) -> list[str]:
+def _arguments_argv(
+    arguments: dict[str, Any],
+    *,
+    family: SystemDiagnosticsFamily,
+    platform: str,
+) -> list[str]:
     argv = arguments.get("argv")
+    if argv is None:
+        if family != SystemDiagnosticsFamily.RESOURCES:
+            raise ValueError("argv is required for this diagnostics family")
+        return _default_argv(family, platform=platform)
     if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
         raise ValueError("argv must be a list of strings")
     return argv
 
 
-def _arguments_cwd(arguments: dict[str, Any]) -> str:
+def _arguments_cwd(arguments: dict[str, Any], *, allowed_roots: Sequence[Path]) -> str:
     cwd = arguments.get("cwd")
+    if cwd is None:
+        return str(allowed_roots[0])
     if not isinstance(cwd, str) or not cwd:
         raise ValueError("cwd must be a non-empty string")
     return cwd
+
+
+def _default_argv(family: SystemDiagnosticsFamily, *, platform: str) -> list[str]:
+    if family == SystemDiagnosticsFamily.PROCESS:
+        return ["ps", "-Ao", "pid,comm,command"]
+    if family == SystemDiagnosticsFamily.RESOURCES:
+        if platform == "darwin":
+            return ["top", "-l", "1", "-n", "0"]
+        return ["top", "-b", "-n", "1"]
+    if family == SystemDiagnosticsFamily.HARDWARE:
+        if platform == "darwin":
+            return ["sysctl", "-n", "hw.logicalcpu"]
+        return ["lscpu"]
+    if family == SystemDiagnosticsFamily.NETWORK:
+        if platform == "darwin":
+            return ["ifconfig"]
+        return ["ip", "addr"]
+    if family == SystemDiagnosticsFamily.SENSORS:
+        return ["thermal-sysfs"]
+    raise ValueError(f"unsupported diagnostics family: {family}")
 
 
 def _resolve_root(root: str | Path) -> Path:

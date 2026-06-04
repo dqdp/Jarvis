@@ -44,6 +44,9 @@ def validate_arguments(spec: ToolSpec, arguments: dict[str, Any]) -> str | None:
         expected = property_schema.get("type")
         if expected is not None and not matches_type(value, expected):
             return f"invalid type for argument: {key}"
+        allowed_values = property_schema.get("enum")
+        if isinstance(allowed_values, list) and value not in allowed_values:
+            return f"invalid value for argument: {key}"
         if expected == "array":
             min_items = property_schema.get("minItems")
             if isinstance(min_items, int) and len(value) < min_items:
@@ -57,6 +60,9 @@ def validate_arguments(spec: ToolSpec, arguments: dict[str, Any]) -> str | None:
                 matches_type(item, item_type) for item in value
             ):
                 return f"invalid array item type for argument: {key}"
+            item_enum = item_schema.get("enum")
+            if isinstance(item_enum, list) and any(item not in item_enum for item in value):
+                return f"invalid array item value for argument: {key}"
             item_max_length = item_schema.get("maxLength", property_schema.get("maxLength"))
             if isinstance(item_max_length, int) and any(
                 isinstance(item, str) and len(item) > item_max_length for item in value
