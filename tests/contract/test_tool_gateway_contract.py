@@ -193,6 +193,23 @@ def test_tool_gateway_invokes_calculator_evaluate() -> None:
     assert observation.content == "7"
 
 
+def test_tool_gateway_invokes_scientific_calculator_expression() -> None:
+    gateway, _policy, _event_log = _gateway()
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(
+                "calculator.evaluate",
+                {"expression": "(42^3)^2 - 123 * 432 + sqrt(81) + sin(pi / 2) + log(e)"},
+                sensitivity=Sensitivity.PUBLIC,
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert observation.content == "5488978619"
+
+
 def test_tool_gateway_invokes_daemon_status() -> None:
     gateway, _policy, _event_log = _gateway()
 

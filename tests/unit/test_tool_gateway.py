@@ -551,6 +551,65 @@ def test_calculator_rejects_too_long_expression_before_execution() -> None:
     assert policy.requests == []
 
 
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("(42^3)^2 - 123 * 432", "5488978608"),
+        ("2**3", "8"),
+        ("sqrt(81) + sin(pi / 2) + log(e)", "11"),
+        ("factorial(5) + max(2, 9, 4) + round(cos(0), 4)", "130"),
+        ("10 % 4 + 7 // 3", "4"),
+    ],
+)
+def test_calculator_evaluates_bounded_scientific_expressions(
+    expression: str,
+    expected: str,
+) -> None:
+    gateway, _policy = _gateway(calculator_tool())
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(
+                tool_name="calculator.evaluate",
+                arguments={"expression": expression},
+                sensitivity=Sensitivity.PUBLIC,
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert observation.content == expected
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "__import__('os').system('echo unsafe')",
+        "math.sqrt(4)",
+        "[x for x in range(3)]",
+        "10 ** 10000",
+        "factorial(101)",
+        "True + 1",
+    ],
+)
+def test_calculator_rejects_unsafe_or_unbounded_expressions(expression: str) -> None:
+    gateway, policy = _gateway(calculator_tool())
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(
+                tool_name="calculator.evaluate",
+                arguments={"expression": expression},
+                sensitivity=Sensitivity.PUBLIC,
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.FAILED
+    assert observation.error["code"] == "tool_failed"
+    assert policy.requests
+
+
 def test_completed_events_include_policy_linkage_and_tool_risk_metadata() -> None:
     event_log = InMemoryEventLog()
     gateway = ToolGateway(
