@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -72,6 +73,30 @@ TOOL_PROPOSAL_SCHEMA = {
         },
     ],
 }
+
+TOOL_PROPOSAL_MAX_MODEL_CALL_SECONDS = 8.0
+_ARITHMETIC_EXPRESSION_PATTERN = re.compile(
+    r"(?i)(?:\d+(?:[.,]\d+)?|\be\b|\bpi\b|π)\s*(?:\*\*|[*/^×÷+\-])\s*"
+    r"(?:\d+(?:[.,]\d+)?|\be\b|\bpi\b|π)"
+)
+_ARITHMETIC_TOKEN_PATTERN = re.compile(
+    r"(?i)\d+(?:[.,]\d+)?|π|\bpi\b|\be\b|\*\*|[+\-*/^×÷()]"
+)
+_LIVE_STATE_INTENT_PATTERN = re.compile(
+    r"(?ix)"
+    r"(?:"
+    r"\bcpu\b|\bprocessor\b|\bmemory\b|\bram\b|\bload\b|\busage\b|"
+    r"\bbattery\b|\bvpn\b|\bnetwork\b|\bexternal\s+ip\b|\bpublic\s+ip\b|"
+    r"\bdaemon\b|\bsystem\s+status\b|\bhardware\b|\bdisk\b|"
+    r"\bcurrent\s+(?:time|date)\b|\blocal\s+(?:time|date)\b|"
+    r"\bwhat\s+time\s+is\s+it\b|"
+    r"процессор|нагрузк|памят|оператив|батар|аккумулятор|сеть|"
+    r"внешн\w*\s+(?:ip|айпи)|публичн\w*\s+(?:ip|айпи)|"
+    r"\bцп\b|vpn|впн|желез|оборудован|диск|"
+    r"сколько\s+времени|который\s+час|текущ\w*\s+(?:время|дата)"
+    r")"
+)
+
 
 class ToolReactLoop:
     strategy_name = LoopStrategyName.TOOL_REACT_LOOP
@@ -191,6 +216,20 @@ class ToolReactLoop:
                     completed_observations=completed_tool_observations,
                     budget=request.budget,
                 ):
+                    if _should_defer_final_answer_for_calculator_evidence(
+                        request,
+                        request_plan,
+                        tool_observation_refs=tool_observation_refs,
+                        used_tool_calls=used_tool_calls,
+                    ):
+                        await self._append_deferred_final_answer_step(
+                            request,
+                            step_started=step_started,
+                            step_id=step_id,
+                            step_index=step_index,
+                            sensitivity=request.current_message_sensitivity,
+                        )
+                        continue
                     return await self._final_answer_step.run(
                         request,
                         step_started=step_started,
@@ -232,6 +271,12 @@ class ToolReactLoop:
                             output_contract=_tool_proposal_output_contract(
                                 request_plan,
                                 completed_observations=completed_tool_observations,
+                                calculator_evidence_required=_should_defer_final_answer_for_calculator_evidence(
+                                    request,
+                                    request_plan,
+                                    tool_observation_refs=tool_observation_refs,
+                                    used_tool_calls=used_tool_calls,
+                                ),
                             ),
                         ),
                     ),
@@ -269,18 +314,41 @@ class ToolReactLoop:
                         ),
                         timeout=_remaining_timeout(
                             loop_deadline,
-                            request.budget.max_model_call_seconds,
+                            _tool_proposal_model_call_timeout(
+                                request.budget,
+                                completed_observations=completed_tool_observations,
+                                request=request,
+                                request_plan=request_plan,
+                            ),
                         ),
                     )
                 except TimeoutError as exc:
                     if _wall_time_expired(loop_deadline):
                         raise RuntimeError("max_wall_time_exceeded") from exc
-                    raise
-                except Exception as exc:
-                    if (
-                        completed_tool_observations > 0
-                        and _is_structured_output_validation_error(exc)
+                    if _should_fallback_to_final_chat_after_proposal_timeout(
+                        request,
+                        request_plan,
+                        completed_observations=completed_tool_observations,
                     ):
+                        if _should_defer_final_answer_for_calculator_evidence(
+                            request,
+                            request_plan,
+                            tool_observation_refs=tool_observation_refs,
+                            used_tool_calls=used_tool_calls,
+                        ):
+                            await self._append_deferred_final_answer_step(
+                                request,
+                                step_started=step_started,
+                                step_id=step_id,
+                                step_index=step_index,
+                                sensitivity=context.manifest.max_sensitivity,
+                            )
+                            continue
+                        output_contract = (
+                            _tool_proposal_timeout_after_tool_output_contract()
+                            if completed_tool_observations > 0
+                            else _unevidenced_tool_proposal_fallback_output_contract(request_plan)
+                        )
                         return await self._final_answer_step.run(
                             request,
                             step_started=step_started,
@@ -289,7 +357,45 @@ class ToolReactLoop:
                             context_manifest_refs=context_manifest_refs,
                             tool_observation_refs=tool_observation_refs,
                             loop_deadline=loop_deadline,
-                            output_contract=_malformed_proposal_after_tool_output_contract(),
+                            output_contract=output_contract,
+                        )
+                    if proposal is None:
+                        raise
+                except Exception as exc:
+                    if _should_fallback_to_final_chat_after_structured_error(
+                        exc,
+                        request,
+                        request_plan,
+                        completed_observations=completed_tool_observations,
+                    ):
+                        if _should_defer_final_answer_for_calculator_evidence(
+                            request,
+                            request_plan,
+                            tool_observation_refs=tool_observation_refs,
+                            used_tool_calls=used_tool_calls,
+                        ):
+                            await self._append_deferred_final_answer_step(
+                                request,
+                                step_started=step_started,
+                                step_id=step_id,
+                                step_index=step_index,
+                                sensitivity=context.manifest.max_sensitivity,
+                            )
+                            continue
+                        output_contract = (
+                            _malformed_proposal_after_tool_output_contract()
+                            if completed_tool_observations > 0
+                            else _unevidenced_tool_proposal_fallback_output_contract(request_plan)
+                        )
+                        return await self._final_answer_step.run(
+                            request,
+                            step_started=step_started,
+                            used_model_calls=used_model_calls,
+                            used_tool_calls=used_tool_calls,
+                            context_manifest_refs=context_manifest_refs,
+                            tool_observation_refs=tool_observation_refs,
+                            loop_deadline=loop_deadline,
+                            output_contract=output_contract,
                         )
                     else:
                         raise
@@ -308,10 +414,25 @@ class ToolReactLoop:
                     except ToolProposalParseError as exc:
                         if not _should_fallback_to_final_chat_after_malformed_proposal(
                             model_response.value,
+                            request,
                             request_plan,
                             completed_observations=completed_tool_observations,
                         ):
                             raise
+                        if _should_defer_final_answer_for_calculator_evidence(
+                            request,
+                            request_plan,
+                            tool_observation_refs=tool_observation_refs,
+                            used_tool_calls=used_tool_calls,
+                        ):
+                            await self._append_deferred_final_answer_step(
+                                request,
+                                step_started=step_started,
+                                step_id=step_id,
+                                step_index=step_index,
+                                sensitivity=context.manifest.max_sensitivity,
+                            )
+                            continue
                         try:
                             return await self._final_answer_step.run(
                                 request,
@@ -321,6 +442,9 @@ class ToolReactLoop:
                                 context_manifest_refs=context_manifest_refs,
                                 tool_observation_refs=tool_observation_refs,
                                 loop_deadline=loop_deadline,
+                                output_contract=_unevidenced_tool_proposal_fallback_output_contract(
+                                    request_plan
+                                ),
                             )
                         except RuntimeError as final_exc:
                             if str(final_exc) == "max_model_calls_exceeded":
@@ -333,6 +457,20 @@ class ToolReactLoop:
                         request_plan,
                         completed_observations=completed_tool_observations,
                     )
+                    if _should_defer_final_answer_for_calculator_evidence(
+                        request,
+                        request_plan,
+                        tool_observation_refs=tool_observation_refs,
+                        used_tool_calls=used_tool_calls,
+                    ):
+                        await self._append_deferred_final_answer_step(
+                            request,
+                            step_started=step_started,
+                            step_id=step_id,
+                            step_index=step_index,
+                            sensitivity=context.manifest.max_sensitivity,
+                        )
+                        continue
                     return await self._final_answer_step.run(
                         request,
                         step_started=step_started,
@@ -344,6 +482,20 @@ class ToolReactLoop:
                     )
 
                 if _tool_call_signature(proposal) in completed_tool_call_signatures:
+                    if _should_defer_final_answer_for_calculator_evidence(
+                        request,
+                        request_plan,
+                        tool_observation_refs=tool_observation_refs,
+                        used_tool_calls=used_tool_calls,
+                    ):
+                        await self._append_deferred_final_answer_step(
+                            request,
+                            step_started=step_started,
+                            step_id=step_id,
+                            step_index=step_index,
+                            sensitivity=context.manifest.max_sensitivity,
+                        )
+                        continue
                     return await self._final_answer_step.run(
                         request,
                         step_started=step_started,
@@ -450,6 +602,20 @@ class ToolReactLoop:
                     completed_observations=completed_tool_observations,
                     budget=request.budget,
                 ):
+                    if _should_defer_final_answer_for_calculator_evidence(
+                        request,
+                        request_plan,
+                        tool_observation_refs=tool_observation_refs,
+                        used_tool_calls=used_tool_calls,
+                    ):
+                        await self._append_deferred_final_answer_step(
+                            request,
+                            step_started=step_started,
+                            step_id=step_id,
+                            step_index=step_index,
+                            sensitivity=observation_ref.sensitivity,
+                        )
+                        continue
                     final_step_started = await self._append_final_step_started_after_observation(
                         request,
                         step_index=step_index,
@@ -738,6 +904,31 @@ class ToolReactLoop:
             step=AgentLoopStep.FINAL,
         )
 
+    async def _append_deferred_final_answer_step(
+        self,
+        request: LoopExecutionRequest,
+        *,
+        step_started: EventEnvelope,
+        step_id: str,
+        step_index: int,
+        sensitivity: Sensitivity,
+    ) -> EventEnvelope:
+        return await self._append_event(
+            EventType.AGENT_STEP_COMPLETED,
+            request,
+            payload={
+                "strategy_name": request.strategy_name.value,
+                "step_id": step_id,
+                "step_index": step_index,
+                "action": "final_answer_deferred_missing_calculator_evidence",
+                "required_tool_name": "calculator.evaluate",
+            },
+            causation_id=step_started.event_id,
+            sensitivity=sensitivity,
+            state=AgentLoopState.PROPOSING,
+            step=AgentLoopStep.PROPOSAL,
+        )
+
     async def _fail(
         self,
         request: LoopExecutionRequest,
@@ -831,6 +1022,40 @@ def _remaining_timeout(deadline: float, operation_timeout: float) -> float:
     if remaining <= 0:
         raise RuntimeError("max_wall_time_exceeded")
     return min(float(operation_timeout), remaining)
+
+
+def _tool_proposal_model_call_timeout(
+    budget: LoopBudget,
+    *,
+    completed_observations: int,
+    request: LoopExecutionRequest | None = None,
+    request_plan: ToolRequestPlan | None = None,
+) -> float:
+    if completed_observations > 0:
+        return float(budget.max_model_call_seconds)
+    if (
+        request is not None
+        and request_plan is not None
+        and _request_requires_initial_tool_evidence(request, request_plan)
+    ):
+        return float(budget.max_model_call_seconds)
+    return min(float(budget.max_model_call_seconds), TOOL_PROPOSAL_MAX_MODEL_CALL_SECONDS)
+
+
+def _request_requires_initial_tool_evidence(
+    request: LoopExecutionRequest,
+    request_plan: ToolRequestPlan,
+) -> bool:
+    allowed = request_plan.allowed_tool_names or frozenset()
+    if not allowed:
+        return False
+    if request_plan.final_answer_requires_observation():
+        return True
+    return _request_needs_live_state_math_evidence(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
 
 
 def _raise_if_wall_time_exceeded(deadline: float) -> None:
@@ -936,6 +1161,7 @@ def _tool_proposal_output_contract(
     request_plan: ToolRequestPlan,
     *,
     completed_observations: int,
+    calculator_evidence_required: bool = False,
 ) -> str:
     policy = request_plan.policy
     allowed = request_plan.allowed_tool_names
@@ -952,11 +1178,31 @@ def _tool_proposal_output_contract(
         lines.append("Tool calls are disabled for this request; use final_answer only.")
     elif allowed:
         lines.append("Allowed tools: " + ", ".join(sorted(allowed)) + ".")
+        tool_catalog = _allowed_tool_catalog(
+            request_plan.allowed_tool_summaries,
+            allowed_tool_names=allowed,
+        )
+        if tool_catalog:
+            lines.append("Allowed tool catalog: " + " ".join(tool_catalog))
         if len(allowed) > 1:
             lines.append(
                 "If the user asks for multiple live facts or the evidence is incomplete, "
                 "collect distinct relevant allowed tool observations one at a time before "
                 "final_answer. Do not repeat a completed tool call."
+            )
+        if "calculator.evaluate" in allowed and request_plan.live_state_tool_names:
+            lines.append(
+                "If the user asks to compare live-state values with arithmetic expressions, "
+                "collect the relevant live-state tool observation and a calculator.evaluate "
+                "observation before final_answer."
+            )
+        if calculator_evidence_required:
+            lines.append(
+                "final_answer is not valid yet. The request asks to compare live-state data "
+                "with an arithmetic expression, so both a relevant live-state observation and "
+                "a matching calculator.evaluate observation are required. Return the missing "
+                "relevant tool_call next; if calculator.evaluate is missing, evaluate only the "
+                "arithmetic expression from the user request."
             )
     else:
         lines.append("No tools are allowed for this request; use final_answer only.")
@@ -968,6 +1214,31 @@ def _tool_proposal_output_contract(
             "then datetime.until; do not calculate time intervals in final_answer."
         )
     return " ".join(lines)
+
+
+def _allowed_tool_catalog(
+    summaries: tuple[dict[str, str], ...],
+    *,
+    allowed_tool_names: frozenset[str],
+) -> list[str]:
+    catalog: list[str] = []
+    seen: set[str] = set()
+    for item in summaries:
+        tool_name = item.get("tool_name")
+        description = item.get("description")
+        if (
+            not isinstance(tool_name, str)
+            or tool_name not in allowed_tool_names
+            or tool_name in seen
+            or not isinstance(description, str)
+        ):
+            continue
+        clean_description = " ".join(description.split())[:240]
+        if not clean_description:
+            continue
+        seen.add(tool_name)
+        catalog.append(f"{tool_name}: {clean_description}.")
+    return catalog
 
 
 def _should_use_final_chat_without_proposal(
@@ -987,8 +1258,155 @@ def _should_use_final_chat_without_proposal(
     )
 
 
+def _should_defer_final_answer_for_calculator_evidence(
+    request: LoopExecutionRequest,
+    request_plan: ToolRequestPlan,
+    *,
+    tool_observation_refs: list[ToolObservationRef],
+    used_tool_calls: int,
+) -> bool:
+    allowed = request_plan.allowed_tool_names or frozenset()
+    if "calculator.evaluate" not in allowed:
+        return False
+    if not _request_needs_live_state_math_evidence(
+        request,
+        request_plan,
+        tool_observation_refs=tuple(tool_observation_refs),
+    ):
+        return False
+    has_live_state_observation = any(
+        _is_completed_observation(ref)
+        and (
+            ref.tool_name in request_plan.live_state_tool_names
+            or _is_live_state_tool_name(ref.tool_name)
+        )
+        for ref in tool_observation_refs
+    )
+    has_calculator_observation = any(
+        _is_completed_observation(ref)
+        and ref.tool_name == "calculator.evaluate"
+        and _calculator_observation_matches_request(ref, request)
+        for ref in tool_observation_refs
+    )
+    if has_live_state_observation and has_calculator_observation:
+        return False
+    if used_tool_calls >= request.budget.max_tool_calls:
+        raise RuntimeError("required_tool_evidence_missing")
+    return True
+
+
+def _request_needs_live_state_math_evidence(
+    request: LoopExecutionRequest,
+    request_plan: ToolRequestPlan,
+    *,
+    tool_observation_refs: tuple[ToolObservationRef, ...],
+) -> bool:
+    if "calculator.evaluate" not in (request_plan.allowed_tool_names or frozenset()):
+        return False
+    if not _contains_arithmetic_expression(request.user_input):
+        return False
+    has_live_state_tool = bool(request_plan.live_state_tool_names) or any(
+        _is_live_state_tool_name(tool_name)
+        for tool_name in (request_plan.allowed_tool_names or frozenset())
+    )
+    has_live_state_observation = any(
+        _is_live_state_tool_name(ref.tool_name) for ref in tool_observation_refs
+    )
+    if not (has_live_state_tool or has_live_state_observation):
+        return False
+    return _contains_live_state_intent(request.user_input) or has_live_state_observation
+
+
+def _calculator_observation_matches_request(
+    ref: ToolObservationRef,
+    request: LoopExecutionRequest,
+) -> bool:
+    expected = _expected_calculator_expression(request.user_input)
+    if expected is None:
+        return False
+    actual = ref.arguments.get("expression")
+    if not isinstance(actual, str):
+        return False
+    return _normalize_calculator_expression(actual) == _normalize_calculator_expression(expected)
+
+
+def _expected_calculator_expression(value: str) -> str | None:
+    candidates = _arithmetic_expression_candidates(value)
+    if not candidates:
+        return None
+    return max(candidates, key=len)
+
+
+def _arithmetic_expression_candidates(value: str) -> list[str]:
+    matches = list(_ARITHMETIC_TOKEN_PATTERN.finditer(value))
+    if not matches:
+        return []
+    groups: list[list[re.Match[str]]] = []
+    current = [matches[0]]
+    for match in matches[1:]:
+        gap = value[current[-1].end() : match.start()]
+        if gap.strip():
+            groups.append(current)
+            current = [match]
+        else:
+            current.append(match)
+    groups.append(current)
+
+    candidates: list[str] = []
+    for group in groups:
+        text = value[group[0].start() : group[-1].end()].strip()
+        if _is_arithmetic_expression_candidate(text):
+            candidates.append(text)
+    return candidates
+
+
+def _is_arithmetic_expression_candidate(value: str) -> bool:
+    if not re.search(r"(?:\*\*|[+\-*/^×÷])", value):
+        return False
+    balance = 0
+    for char in value:
+        if char == "(":
+            balance += 1
+        elif char == ")":
+            balance -= 1
+        if balance < 0:
+            return False
+    return balance == 0
+
+
+def _normalize_calculator_expression(value: str) -> str:
+    return (
+        value.replace("×", "*")
+        .replace("÷", "/")
+        .replace("π", "pi")
+        .replace(",", ".")
+        .replace(" ", "")
+        .lower()
+    )
+
+
+def _contains_arithmetic_expression(value: str) -> bool:
+    return _ARITHMETIC_EXPRESSION_PATTERN.search(value) is not None
+
+
+def _contains_live_state_intent(value: str) -> bool:
+    return _LIVE_STATE_INTENT_PATTERN.search(value) is not None
+
+
+def _is_completed_observation(ref: ToolObservationRef) -> bool:
+    return ref.status in {ToolObservationStatus.COMPLETED, ToolObservationStatus.COMPLETED.value}
+
+
+def _is_live_state_tool_name(tool_name: str) -> bool:
+    return (
+        tool_name in {"datetime.now", "datetime.until", "daemon.status"}
+        or tool_name.startswith("tool.system.read.")
+    )
+
+
 def _should_fallback_to_final_chat_after_malformed_proposal(
     value: Any,
+    request: LoopExecutionRequest,
     request_plan: ToolRequestPlan,
     *,
     completed_observations: int,
@@ -998,9 +1416,55 @@ def _should_fallback_to_final_chat_after_malformed_proposal(
         return False
     if policy == "required" and completed_observations <= 0:
         return False
+    if (
+        completed_observations <= 0
+        and _request_requires_initial_tool_evidence(request, request_plan)
+    ):
+        return False
     if isinstance(value, dict) and value.get("action") == "tool_call":
         return False
     return True
+
+
+def _should_fallback_to_final_chat_after_structured_error(
+    exc: Exception,
+    request: LoopExecutionRequest,
+    request_plan: ToolRequestPlan,
+    *,
+    completed_observations: int,
+) -> bool:
+    if not _is_structured_output_validation_error(exc):
+        return False
+    if (
+        completed_observations <= 0
+        and _request_requires_initial_tool_evidence(request, request_plan)
+    ):
+        return False
+    policy = request_plan.policy
+    if policy == "available":
+        return True
+    if policy == "required" and completed_observations > 0:
+        return True
+    return False
+
+
+def _should_fallback_to_final_chat_after_proposal_timeout(
+    request: LoopExecutionRequest,
+    request_plan: ToolRequestPlan,
+    *,
+    completed_observations: int,
+) -> bool:
+    if (
+        completed_observations <= 0
+        and _request_requires_initial_tool_evidence(request, request_plan)
+    ):
+        return False
+    policy = request_plan.policy
+    if policy == "available":
+        return True
+    if policy == "required" and completed_observations > 0:
+        return True
+    return False
 
 
 def _ensure_final_answer_allowed(
@@ -1052,6 +1516,28 @@ def _malformed_proposal_after_tool_output_contract() -> str:
         "The previous structured tool-proposal response was invalid after a completed "
         "tool observation. Do not request more tools. Use the completed tool "
         "observation as evidence and answer the user directly."
+    )
+
+
+def _tool_proposal_timeout_after_tool_output_contract() -> str:
+    return (
+        "The structured tool-proposal step timed out after a completed tool observation. "
+        "Do not request more tools. Use the completed tool observation as evidence "
+        "and answer the user directly."
+    )
+
+
+def _unevidenced_tool_proposal_fallback_output_contract(
+    request_plan: ToolRequestPlan,
+) -> str | None:
+    if not request_plan.live_state_tool_names:
+        return None
+    return (
+        "No completed tool observation is available. If the user asks for current or "
+        "live local state, such as system, network, process, hardware, date/time, "
+        "or environment status, say that the current value is unavailable rather "
+        "than inventing it. If the user is asking a general knowledge or reasoning "
+        "question, answer normally without mentioning internal tool routing."
     )
 
 

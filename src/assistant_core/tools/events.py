@@ -176,38 +176,3 @@ def output_truncated_event_type(spec: ToolSpec) -> EventType | None:
     if is_system_diagnostics_spec(spec):
         return EventType.TOOL_SYSTEM_DIAGNOSTICS_OUTPUT_TRUNCATED
     return None
-
-
-def looks_sensitive(value: str) -> bool:
-    lowered = value.lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "api_key",
-            "apikey",
-            "authorization",
-            "credential",
-            ".env",
-            ".ssh",
-            "ghp_",
-            "github_pat_",
-            "akia",
-            "id_ed25519",
-            "id_rsa",
-            "known_hosts",
-            "password",
-            "pat_",
-            ".crt",
-            ".key",
-            ".pem",
-            "-----begin",
-            "openssh",
-            "private key",
-            "private_key",
-            "prompt",
-            "secret",
-            "sk-",
-            "sk_",
-            "token",
-        )
-    )

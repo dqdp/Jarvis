@@ -330,7 +330,9 @@ def _final_answer_output_contract(
         "Answer the user question using only values that are present in the "
         "observations or directly derivable from them. Do not infer unobserved "
         "totals, percentages, or units from partial diagnostics output. If a "
-        "requested value is missing, say it is unavailable rather than inventing it."
+        "requested value is missing, say it is unavailable rather than inventing it. "
+        "Do not mention internal tool names, raw diagnostic identifiers, or tool "
+        "implementation details in the user-visible answer."
     )
     if any(
         ref.tool_name == "calculator.evaluate" and ref.status == ToolObservationStatus.COMPLETED

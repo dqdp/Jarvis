@@ -6,6 +6,7 @@ from assistant_core.domain.conversations import UpdateAssistantRequestStatusComm
 from assistant_core.domain.loops import LoopExecutionRequest, ToolObservationRef, ToolProposal, ToolProposalParseError
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.tools import ToolCallRequest, ToolObservationStatus
+from assistant_core.privacy.redaction import redact_content
 
 
 class ToolProposalExecutor:
@@ -52,9 +53,15 @@ class ToolProposalExecutor:
             loop_deadline=loop_deadline,
         )
         if observation.status != ToolObservationStatus.APPROVAL_REQUIRED:
-            return ToolObservationRef.from_observation(observation)
+            return ToolObservationRef.from_observation(
+                observation,
+                arguments=_safe_observation_arguments(proposal),
+            )
 
-        observation_ref = ToolObservationRef.from_observation(observation)
+        observation_ref = ToolObservationRef.from_observation(
+            observation,
+            arguments=_safe_observation_arguments(proposal),
+        )
         approval_id = observation.metadata.get("approval_id")
         if approval_id is None or self._approval_waiter is None:
             await self._record_waiting_approval(
@@ -107,7 +114,10 @@ class ToolProposalExecutor:
             approval_id=approval_id,
             loop_deadline=loop_deadline,
         )
-        return ToolObservationRef.from_observation(observation)
+        return ToolObservationRef.from_observation(
+            observation,
+            arguments=_safe_observation_arguments(proposal),
+        )
 
     async def _record_waiting_approval(
         self,
@@ -189,6 +199,18 @@ class ToolProposalExecutor:
 def _ensure_tool_budget(*, used_tool_calls: int, request: LoopExecutionRequest) -> None:
     if used_tool_calls >= request.budget.max_tool_calls:
         raise RuntimeError("max_tool_calls_exceeded")
+
+
+def _safe_observation_arguments(proposal: ToolProposal) -> dict[str, object]:
+    if proposal.tool_name != "calculator.evaluate":
+        return {}
+    expression = proposal.arguments.get("expression")
+    if not isinstance(expression, str) or not expression.strip():
+        return {}
+    expression = expression.strip()[:500]
+    if redact_content(expression, content_type="text/plain") != expression:
+        return {}
+    return {"expression": expression}
 
 
 def _remaining_timeout(deadline: float, operation_timeout: float) -> float:

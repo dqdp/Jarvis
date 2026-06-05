@@ -33,6 +33,7 @@ _SAFE_RUNTIME_ERROR_CODES = {
     "max_wall_time_exceeded",
     "request_plan_invalid_tool_policy",
     "request_plan_missing_tool_policy",
+    "required_tool_evidence_missing",
     "required_tool_call_missing",
     "tool_not_allowed_by_request_plan",
     "tool_policy_disabled",

@@ -187,6 +187,8 @@ class ToolProposal:
 class ToolRequestPlan:
     policy: str | None
     allowed_tool_names: frozenset[str] | None
+    allowed_tool_summaries: tuple[dict[str, str], ...] = ()
+    live_state_tool_names: frozenset[str] = frozenset()
 
     @classmethod
     def from_metadata(cls, metadata: dict[str, Any]) -> ToolRequestPlan:
@@ -199,7 +201,18 @@ class ToolRequestPlan:
             allowed = frozenset()
         else:
             allowed = None
-        return cls(policy=policy, allowed_tool_names=allowed)
+        return cls(
+            policy=policy,
+            allowed_tool_names=allowed,
+            allowed_tool_summaries=_tool_summaries_from_metadata(
+                metadata,
+                allowed_tool_names=allowed,
+            ),
+            live_state_tool_names=_live_state_tool_names_from_metadata(
+                metadata,
+                allowed_tool_names=allowed,
+            ),
+        )
 
     def final_answer_allowed_after_observation(self, completed_observations: int) -> bool:
         if self.policy == "available":
@@ -210,6 +223,51 @@ class ToolRequestPlan:
 
     def final_answer_requires_observation(self) -> bool:
         return self.policy == "required"
+
+
+def _tool_summaries_from_metadata(
+    metadata: dict[str, Any],
+    *,
+    allowed_tool_names: frozenset[str] | None,
+) -> tuple[dict[str, str], ...]:
+    raw = metadata.get("agent_allowed_tool_summaries")
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    allowed = allowed_tool_names or frozenset()
+    summaries: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        tool_name = item.get("tool_name")
+        description = item.get("description")
+        if (
+            not isinstance(tool_name, str)
+            or tool_name not in allowed
+            or tool_name in seen
+            or not isinstance(description, str)
+        ):
+            continue
+        clean_description = " ".join(description.split())[:240]
+        if not clean_description:
+            continue
+        seen.add(tool_name)
+        summaries.append({"tool_name": tool_name, "description": clean_description})
+    return tuple(summaries)
+
+
+def _live_state_tool_names_from_metadata(
+    metadata: dict[str, Any],
+    *,
+    allowed_tool_names: frozenset[str] | None,
+) -> frozenset[str]:
+    raw = metadata.get("agent_live_state_tool_names")
+    if not isinstance(raw, (list, tuple)):
+        return frozenset()
+    allowed = allowed_tool_names or frozenset()
+    return frozenset(
+        item for item in raw if isinstance(item, str) and item in allowed
+    )
 
 
 @dataclass(frozen=True)
@@ -227,9 +285,15 @@ class ToolObservationRef:
     structured_schema_version: int | None = None
     parse_status: Any = None
     parse_warnings: tuple[str, ...] = ()
+    arguments: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_observation(cls, observation: ToolObservation) -> ToolObservationRef:
+    def from_observation(
+        cls,
+        observation: ToolObservation,
+        *,
+        arguments: dict[str, Any] | None = None,
+    ) -> ToolObservationRef:
         return cls(
             tool_call_id=observation.tool_call_id,
             tool_name=observation.tool_name,
@@ -246,6 +310,7 @@ class ToolObservationRef:
             structured_schema_version=observation.structured_schema_version,
             parse_status=observation.parse_status,
             parse_warnings=observation.parse_warnings,
+            arguments=arguments or {},
         )
 
     def __post_init__(self) -> None:
@@ -262,6 +327,7 @@ class ToolObservationRef:
         elif not isinstance(self.parse_status, ToolParseStatus):
             object.__setattr__(self, "parse_status", ToolParseStatus(self.parse_status))
         object.__setattr__(self, "parse_warnings", tuple(self.parse_warnings))
+        object.__setattr__(self, "arguments", dict(self.arguments))
         object.__setattr__(
             self,
             "error_code",
