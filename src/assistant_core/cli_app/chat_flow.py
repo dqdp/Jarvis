@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Any, TextIO
 
 from assistant_core.cli_app.client import CliUserError, JarvisClient
@@ -41,6 +42,8 @@ class ChatShellState:
     next_title: str | None
     last_request_id: str | None = None
     loop_strategy: str | None = None
+    interaction_count: int = 0
+    current_interaction_started_at: float | None = None
 
 
 async def run_interactive_chat(
@@ -71,6 +74,12 @@ async def run_interactive_chat(
     )
 
     def status_provider() -> str:
+        elapsed_seconds: int | None = None
+        if (
+            state.current_interaction_started_at is not None
+            and activity_state.phase != "idle"
+        ):
+            elapsed_seconds = int(time.monotonic() - state.current_interaction_started_at)
         return render_status_line(
             mode=display_loop_mode(state.loop_strategy),
             readiness=readiness_summary,
@@ -79,6 +88,8 @@ async def run_interactive_chat(
             model=model_summary,
             context_remaining=context_remaining,
             cwd=request_working_directory,
+            interaction_count=state.interaction_count,
+            elapsed_seconds=elapsed_seconds,
         )
 
     status_bar = TerminalStatusBar(
@@ -86,6 +97,7 @@ async def run_interactive_chat(
         status_provider=status_provider,
         enabled=not plain and bool(getattr(stdout, "isatty", lambda: False)()),
         color_scheme=color_scheme,
+        animation_style="shimmer",
     )
     status_animator = TerminalStatusAnimator(
         status_bar=status_bar,
@@ -96,6 +108,8 @@ async def run_interactive_chat(
         nonlocal activity_state
         if activity_state.phase == "submitting":
             return
+        state.interaction_count += 1
+        state.current_interaction_started_at = time.monotonic()
         activity_state = activity_state.mark_submitting()
         status_bar.start()
         status_animator.start()
@@ -311,6 +325,7 @@ async def run_interactive_chat(
                 await status_animator.stop()
                 status_bar.stop()
                 activity_state = ShellActivityState.idle()
+                state.current_interaction_started_at = None
             state.last_request_id = None
             if exit_code != 0:
                 continue

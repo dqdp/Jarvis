@@ -46,6 +46,7 @@ from assistant_core.runtime.loops.observation_recovery import (
     ToolObservationRecoveryError,
     ToolObservationRecoveryPolicy,
 )
+from assistant_core.runtime.loops.tool_catalog import allowed_tool_catalog
 from assistant_core.runtime.loops.tool_approval import ApprovalWaiter
 from assistant_core.runtime.loops.tool_proposal_executor import ToolProposalExecutor
 from assistant_core.runtime.request_streaming import public_stream_data
@@ -1178,7 +1179,7 @@ def _tool_proposal_output_contract(
         lines.append("Tool calls are disabled for this request; use final_answer only.")
     elif allowed:
         lines.append("Allowed tools: " + ", ".join(sorted(allowed)) + ".")
-        tool_catalog = _allowed_tool_catalog(
+        tool_catalog = allowed_tool_catalog(
             request_plan.allowed_tool_summaries,
             allowed_tool_names=allowed,
         )
@@ -1214,32 +1215,6 @@ def _tool_proposal_output_contract(
             "then datetime.until; do not calculate time intervals in final_answer."
         )
     return " ".join(lines)
-
-
-def _allowed_tool_catalog(
-    summaries: tuple[dict[str, str], ...],
-    *,
-    allowed_tool_names: frozenset[str],
-) -> list[str]:
-    catalog: list[str] = []
-    seen: set[str] = set()
-    for item in summaries:
-        tool_name = item.get("tool_name")
-        description = item.get("description")
-        if (
-            not isinstance(tool_name, str)
-            or tool_name not in allowed_tool_names
-            or tool_name in seen
-            or not isinstance(description, str)
-        ):
-            continue
-        clean_description = " ".join(description.split())[:240]
-        if not clean_description:
-            continue
-        seen.add(tool_name)
-        catalog.append(f"{tool_name}: {clean_description}.")
-    return catalog
-
 
 def _should_use_final_chat_without_proposal(
     request_plan: ToolRequestPlan,

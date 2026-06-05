@@ -76,6 +76,8 @@ class TerminalStatusBar:
         enabled: bool | None = None,
         color_scheme: TerminalColorScheme | None = None,
         spinner_frames: Sequence[str] = _SPINNER_FRAMES,
+        animation_style: str = "spinner",
+        shimmer_width: int = 12,
     ) -> None:
         self._stdout = stdout
         self._status_provider = status_provider
@@ -86,6 +88,9 @@ class TerminalStatusBar:
         )
         self._color_scheme = color_scheme or TerminalColorScheme(enabled=False)
         self._spinner_frames = tuple(spinner_frames) or _SPINNER_FRAMES
+        self._animation_style = animation_style
+        self._shimmer_width = max(1, shimmer_width)
+        self._shimmer_index = 0
         self._spinner_index = 0
         self._spinner_frame: str | None = None
         self._active = False
@@ -95,13 +100,26 @@ class TerminalStatusBar:
     def enabled(self) -> bool:
         return self._enabled
 
+    def _uses_spinner_animation(self) -> bool:
+        return self._animation_style == "spinner" or (
+            self._animation_style == "shimmer" and not self._color_scheme.enabled
+        )
+
+    def _uses_shimmer_animation(self) -> bool:
+        return self._animation_style == "shimmer" and self._color_scheme.enabled
+
     def start(self) -> None:
         if not self._enabled or self._active:
             return
         size = _terminal_size()
         self._rows = max(2, size.lines)
         self._spinner_index = 0
-        self._spinner_frame = self._spinner_frames[self._spinner_index]
+        self._shimmer_index = 0
+        self._spinner_frame = (
+            self._spinner_frames[self._spinner_index]
+            if self._uses_spinner_animation()
+            else None
+        )
         self._stdout.write(f"\x1b7\x1b[1;{self._rows - 1}r\x1b8")
         self._active = True
         self.render()
@@ -109,8 +127,11 @@ class TerminalStatusBar:
     def tick(self) -> None:
         if not self._enabled:
             return
-        self._spinner_index = (self._spinner_index + 1) % len(self._spinner_frames)
-        self._spinner_frame = self._spinner_frames[self._spinner_index]
+        if self._uses_spinner_animation():
+            self._spinner_index = (self._spinner_index + 1) % len(self._spinner_frames)
+            self._spinner_frame = self._spinner_frames[self._spinner_index]
+        elif self._uses_shimmer_animation():
+            self._shimmer_index += 1
         self.render()
 
     def render(self) -> None:
@@ -123,6 +144,12 @@ class TerminalStatusBar:
         if self._spinner_frame is not None:
             line = f"{self._spinner_frame} {line}"
         line = _fit_width(line, columns)
+        if self._uses_shimmer_animation():
+            line = _shimmer_line(
+                line,
+                index=self._shimmer_index,
+                width=self._shimmer_width,
+            )
         self._stdout.write(
             f"\x1b7\x1b[{rows};1H\x1b[2K{self._color_scheme.status_bar(line)}\x1b8"
         )
@@ -186,6 +213,26 @@ def _fit_width(value: str, width: int) -> str:
     if width <= 3:
         return "." * width
     return value[: width - 3] + "..."
+
+
+def _shimmer_line(value: str, *, index: int, width: int) -> str:
+    if not value:
+        return value
+    start = _shimmer_start(value, index=index)
+    end = min(len(value), start + width)
+    return (
+        f"\x1b[2m{value[:start]}\x1b[22m"
+        f"\x1b[1m{value[start:end]}\x1b[22m"
+        f"\x1b[2m{value[end:]}\x1b[22m"
+    )
+
+
+def _shimmer_start(value: str, *, index: int) -> int:
+    start = index % len(value)
+    first_separator = value.find(" ")
+    if first_separator > 0 and start <= first_separator:
+        return min(len(value), first_separator + 1)
+    return start
 
 
 __all__ = [

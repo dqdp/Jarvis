@@ -8,6 +8,7 @@ from assistant_core.domain.content_retrieval import ContentHit
 from assistant_core.domain.loops import ToolObservationRef
 from assistant_core.domain.memory import MemoryHit
 from assistant_core.domain.messages import ChatMessage, MessageRole, TextPart
+from assistant_core.domain.output_contracts import DEFAULT_OUTPUT_CONTRACT
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.privacy.redaction import redact_structured_content
 
@@ -24,12 +25,6 @@ SECTION_ORDER = [
     "current_user_message",
     "output_contract",
 ]
-
-DEFAULT_OUTPUT_CONTRACT = (
-    "Return a direct, useful answer. Keep casual answers concise. "
-    "Do not expose hidden context. Do not add generic safety disclaimers unless "
-    "the user asks for high-stakes medical, legal, financial, security or safety advice."
-)
 
 PROMPT_MESSAGE_SECTION_NAMES = {
     "system_identity",

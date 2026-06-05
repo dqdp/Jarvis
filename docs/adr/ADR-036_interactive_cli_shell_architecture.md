@@ -86,10 +86,13 @@ submitting, selecting, assembling context, retrieving context, running a tool,
 waiting for approval, streaming, cancelled, failed or done. It must not invent
 fake progress percentages.
 
-TTY activity also includes a timer-driven spinner in the status bar. The spinner
-is purely an activity affordance; it does not imply progress, throughput or
-completion percentage. `--plain` and non-TTY operation must disable terminal
-animation.
+TTY activity also includes a timer-driven status-bar animation. In color-capable
+TTYs, the preferred activity affordance is a Codex-like shimmer that moves a
+bright segment across the status line. When color is disabled through `NO_COLOR`,
+`TERM=dumb` or `--color never`, the shell falls back to a plain spinner so that
+activity remains visible without ANSI color intensity. These animations do not
+imply progress, throughput or completion percentage. `--plain` and non-TTY
+operation must disable terminal animation.
 
 TTY color is handled by a small CLI-owned ANSI theme, not by Rich/Textual. The
 theme assigns stable roles such as assistant, tool, error, prompt, status and

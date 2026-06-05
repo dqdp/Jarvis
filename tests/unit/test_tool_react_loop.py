@@ -411,6 +411,67 @@ def test_tool_react_loop_tools_disabled_uses_final_answer_context_path() -> None
     assert purposes == ["final_answer"]
 
 
+def test_tool_react_loop_final_answer_context_includes_available_tool_catalog() -> None:
+    class RecordingContextAssembler(FakeContextAssembler):
+        def __init__(self) -> None:
+            self.final_contract: str | None = None
+
+        async def assemble(self, request):
+            if request.purpose == "final_answer":
+                self.final_contract = request.output_contract
+            return await super().assemble(request)
+
+    async def scenario():
+        assembler = RecordingContextAssembler()
+        metadata = _tool_plan_metadata("datetime.now", "calculator.evaluate")
+        metadata["agent_allowed_tool_summaries"] = [
+            {
+                "tool_name": "datetime.now",
+                "description": "Read the current local date and time.",
+            },
+            {
+                "tool_name": "calculator.evaluate",
+                "description": "Evaluate deterministic mathematical expressions.",
+            },
+        ]
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=assembler,
+            model_router=FakeStructuredAndChatRouter(
+                [{"action": "final_answer"}],
+                chat_response="available tools listed",
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(metadata=metadata),
+                user_input="Расскажи про свои инструменты, которые тебе доступны.",
+            ),
+        )
+        return result, assembler.final_contract
+
+    result, final_contract = asyncio.run(scenario())
+
+    assert result.response_text == "available tools listed"
+    assert final_contract is not None
+    assert "Return a direct, useful answer" in final_contract
+    assert "Do not expose hidden context" in final_contract
+    assert "You have access to the following allowed local tools" in final_contract
+    assert "datetime.now: Read the current local date and time." in final_contract
+    assert (
+        "calculator.evaluate: Evaluate deterministic mathematical expressions."
+        in final_contract
+    )
+    assert "Do not claim that no tools are available" in final_contract
+    assert (
+        "When the user asks what tools or capabilities are available, it is okay "
+        "to mention tool identifiers from the allowed tool catalog."
+        in final_contract
+    )
+
+
 def test_tool_react_loop_step_failures_use_loop_failure_policy() -> None:
     class RecordingConversationStore(FakeConversationStore):
         def __init__(self) -> None:
@@ -1665,7 +1726,9 @@ def test_tool_react_loop_uses_chat_model_for_final_answer_after_proposal() -> No
     assert router.chat_calls == 1
     assert assembler.seen_contracts[0] is not None
     assert "Return only a JSON object" in assembler.seen_contracts[0]
-    assert assembler.seen_contracts[1] is None
+    assert assembler.seen_contracts[1] is not None
+    assert "You have access to the following allowed local tools" in assembler.seen_contracts[1]
+    assert "datetime.now." in assembler.seen_contracts[1]
 
 
 def test_tool_react_loop_falls_back_to_final_chat_when_initial_structured_proposal_is_invalid() -> None:
@@ -2985,13 +3048,19 @@ def test_tool_react_loop_initial_proposal_timeout_for_live_state_status_uses_una
     assert gateway.calls == []
     assert router.structured_calls == 1
     assert router.chat_calls == 1
-    assert final_contracts == [
+    assert len(final_contracts) == 1
+    assert (
         "No completed tool observation is available. If the user asks for current or "
         "live local state, such as system, network, process, hardware, date/time, "
         "or environment status, say that the current value is unavailable rather "
         "than inventing it. If the user is asking a general knowledge or reasoning "
         "question, answer normally without mentioning internal tool routing."
-    ]
+        in final_contracts[0]
+    )
+    assert "Return a direct, useful answer" in final_contracts[0]
+    assert "Do not expose hidden context" in final_contracts[0]
+    assert "You have access to the following allowed local tools" in final_contracts[0]
+    assert "tool.system.read.resources." in final_contracts[0]
 
 
 def test_tool_react_loop_allows_chat_fallback_for_ordinary_time_complexity_question() -> None:

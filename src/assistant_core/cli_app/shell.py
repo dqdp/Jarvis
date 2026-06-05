@@ -207,6 +207,20 @@ def _compact_model_label(model: str) -> str:
             return tag
     return model
 
+
+def format_elapsed_seconds(elapsed_seconds: int | float | None) -> str | None:
+    if elapsed_seconds is None:
+        return None
+    seconds = max(0, int(elapsed_seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, remaining_seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{remaining_seconds:02d}s"
+    hours, remaining_minutes = divmod(minutes, 60)
+    return f"{hours}h{remaining_minutes:02d}m{remaining_seconds:02d}s"
+
+
 def render_status_line(
     *,
     mode: str,
@@ -216,21 +230,27 @@ def render_status_line(
     model: str | None,
     context_remaining: str | None = None,
     cwd: str | None,
+    interaction_count: int = 0,
+    elapsed_seconds: int | float | None = None,
     width: int = 120,
 ) -> str:
-    parts = [
-        f"mode={_clip(mode, 16)}",
-        f"status={_clip(readiness or 'unknown', 18)}",
-        f"phase={_clip(phase or 'idle', 24)}",
-    ]
+    current_phase = phase or "idle"
+    parts = [_clip(current_phase, 24)]
+    if current_phase != "idle" and interaction_count > 0:
+        parts.append(f"turn {interaction_count}")
+    elapsed = format_elapsed_seconds(elapsed_seconds)
+    if current_phase != "idle" and elapsed is not None:
+        parts.append(elapsed)
     if model:
-        parts.append(f"model={_clip(_compact_model_label(model), 32)}")
+        parts.append(_clip(_compact_model_label(model), 32))
     if context_remaining:
-        parts.append(f"ctx={_clip(context_remaining, 8)}")
+        parts.append(f"{_clip(context_remaining, 8)} context left")
+    parts.append(_clip(readiness or "unknown", 18))
+    parts.append(_clip(mode, 16))
     if cwd:
-        parts.append(f"cwd={_clip(_cwd_scope(cwd), 28)}")
+        parts.append(_clip(_cwd_scope(cwd), 28))
     if conversation_id:
-        parts.append(f"conv={_clip(conversation_id, 28)}")
+        parts.append(_clip(conversation_id, 28))
     line = " | ".join(parts)
     if len(line) > width:
         line = "|".join(parts)
@@ -448,6 +468,7 @@ __all__ = [
     "SlashCommandRegistry",
     "display_loop_mode",
     "context_remaining_summary",
+    "format_elapsed_seconds",
     "model_context_limit",
     "model_status_summary",
     "render_status_line",

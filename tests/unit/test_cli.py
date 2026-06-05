@@ -626,7 +626,8 @@ def test_prompt_toolkit_reader_uses_async_prompt_inside_interactive_cli(monkeypa
 
         async def prompt_async(self, prompt: str) -> str:
             toolbar = created_kwargs["bottom_toolbar"]()
-            assert "model=qwen3.5:9b" in toolbar
+            assert "qwen3.5:9b" in toolbar
+            assert "model=" not in toolbar
             assert "ctx=" not in toolbar
             prompts.append(prompt)
             return "/exit"
@@ -737,7 +738,7 @@ def test_terminal_color_auto_respects_tty_no_color_and_plain() -> None:
     ) is False
 
 
-def test_status_line_renders_mode_readiness_model_context_and_cwd_scope() -> None:
+def test_status_line_renders_codex_like_turn_timer_model_context_and_cwd_scope() -> None:
     line = cli.render_status_line(
         mode="auto",
         readiness="ready",
@@ -746,15 +747,19 @@ def test_status_line_renders_mode_readiness_model_context_and_cwd_scope() -> Non
         model="qwen3.5:9b",
         context_remaining="87%",
         cwd="/Users/alex/Jarvis",
+        interaction_count=3,
+        elapsed_seconds=65,
         width=120,
     )
 
-    assert "mode=auto" in line
+    assert "auto" in line
     assert "ready" in line
     assert "conversation-1234567890" in line
     assert "tool running" in line
-    assert "model=qwen3.5:9b" in line
-    assert "ctx=87%" in line
+    assert "turn 3" in line
+    assert "1m05s" in line
+    assert "qwen3.5:9b" in line
+    assert "87% context left" in line
     assert "Jarvis" in line
     assert len(line) <= 120
 
@@ -774,12 +779,33 @@ def test_status_line_redacts_secret_like_paths_and_truncates_long_values() -> No
         phase="streaming",
         model="local_main",
         cwd="/Users/alex/Jarvis/sk-live-secret-token/project",
+        interaction_count=12,
+        elapsed_seconds=5,
         width=88,
     )
 
     assert "sk-live-secret-token" not in line
     assert "project" in line
+    assert "turn 12" in line
     assert len(line) <= 88
+
+
+def test_status_line_omits_turn_and_timer_when_idle() -> None:
+    line = cli.render_status_line(
+        mode="auto",
+        readiness="ready",
+        conversation_id=None,
+        phase="idle",
+        model="qwen3.5:9b",
+        context_remaining=None,
+        cwd="/Users/alex/Jarvis",
+        interaction_count=0,
+        elapsed_seconds=None,
+        width=120,
+    )
+
+    assert "turn" not in line
+    assert "0s" not in line
 
 
 def test_shell_activity_transitions_follow_public_stream_events() -> None:
@@ -868,6 +894,49 @@ def test_terminal_status_bar_animates_work_indicator_frames() -> None:
     assert "- mode=auto" in output
     assert "+ mode=auto" in output
     assert "%" not in output
+
+
+def test_terminal_status_bar_renders_codex_like_shimmer_when_colored() -> None:
+    stdout = TtyStringIO()
+    bar = cli.TerminalStatusBar(
+        stdout=stdout,
+        status_provider=lambda: "streaming · 00:01 · turn 1",
+        enabled=True,
+        color_scheme=cli.TerminalColorScheme(enabled=True),
+        animation_style="shimmer",
+        shimmer_width=4,
+    )
+
+    bar.start()
+    bar.tick()
+    bar.stop()
+
+    output = stdout.getvalue()
+    assert "streaming" in output
+    assert "\x1b[1m" in output
+    assert "\x1b[2m" in output
+    assert "% context" not in output
+
+
+def test_terminal_status_bar_shimmer_falls_back_to_spinner_without_color() -> None:
+    stdout = TtyStringIO()
+    bar = cli.TerminalStatusBar(
+        stdout=stdout,
+        status_provider=lambda: "streaming · 00:01 · turn 1",
+        enabled=True,
+        color_scheme=cli.TerminalColorScheme(enabled=False),
+        animation_style="shimmer",
+        spinner_frames=("-", "+"),
+    )
+
+    bar.start()
+    bar.tick()
+    bar.stop()
+
+    output = stdout.getvalue()
+    assert "- streaming" in output
+    assert "+ streaming" in output
+    assert "\x1b[1m" not in output
 
 
 def test_terminal_status_bar_truncates_to_terminal_width(monkeypatch) -> None:
@@ -1471,7 +1540,7 @@ def test_normal_interactive_chat_suppresses_activity_transcript_lines_on_tty_std
     assert exit_code == 0
     assert "assistant> OK" in output
     assert "activity=" not in output
-    assert "phase=streaming" in output
+    assert "streaming" in output
 
 
 def test_developer_interactive_chat_keeps_activity_transcript_lines() -> None:
@@ -1510,7 +1579,7 @@ def test_tty_interactive_chat_animates_status_bar_while_waiting_for_stream() -> 
     assert exit_code == 0
     assert "assistant> late" in output
     assert "activity=" not in output
-    assert "- mode=auto" in output
+    assert "turn 1" in output
 
 
 def test_tty_interactive_chat_starts_status_bar_before_slow_submit_returns() -> None:
@@ -1535,8 +1604,33 @@ def test_tty_interactive_chat_starts_status_bar_before_slow_submit_returns() -> 
 
     assert exit_code == 0
     assert snapshots
-    assert "phase=submitting" in snapshots[0]
-    assert "- mode=auto" in snapshots[0]
+    assert "submitting" in snapshots[0]
+    assert "turn 1" in snapshots[0]
+
+
+def test_tty_interactive_chat_status_bar_shows_turn_counter_and_elapsed_timer() -> None:
+    stdout = TtyStringIO()
+    snapshots: list[str] = []
+
+    class SlowSubmitCliClient(FakeCliClient):
+        async def submit_message(self, **kwargs):
+            await asyncio.sleep(0.01)
+            snapshots.append(stdout.getvalue())
+            return await super().submit_message(**kwargs)
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat"],
+            client_factory=SlowSubmitCliClient,
+            stdout=stdout,
+            stdin=StringIO("hello\n/exit\n"),
+        ),
+    )
+
+    assert exit_code == 0
+    assert snapshots
+    assert "turn 1" in snapshots[0]
+    assert "0s" in snapshots[0]
 
 
 def test_tty_interactive_chat_resets_toolbar_phase_after_submit_failure(monkeypatch) -> None:
@@ -1609,9 +1703,9 @@ def test_tty_interactive_chat_resets_toolbar_phase_after_submit_failure(monkeypa
 
     assert exit_code == 0
     assert len(toolbar_snapshots) == 2
-    assert "phase=idle" in toolbar_snapshots[0]
-    assert "phase=idle" in toolbar_snapshots[1]
-    assert "phase=submitting" not in toolbar_snapshots[1]
+    assert "idle" in toolbar_snapshots[0]
+    assert "idle" in toolbar_snapshots[1]
+    assert "submitting" not in toolbar_snapshots[1]
 
 
 def test_tty_cancel_command_marks_activity_cancelled_before_return() -> None:
