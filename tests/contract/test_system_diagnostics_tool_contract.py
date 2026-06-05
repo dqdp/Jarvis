@@ -91,12 +91,23 @@ class FakeSensorProvider:
         return self.snapshot
 
 
+class FakeResourceProvider:
+    def __init__(self, snapshot: dict[str, Any] | None) -> None:
+        self.snapshot = snapshot
+        self.calls = 0
+
+    async def snapshot_cpu_and_memory(self) -> dict[str, Any] | None:
+        self.calls += 1
+        return self.snapshot
+
+
 def _tool(
     tmp_path: Path,
     executor: RecordingDiagnosticsExecutor,
     *,
     family: SystemDiagnosticsFamily = SystemDiagnosticsFamily.PROCESS,
     sensor_provider: FakeSensorProvider | None = None,
+    resource_provider: FakeResourceProvider | None = None,
     platform: str = "linux",
 ) -> SystemDiagnosticsTool:
     return SystemDiagnosticsTool(
@@ -104,6 +115,7 @@ def _tool(
         allowed_roots=[tmp_path],
         executor=executor,
         sensor_provider=sensor_provider,
+        resource_provider=resource_provider,
         max_stdout_bytes=200,
         max_stderr_bytes=200,
         max_lines=3,
@@ -118,6 +130,7 @@ def _gateway(
     *,
     family: SystemDiagnosticsFamily = SystemDiagnosticsFamily.PROCESS,
     sensor_provider: FakeSensorProvider | None = None,
+    resource_provider: FakeResourceProvider | None = None,
     platform: str = "linux",
     policy: AllowPolicy | None = None,
 ):
@@ -131,6 +144,7 @@ def _gateway(
                     executor,
                     family=family,
                     sensor_provider=sensor_provider,
+                    resource_provider=resource_provider,
                     platform=platform,
                 ),
             ],
@@ -610,6 +624,56 @@ def test_system_diagnostics_resources_ignores_model_hint_arguments_for_default_s
 
     assert observation.status == ToolObservationStatus.COMPLETED
     assert executor.calls[0]["argv"] == ["top", "-l", "1", "-n", "0"]
+
+
+def test_system_diagnostics_resources_uses_in_process_provider_for_darwin_default_snapshot(
+    tmp_path: Path,
+) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(exit_code=0, stdout="must not run\n", stderr=""),
+    )
+    resource_provider = FakeResourceProvider(
+        {
+            "cpu": {
+                "user_percent": 8.0,
+                "system_percent": 12.0,
+                "idle_percent": 80.0,
+                "used_percent": 20.0,
+            },
+            "memory": {
+                "total": "24.00 GiB",
+                "used": "18.00 GiB",
+                "available": "6.00 GiB",
+                "used_percent": 75.0,
+            },
+            "source": "fake-mach",
+        }
+    )
+    gateway, _policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        family=SystemDiagnosticsFamily.RESOURCES,
+        platform="darwin",
+        resource_provider=resource_provider,
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request_with_arguments(
+                tmp_path,
+                {"metric": "cpu_and_memory"},
+                tool_name="tool.system.read.resources",
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert resource_provider.calls == 1
+    assert executor.calls == []
+    assert observation.structured_schema == "system.resource_overview"
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.structured_content["cpu"]["used_percent"] == 20.0
+    assert observation.structured_content["memory"]["used"] == "18.00 GiB"
 
 
 def test_system_diagnostics_resources_rejects_invalid_metric_before_policy_or_execution(

@@ -21,6 +21,7 @@ from assistant_core.tools.diagnostics_normalizers import (
     sensor_payload,
     unavailable_sensor_payload,
 )
+from assistant_core.tools.darwin_resources import InProcessDarwinResourceProvider
 from assistant_core.tools.registry import ToolClassificationResult, ToolExecutionDenied
 from assistant_core.tools.shell_read import (
     ShellExecutionResult,
@@ -112,6 +113,10 @@ _SECRET_VALUE_PATTERNS = (
 
 class TemperatureSensorProviderPort(Protocol):
     async def snapshot_temperatures(self) -> SensorSnapshot: ...
+
+
+class SystemResourceProviderPort(Protocol):
+    async def snapshot_cpu_and_memory(self) -> dict[str, Any] | None: ...
 
 
 @dataclass(frozen=True)
@@ -473,6 +478,7 @@ class SystemDiagnosticsTool:
         allowed_roots: Sequence[str | Path],
         executor: ShellExecutorPort | None = None,
         sensor_provider: TemperatureSensorProviderPort | None = None,
+        resource_provider: SystemResourceProviderPort | None = None,
         max_stdout_bytes: int = 20_000,
         max_stderr_bytes: int = 20_000,
         max_lines: int = 200,
@@ -492,6 +498,11 @@ class SystemDiagnosticsTool:
             max_lines=max_lines,
         )
         self._sensor_provider = sensor_provider or ReadOnlyThermalSysfsSensorProvider()
+        self._resource_provider = (
+            resource_provider
+            if resource_provider is not None
+            else (InProcessDarwinResourceProvider() if executor is None else None)
+        )
         self._max_stdout_bytes = max_stdout_bytes
         self._max_stderr_bytes = max_stderr_bytes
         self._max_lines = max_lines
@@ -574,6 +585,11 @@ class SystemDiagnosticsTool:
                 structured_schema_version=1,
                 parse_status=sensor_payload(content).parse_status,
             )
+
+        if _uses_darwin_resource_provider(decision, self._platform) and self._resource_provider is not None:
+            snapshot = await self._resource_provider.snapshot_cpu_and_memory()
+            if snapshot is not None:
+                return _resource_snapshot_result(decision, snapshot)
 
         if decision.cwd is None:
             raise ToolExecutionDenied(
@@ -765,6 +781,46 @@ def _sensor_snapshot_result(
         structured_schema="system.sensor_snapshot",
         structured_schema_version=1,
         parse_status=sensor_payload(content).parse_status,
+    )
+
+
+def _resource_snapshot_result(
+    decision: SystemDiagnosticsDecision,
+    snapshot: dict[str, Any],
+) -> ToolInvocationResult:
+    content = {
+        "source": snapshot.get("source", "in_process"),
+        "snapshot": snapshot,
+    }
+    encoded = json.dumps(content, sort_keys=True)
+    return ToolInvocationResult(
+        content=encoded,
+        content_type="application/json",
+        truncated=False,
+        output_bytes=len(encoded.encode("utf-8")),
+        metadata={
+            "family": decision.family.value if decision.family is not None else None,
+            "cwd": decision.cwd,
+            "source": content["source"],
+        },
+        structured_content=snapshot,
+        structured_schema="system.resource_overview",
+        structured_schema_version=1,
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+
+def _uses_darwin_resource_provider(
+    decision: SystemDiagnosticsDecision,
+    platform: str,
+) -> bool:
+    return (
+        platform == "darwin"
+        and decision.family == SystemDiagnosticsFamily.RESOURCES
+        and decision.argv in {
+            ("top", "-l", "1"),
+            ("top", "-l", "1", "-n", "0"),
+        }
     )
 
 
