@@ -442,6 +442,24 @@ the verification gate is green and there are no relevant P0/P1 findings.
 - semantic classifier or deterministic natural-language route resolver;
 - broad model benchmarking.
 
+## Post-Gate Follow-Ups
+
+Final PM-08l review accepted these as non-blocking P2/P3 follow-ups. They must
+not block the current PM-08l gate, but should be handled before broadening the
+voice surface beyond the initial PM-09 foundation:
+
+- extract live-state math evidence policy, calculator expression matching and
+  proposal-output contract rendering out of `ToolReactLoop` into explicit
+  runtime services, keeping the public loop class as orchestration only;
+- replace lexical live-state intent guards with typed request-plan/evidence
+  metadata, including sensor/temperature wording and multi-expression threshold
+  coverage;
+- add direct unit coverage for `InProcessDarwinResourceProvider`, including
+  memory accounting and provider failure paths;
+- validate `system.resource_overview` snapshots before marking provider output
+  as parsed live evidence;
+- add dedicated unit coverage for shared privacy redaction helpers.
+
 ## Completion Criteria
 
 PM-08l is complete only when:
