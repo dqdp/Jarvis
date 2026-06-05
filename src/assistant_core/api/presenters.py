@@ -33,6 +33,7 @@ def message_payload(message) -> dict[str, Any]:
 
 def request_payload(request) -> dict[str, Any]:
     metadata = dict(request.metadata)
+    metadata.pop("agent_allowed_tool_summaries", None)
     if metadata.get("working_directory") is not None:
         metadata["working_directory"] = redacted_scope_value(metadata["working_directory"])
     return {

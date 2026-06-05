@@ -38,6 +38,7 @@ class AgentRequestPlan:
     request_plan_status: str
     request_plan_reason_code: str
     live_state_tool_names: tuple[str, ...] = ()
+    allowed_tool_summaries: tuple[dict[str, str], ...] = ()
 
     def redacted_metadata(self) -> dict[str, Any]:
         metadata: dict[str, Any] = {
@@ -54,6 +55,10 @@ class AgentRequestPlan:
             metadata["agent_allowed_tool_names"] = list(self.allowed_tool_names)
         if self.live_state_tool_names:
             metadata["agent_live_state_tool_names"] = list(self.live_state_tool_names)
+        if self.allowed_tool_summaries:
+            metadata["agent_allowed_tool_summaries"] = [
+                dict(item) for item in self.allowed_tool_summaries
+            ]
         return metadata
 
 
@@ -302,12 +307,17 @@ async def agent_request_plan_from_decision(
         allowed_tool_names,
         routing_registry,
     )
+    allowed_tool_summaries = _agent_allowed_tool_summaries(
+        allowed_tool_names,
+        routing_registry,
+    )
     return AgentRequestPlan(
         requested_mode=decision.requested_mode.value,
         selected_loop_strategy=selected_loop_strategy,
         tool_policy=_agent_tool_policy(decision, allowed_tool_names=allowed_tool_names),
         allowed_tool_names=allowed_tool_names,
         live_state_tool_names=live_state_tool_names,
+        allowed_tool_summaries=allowed_tool_summaries,
         selected_model_profile=model_profile,
         request_plan_status=decision.decision_status.value,
         request_plan_reason_code=_request_plan_reason_code(decision),
@@ -383,6 +393,26 @@ def _agent_live_state_tool_names(
         for item in routing_registry.available_tools_summary()
         if item.get("tool_name") in allowed and item.get("requires_live_state") is True
     )
+
+
+def _agent_allowed_tool_summaries(
+    allowed_tool_names: tuple[str, ...],
+    routing_registry: CapabilityRoutingRegistry,
+) -> tuple[dict[str, str], ...]:
+    allowed = set(allowed_tool_names)
+    summaries: list[dict[str, str]] = []
+    for item in routing_registry.available_tools_summary():
+        tool_name = item.get("tool_name")
+        description = item.get("description")
+        if tool_name not in allowed or not isinstance(description, str):
+            continue
+        summaries.append(
+            {
+                "tool_name": str(tool_name),
+                "description": _bounded_summary_text(description),
+            }
+        )
+    return tuple(summaries)
 
 
 def _tool_policy_request(
@@ -515,6 +545,10 @@ def _runtime_budget_failure_decision(
         policy_outcome=policy_outcome,
         decision_status=status,
     )
+
+
+def _bounded_summary_text(value: str) -> str:
+    return " ".join(value.split())[:240]
 
 
 def _required_tools_unavailable_decision(

@@ -421,6 +421,16 @@ def test_default_auto_request_builds_agent_loop_plan_without_classifier() -> Non
     assert resolution.agent_request_plan.live_state_tool_names == tuple(
         resolution.metadata["agent_live_state_tool_names"],
     )
+    summaries = resolution.metadata["agent_allowed_tool_summaries"]
+    resources = next(
+        item for item in summaries if item["tool_name"] == "tool.system.read.resources"
+    )
+    hardware = next(
+        item for item in summaries if item["tool_name"] == "tool.system.read.hardware"
+    )
+    assert "CPU load" in resources["description"]
+    assert "memory usage" in resources["description"]
+    assert "not live CPU load" in hardware["description"]
     assert "loop_selection_confidence" not in resolution.metadata
     assert "loop_selection_intent_family" not in resolution.metadata
     assert "loop_selection_classification_source" not in resolution.metadata

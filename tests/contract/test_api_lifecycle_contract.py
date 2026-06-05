@@ -142,6 +142,7 @@ def _assert_agent_loop_request_metadata(
     assert "loop_selection_direct_tool_name" not in metadata
     assert "loop_selection_direct_tool_names" not in metadata
     assert "loop_selection_direct_scenario" not in metadata
+    assert "agent_allowed_tool_summaries" not in metadata
 
 
 def test_post_conversation(app_parts) -> None:
