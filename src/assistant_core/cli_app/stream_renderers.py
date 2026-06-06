@@ -8,7 +8,11 @@ from assistant_core.cli_app.utils import _display_text
 
 
 def is_tool_stream_event(event_type: str) -> bool:
-    return event_type.startswith("tool.shell.") or event_type.startswith("tool.system.diagnostics.")
+    return (
+        event_type.startswith("tool.call.")
+        or event_type.startswith("tool.shell.")
+        or event_type.startswith("tool.system.diagnostics.")
+    )
 
 
 def write_tool_stream_event(

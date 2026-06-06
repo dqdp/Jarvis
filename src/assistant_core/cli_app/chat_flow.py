@@ -9,7 +9,10 @@ from typing import Any, TextIO
 from assistant_core.cli_app.client import CliUserError, JarvisClient
 from assistant_core.cli_app.config import DEFAULT_MEMORY_TYPE, LOOP_STRATEGY_CHOICES
 from assistant_core.cli_app.line_reader import create_interactive_line_reader
-from assistant_core.cli_app.message_stream import submit_and_stream_message
+from assistant_core.cli_app.message_stream import (
+    assistant_character_delay_seconds_for_output,
+    submit_and_stream_message,
+)
 from assistant_core.cli_app.renderers import (
     write_conversation_list,
     write_interactive_help,
@@ -21,6 +24,7 @@ from assistant_core.cli_app.shell import (
     ShellActivityState,
     context_remaining_summary,
     display_loop_mode,
+    format_elapsed_seconds,
     model_context_limit,
     model_status_summary,
     render_status_line,
@@ -29,8 +33,10 @@ from assistant_core.cli_app.shell import (
 from assistant_core.cli_app.stream_control import cancel_server_request
 from assistant_core.cli_app.terminal_rendering import (
     TerminalColorScheme,
+    TerminalInlineStatusLine,
     TerminalStatusAnimator,
     TerminalStatusBar,
+    render_status_rule_line,
     resolve_terminal_color_enabled,
 )
 from assistant_core.cli_app.utils import _display_text, _required_str
@@ -92,17 +98,36 @@ async def run_interactive_chat(
             elapsed_seconds=elapsed_seconds,
         )
 
+    def inline_status_provider() -> str:
+        if state.current_interaction_started_at is None:
+            return "Worked for 0s"
+        elapsed = format_elapsed_seconds(time.monotonic() - state.current_interaction_started_at)
+        return f"Worked for {elapsed or '0s'}"
+
     status_bar = TerminalStatusBar(
         stdout=stdout,
         status_provider=status_provider,
         enabled=not plain and bool(getattr(stdout, "isatty", lambda: False)()),
         color_scheme=color_scheme,
-        animation_style="shimmer",
+        animation_style="none",
     )
-    status_animator = TerminalStatusAnimator(
-        status_bar=status_bar,
+    inline_status = TerminalInlineStatusLine(
+        stdout=stdout,
+        status_provider=inline_status_provider,
+        enabled=not plain and bool(getattr(stdout, "isatty", lambda: False)()),
+        color_scheme=color_scheme,
+    )
+    inline_status_animator = TerminalStatusAnimator(
+        status_bar=inline_status,
         interval_seconds=status_animation_interval,
     )
+
+    def write_response_summary(summary_line: str) -> None:
+        line = render_status_rule_line(summary_line)
+        if color_scheme is not None:
+            line = color_scheme.style("summary", line)
+        stdout.write(f"{line}\n\n")
+        stdout.flush()
 
     def mark_submit_started() -> None:
         nonlocal activity_state
@@ -112,7 +137,8 @@ async def run_interactive_chat(
         state.current_interaction_started_at = time.monotonic()
         activity_state = activity_state.mark_submitting()
         status_bar.start()
-        status_animator.start()
+        inline_status.start()
+        inline_status_animator.start()
         write_activity_indicator(stdout, activity_state, enabled=developer_mode)
 
     def mark_request_started(request_id: str) -> None:
@@ -121,8 +147,10 @@ async def run_interactive_chat(
         state.last_request_id = request_id
         activity_state = activity_state.mark_submitting(request_id)
         status_bar.start()
-        status_animator.start()
+        inline_status.start()
+        inline_status_animator.start()
         status_bar.render()
+        inline_status.render()
         if previous_phase != "submitting":
             write_activity_indicator(stdout, activity_state, enabled=developer_mode)
 
@@ -137,8 +165,9 @@ async def run_interactive_chat(
             )
         phase_changed = activity_state.phase != previous_phase
         context_changed = event_type == "context.assembled"
-        if phase_changed or context_changed:
+        if (phase_changed or context_changed) and event_type != "request.processing.completed":
             status_bar.render()
+            inline_status.render()
         if phase_changed:
             write_activity_indicator(stdout, activity_state, enabled=developer_mode)
 
@@ -169,7 +198,7 @@ async def run_interactive_chat(
     stdout.write("Use Up/Down for in-session history; history is not saved to disk.\n\n")
 
     while True:
-        raw_line = await line_reader.read_line("jarvis> ")
+        raw_line = await line_reader.read_line("")
         if raw_line is None:
             stdout.write("bye\n")
             return 0
@@ -312,18 +341,25 @@ async def run_interactive_chat(
                     loop_strategy=state.loop_strategy,
                     working_directory=request_working_directory,
                     client_message_id=None,
-                    assistant_prefix=f"{color_scheme.start('assistant')}assistant> ",
+                    assistant_prefix=color_scheme.start("assistant"),
                     assistant_suffix=color_scheme.reset,
                     stdin=stdin,
                     on_submit_started=mark_submit_started,
                     on_request_started=mark_request_started,
                     on_stream_event=mark_stream_event,
+                    on_transcript_output_started=inline_status.finish_active_line,
+                    on_response_summary=write_response_summary,
+                    assistant_character_delay_seconds=assistant_character_delay_seconds_for_output(
+                        stdout=stdout,
+                        plain=plain,
+                    ),
                     allow_tty_cancel_command=not plain,
                     color_scheme=color_scheme,
                 )
             finally:
-                await status_animator.stop()
+                await inline_status_animator.stop()
                 status_bar.stop()
+                inline_status.stop()
                 activity_state = ShellActivityState.idle()
                 state.current_interaction_started_at = None
             state.last_request_id = None

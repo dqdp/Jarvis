@@ -41,6 +41,7 @@ _ANSI_ROLE_CODES = {
     "error": "31",
     "memory": "35",
     "session": "36",
+    "summary": "2;36",
     "tool": "33",
     "status": "36",
     "prompt": "36",
@@ -48,6 +49,11 @@ _ANSI_ROLE_CODES = {
 }
 
 _SPINNER_FRAMES = ("-", "\\", "|", "/")
+_STATUS_RULE = "────────"
+
+
+def render_status_rule_line(text: str) -> str:
+    return f"{_STATUS_RULE} {text}"
 
 
 def resolve_terminal_color_enabled(
@@ -65,6 +71,96 @@ def resolve_terminal_color_enabled(
     if "NO_COLOR" in environment or environment.get("TERM") == "dumb":
         return False
     return bool(getattr(stdout, "isatty", lambda: False)())
+
+
+class TerminalInlineStatusLine:
+    def __init__(
+        self,
+        *,
+        stdout: TextIO,
+        status_provider: Callable[[], str],
+        enabled: bool | None = None,
+        color_scheme: TerminalColorScheme | None = None,
+        spinner_frames: Sequence[str] = _SPINNER_FRAMES,
+        animation_style: str = "shimmer",
+        shimmer_width: int = 12,
+    ) -> None:
+        self._stdout = stdout
+        self._status_provider = status_provider
+        self._enabled = (
+            bool(getattr(stdout, "isatty", lambda: False)())
+            if enabled is None
+            else enabled
+        )
+        self._color_scheme = color_scheme or TerminalColorScheme(enabled=False)
+        self._spinner_frames = tuple(spinner_frames) or _SPINNER_FRAMES
+        self._animation_style = animation_style
+        self._shimmer_width = max(1, shimmer_width)
+        self._spinner_index = 0
+        self._shimmer_index = 0
+        self._spinner_frame: str | None = None
+        self._active = False
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def _uses_spinner_animation(self) -> bool:
+        return self._animation_style == "spinner" or (
+            self._animation_style == "shimmer" and not self._color_scheme.enabled
+        )
+
+    def _uses_shimmer_animation(self) -> bool:
+        return self._animation_style == "shimmer" and self._color_scheme.enabled
+
+    def start(self) -> None:
+        if not self._enabled or self._active:
+            return
+        self._spinner_index = 0
+        self._shimmer_index = 0
+        self._spinner_frame = (
+            self._spinner_frames[self._spinner_index]
+            if self._uses_spinner_animation()
+            else None
+        )
+        self._active = True
+        self.render()
+
+    def tick(self) -> None:
+        if not self._enabled or not self._active:
+            return
+        if self._uses_spinner_animation():
+            self._spinner_index = (self._spinner_index + 1) % len(self._spinner_frames)
+            self._spinner_frame = self._spinner_frames[self._spinner_index]
+        elif self._uses_shimmer_animation():
+            self._shimmer_index += 1
+        self.render()
+
+    def render(self) -> None:
+        if not self._enabled or not self._active:
+            return
+        line = render_status_rule_line(self._status_provider())
+        if self._spinner_frame is not None:
+            line = f"{line} {self._spinner_frame}"
+        if self._uses_shimmer_animation():
+            line = _shimmer_line(
+                line,
+                index=self._shimmer_index,
+                width=self._shimmer_width,
+            )
+        self._stdout.write(f"\r\x1b[2K{self._color_scheme.style('status', line)}")
+        self._stdout.flush()
+
+    def finish_active_line(self) -> None:
+        if not self._active:
+            return
+        self._stdout.write("\r\x1b[2K\n")
+        self._stdout.flush()
+        self._active = False
+        self._spinner_frame = None
+
+    def stop(self) -> None:
+        self.finish_active_line()
 
 
 class TerminalStatusBar:
@@ -237,7 +333,9 @@ def _shimmer_start(value: str, *, index: int) -> int:
 
 __all__ = [
     "TerminalColorScheme",
+    "TerminalInlineStatusLine",
     "TerminalStatusAnimator",
     "TerminalStatusBar",
+    "render_status_rule_line",
     "resolve_terminal_color_enabled",
 ]

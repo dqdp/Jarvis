@@ -62,8 +62,10 @@ from assistant_core.cli_app.sse import parse_sse_blocks
 from assistant_core.cli_app.stream_control import cancel_server_request
 from assistant_core.cli_app.terminal_rendering import (
     TerminalColorScheme,
+    TerminalInlineStatusLine,
     TerminalStatusAnimator,
     TerminalStatusBar,
+    render_status_rule_line,
     resolve_terminal_color_enabled,
 )
 from assistant_core.cli_app.utils import _display_text, _required_str
@@ -93,6 +95,7 @@ __all__ = [
     "SlashCommandRegistry",
     "TerminalInteractiveLineReader",
     "TerminalColorScheme",
+    "TerminalInlineStatusLine",
     "TerminalStatusAnimator",
     "TerminalStatusBar",
     "context_remaining_summary",
@@ -114,6 +117,7 @@ __all__ = [
     "model_status_summary",
     "parse_sse_blocks",
     "render_status_line",
+    "render_status_rule_line",
     "resolve_terminal_color_enabled",
     "run",
     "submit_and_stream_message",

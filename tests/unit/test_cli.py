@@ -14,6 +14,7 @@ import pytest
 
 from assistant_core import cli
 from assistant_core.cli_app import client as cli_client_module
+from assistant_core.cli_app import message_stream as message_stream_module
 from assistant_core.cli_app import stream_control
 from assistant_core.cli_app import terminal_rendering as terminal_rendering_module
 
@@ -198,6 +199,37 @@ class FakeCliClient:
         }
 
 
+class SingleDeltaStreamCliClient(FakeCliClient):
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        yield "token", {"delta": "OK"}
+        yield "request.processing.completed", {"assistant_message_id": "message-1"}
+
+
+class LargeSingleDeltaStreamCliClient(FakeCliClient):
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        yield "token", {"delta": "x" * 200}
+        yield "request.processing.completed", {"assistant_message_id": "message-1"}
+
+
+class GenericToolCallStreamCliClient(FakeCliClient):
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        yield "tool.call.started", {
+            "tool_name": "datetime.now",
+            "capability": "tool.safe_builtin",
+        }
+        yield "tool.call.completed", {
+            "tool_name": "datetime.now",
+            "capability": "tool.safe_builtin",
+            "output_bytes": 42,
+            "truncated": False,
+        }
+        yield "token", {"delta": "The clock says 20:59."}
+        yield "request.processing.completed", {"assistant_message_id": "message-1"}
+
+
 class InterruptedStreamCliClient(FakeCliClient):
     async def stream_request(self, request_id: str):
         self.calls.append(("stream_request", request_id))
@@ -257,6 +289,25 @@ class ToolEventStreamCliClient(FakeCliClient):
             "truncated": False,
         }
         yield "token", {"delta": "ToolGatewayPort is documented."}
+        yield "request.processing.completed", {"assistant_message_id": "message-1"}
+
+
+class ResourceSummaryStreamCliClient(FakeCliClient):
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        yield "context.assembled", {"token_estimate": 256}
+        yield "memory.retrieved", {"count": 1}
+        yield "content.retrieved", {"source_count": 1}
+        yield "tool.shell.started", {
+            "tool_name": "tool.shell.read.project",
+            "argv": ["rg", "ToolGatewayPort", "docs"],
+        }
+        yield "tool.shell.completed", {
+            "tool_name": "tool.shell.read.project",
+            "exit_code": 0,
+            "output_bytes": 42,
+        }
+        yield "token", {"delta": "done"}
         yield "request.processing.completed", {"assistant_message_id": "message-1"}
 
 
@@ -422,14 +473,15 @@ def test_terminal_line_reader_shows_slash_commands_when_slash_is_typed() -> None
         raw_mode=False,
     )
 
-    assert reader.readline("jarvis> ") == "/help"
+    assert reader.readline("") == "/help"
 
     output = stdout.getvalue()
-    assert "jarvis> /" in output
+    assert "jarvis>" not in output
+    assert output.startswith("/")
     assert "commands>" in output
     assert "/help" in output
     assert "/memory list" in output
-    assert output.rstrip().endswith("jarvis> /help")
+    assert output.rstrip().endswith("/help")
 
 
 def test_slash_command_menu_filters_by_prefix() -> None:
@@ -472,6 +524,16 @@ class TtyStringIO(StringIO):
 
     def fileno(self) -> int:
         raise OSError("test stream has no fd")
+
+
+class RecordingStringIO(StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.writes: list[str] = []
+
+    def write(self, value: str) -> int:
+        self.writes.append(value)
+        return super().write(value)
 
 
 class PipeTtyInput:
@@ -684,7 +746,7 @@ def test_prompt_toolkit_reader_uses_async_prompt_inside_interactive_cli(monkeypa
     )
 
     assert exit_code == 0
-    assert prompts == ["jarvis> "]
+    assert prompts == [""]
     assert "bye" in stdout.getvalue()
 
 
@@ -964,9 +1026,10 @@ def test_terminal_color_scheme_styles_known_roles_only_when_enabled() -> None:
     enabled = cli.TerminalColorScheme(enabled=True)
     disabled = cli.TerminalColorScheme(enabled=False)
 
-    assert enabled.style("assistant", "assistant> OK") == "\x1b[32massistant> OK\x1b[0m"
+    assert enabled.style("assistant", "OK") == "\x1b[32mOK\x1b[0m"
+    assert enabled.style("summary", "summary: response_time=0s") == "\x1b[2;36msummary: response_time=0s\x1b[0m"
     assert enabled.style("error", "error> failed") == "\x1b[31merror> failed\x1b[0m"
-    assert disabled.style("assistant", "assistant> OK") == "assistant> OK"
+    assert disabled.style("assistant", "OK") == "OK"
     assert enabled.style("unknown", "plain") == "plain"
 
 
@@ -1002,7 +1065,7 @@ def test_tty_cancel_command_can_cancel_active_stream() -> None:
                 content="slow answer",
                 sensitivity="project",
                 client_message_id="client-slow-cancel",
-                assistant_prefix="assistant> ",
+                assistant_prefix=None,
                 stdin=stdin,
                 allow_tty_cancel_command=True,
             )
@@ -1015,6 +1078,84 @@ def test_tty_cancel_command_can_cancel_active_stream() -> None:
     assert exit_code == 130
     assert ("cancel_request", "request-1") in client.calls
     assert "cancelled> request request-1" in stdout.getvalue()
+
+
+def test_tty_cancel_command_can_interrupt_typewriter_delta() -> None:
+    client = LargeSingleDeltaStreamCliClient("http://test")
+    stdout = TtyStringIO()
+    read_fd, write_fd = os.pipe()
+    stdin = PipeTtyInput(read_fd)
+
+    async def scenario() -> int:
+        async def write_cancel() -> None:
+            await asyncio.sleep(0.02)
+            os.write(write_fd, b"/cancel\n")
+            os.close(write_fd)
+
+        writer = asyncio.create_task(write_cancel())
+        try:
+            return await cli.submit_and_stream_message(
+                client=client,
+                stdout=stdout,
+                conversation_id="conversation-1",
+                content="long answer",
+                sensitivity="project",
+                client_message_id="client-typewriter-cancel",
+                assistant_prefix=None,
+                stdin=stdin,
+                allow_tty_cancel_command=True,
+                assistant_character_delay_seconds=0.001,
+            )
+        finally:
+            await writer
+            stdin.close()
+
+    exit_code = asyncio.run(scenario())
+
+    assert exit_code == 130
+    assert ("cancel_request", "request-1") in client.calls
+    assert "cancelled> request request-1" in stdout.getvalue()
+    assert stdout.getvalue().count("x") < 200
+
+
+def test_tty_cancel_poll_reports_ignored_input_during_typewriter_delta() -> None:
+    client = LargeSingleDeltaStreamCliClient("http://test")
+    stdout = TtyStringIO()
+    read_fd, write_fd = os.pipe()
+    stdin = PipeTtyInput(read_fd)
+
+    async def scenario() -> int:
+        async def write_typeahead() -> None:
+            await asyncio.sleep(0.02)
+            os.write(write_fd, b"not a command\n/cancel\n")
+            os.close(write_fd)
+
+        writer = asyncio.create_task(write_typeahead())
+        try:
+            return await cli.submit_and_stream_message(
+                client=client,
+                stdout=stdout,
+                conversation_id="conversation-1",
+                content="long answer",
+                sensitivity="project",
+                client_message_id="client-typewriter-ignored-cancel",
+                assistant_prefix=None,
+                stdin=stdin,
+                allow_tty_cancel_command=True,
+                assistant_character_delay_seconds=0.001,
+            )
+        finally:
+            await writer
+            stdin.close()
+
+    exit_code = asyncio.run(scenario())
+
+    output = stdout.getvalue()
+    assert exit_code == 130
+    assert ("cancel_request", "request-1") in client.calls
+    assert "\ninput> ignored while request is running; use /cancel to cancel\n" in output
+    assert "\ncancelled> request request-1\n" in output
+    assert output.count("x") < 200
 
 
 def test_tty_cancel_monitor_does_not_consume_approval_input() -> None:
@@ -1039,7 +1180,7 @@ def test_tty_cancel_monitor_does_not_consume_approval_input() -> None:
                     content="needs approval",
                     sensitivity="project",
                     client_message_id="client-approval-tty",
-                    assistant_prefix="assistant> ",
+                    assistant_prefix=None,
                     stdin=stdin,
                     allow_tty_cancel_command=True,
                 ),
@@ -1079,7 +1220,7 @@ def test_tty_cancel_poll_does_not_reuse_typeahead_as_approval_input() -> None:
                     content="needs delayed approval",
                     sensitivity="project",
                     client_message_id="client-delayed-approval-tty",
-                    assistant_prefix="assistant> ",
+                    assistant_prefix=None,
                     stdin=stdin,
                     allow_tty_cancel_command=True,
                 ),
@@ -1114,7 +1255,7 @@ def test_tty_cancel_poll_keeps_listening_after_non_cancel_typeahead() -> None:
                 content="slow answer",
                 sensitivity="project",
                 client_message_id="client-typeahead-cancel",
-                assistant_prefix="assistant> ",
+                assistant_prefix=None,
                 stdin=stdin,
                 allow_tty_cancel_command=True,
             )
@@ -1145,7 +1286,7 @@ def test_tty_cancel_awaits_active_stream_cleanup() -> None:
                 content="slow answer",
                 sensitivity="project",
                 client_message_id="client-cleanup-cancel",
-                assistant_prefix="assistant> ",
+                assistant_prefix=None,
                 stdin=stdin,
                 allow_tty_cancel_command=True,
             )
@@ -1167,8 +1308,8 @@ def test_terminal_line_reader_uses_in_session_arrow_history() -> None:
         raw_mode=False,
     )
 
-    assert reader.readline("jarvis> ") == "first message"
-    assert reader.readline("jarvis> ") == "first message"
+    assert reader.readline("") == "first message"
+    assert reader.readline("") == "first message"
 
 
 def test_terminal_line_reader_filters_sensitive_history() -> None:
@@ -1181,8 +1322,8 @@ def test_terminal_line_reader_filters_sensitive_history() -> None:
         should_add_history=lambda line: not line.startswith("/memory add"),
     )
 
-    assert reader.readline("jarvis> ") == "/memory add private fact"
-    assert reader.readline("jarvis> ") == "plain"
+    assert reader.readline("") == "/memory add private fact"
+    assert reader.readline("") == "plain"
 
 
 def test_terminal_line_reader_ctrl_c_on_prompt_returns_empty_line() -> None:
@@ -1194,10 +1335,143 @@ def test_terminal_line_reader_ctrl_c_on_prompt_returns_empty_line() -> None:
         raw_mode=False,
     )
 
-    assert reader.readline("jarvis> ") == ""
-    assert reader.readline("jarvis> ") == "/exit"
+    assert reader.readline("") == ""
+    assert reader.readline("") == "/exit"
 
     assert "^C" in stdout.getvalue()
+
+
+def test_cli_chat_renders_response_summary_with_elapsed_resources_and_tools(monkeypatch) -> None:
+    ticks = iter([10.0, 12.7])
+    monkeypatch.setattr(message_stream_module, "monotonic", lambda: next(ticks))
+    stdout = StringIO()
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "inspect", "project"],
+            client_factory=ResourceSummaryStreamCliClient,
+            stdout=stdout,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert output.startswith("tool> running tool.shell.read.project rg ToolGatewayPort docs\n")
+    assert "\ndone\n──────── summary: response_time=2s" in output
+    assert "resources=context,memory,content,model" in output
+    assert "tools=tool.shell.read.project" in output
+    assert "assistant>" not in output
+    assert output.endswith("\n\n")
+
+
+def test_submit_stream_renders_single_delta_character_by_character(monkeypatch) -> None:
+    stdout = RecordingStringIO()
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(message_stream_module, "async_sleep", fake_sleep, raising=False)
+
+    exit_code = asyncio.run(
+        cli.submit_and_stream_message(
+            client=SingleDeltaStreamCliClient("http://test"),
+            stdout=stdout,
+            conversation_id="conversation-1",
+            content="hello",
+            sensitivity="project",
+            client_message_id="client-typewriter",
+            assistant_prefix=None,
+            assistant_character_delay_seconds=0.01,
+        ),
+    )
+
+    assert exit_code == 0
+    assert "OK" in stdout.getvalue()
+    assert "OK" not in stdout.writes
+    assert "O" in stdout.writes
+    assert "K" in stdout.writes
+    assert slept == [0.01, 0.01]
+
+
+class WhitespaceDeltaStreamCliClient(FakeCliClient):
+    async def stream_request(self, request_id: str):
+        self.calls.append(("stream_request", request_id))
+        yield "token", {"delta": "Hello"}
+        yield "token", {"delta": " world\n"}
+        yield "token", {"delta": "  indented"}
+        yield "request.processing.completed", {"assistant_message_id": "message-1"}
+
+
+def test_submit_stream_preserves_raw_token_delta_whitespace_and_newlines() -> None:
+    stdout = StringIO()
+
+    exit_code = asyncio.run(
+        cli.submit_and_stream_message(
+            client=WhitespaceDeltaStreamCliClient("http://test"),
+            stdout=stdout,
+            conversation_id="conversation-1",
+            content="hello",
+            sensitivity="project",
+            client_message_id="client-whitespace-delta",
+            assistant_prefix=None,
+            assistant_character_delay_seconds=0.0,
+        ),
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue().startswith("Hello world\n  indented\n──────── summary: response_time=")
+
+
+def test_submit_stream_writes_full_delta_once_when_typewriter_delay_disabled(monkeypatch) -> None:
+    stdout = RecordingStringIO()
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(message_stream_module, "async_sleep", fake_sleep, raising=False)
+
+    exit_code = asyncio.run(
+        cli.submit_and_stream_message(
+            client=SingleDeltaStreamCliClient("http://test"),
+            stdout=stdout,
+            conversation_id="conversation-1",
+            content="hello",
+            sensitivity="project",
+            client_message_id="client-no-typewriter",
+            assistant_prefix=None,
+            assistant_character_delay_seconds=0.0,
+        ),
+    )
+
+    assert exit_code == 0
+    assert "OK" in stdout.getvalue()
+    assert "OK" in stdout.writes
+    assert slept == []
+
+
+def test_tty_chat_uses_typewriter_delay_for_single_stream_delta(monkeypatch) -> None:
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(message_stream_module, "async_sleep", fake_sleep)
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "--color", "never"],
+            client_factory=SingleDeltaStreamCliClient,
+            stdout=TtyStringIO(),
+            stdin=StringIO("hello\n/exit\n"),
+        ),
+    )
+
+    assert exit_code == 0
+    assert slept
+    assert len(slept) == 2
+    assert all(0 < seconds <= 0.02 for seconds in slept)
 
 
 def test_cli_chat_creates_conversation_and_streams_tokens() -> None:
@@ -1225,7 +1499,12 @@ def test_cli_chat_creates_conversation_and_streams_tokens() -> None:
     )
 
     assert exit_code == 0
-    assert stdout.getvalue() == "OK\n"
+    output = stdout.getvalue()
+    assert output.startswith("OK\n──────── summary: response_time=")
+    assert "resources=model" in output
+    assert "tools=none" in output
+    assert "assistant>" not in output
+    assert output.endswith("\n\n")
     assert clients[0].calls == [
         (
             "create_conversation",
@@ -1439,6 +1718,25 @@ def test_cli_tool_flow_renders_action_and_observation_without_raw_json_noise() -
     assert "{" not in output
 
 
+def test_cli_generic_tool_call_events_render_action_and_observation() -> None:
+    stdout = StringIO()
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "what", "time", "is", "it"],
+            client_factory=GenericToolCallStreamCliClient,
+            stdout=stdout,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "tool> running datetime.now" in output
+    assert "tool> completed datetime.now bytes=42" in output
+    assert "The clock says 20:59." in output
+    assert "tools=datetime.now" in output
+
+
 def test_cli_tool_unavailable_message_is_clear_when_policy_denies() -> None:
     stdout = StringIO()
 
@@ -1453,6 +1751,10 @@ def test_cli_tool_unavailable_message_is_clear_when_policy_denies() -> None:
     output = stdout.getvalue()
     assert exit_code == 1
     assert "error> tool loop is rejected by policy (working_directory_required)" in output
+    assert "──────── summary: response_time=" in output
+    assert output.index("error> tool loop is rejected") < output.index("──────── summary:")
+    assert "resources=none" in output
+    assert "tools=none" in output
     assert "{" not in output
 
 
@@ -1519,7 +1821,9 @@ def test_plain_interactive_chat_suppresses_tty_activity_indicator() -> None:
 
     output = stdout.getvalue()
     assert exit_code == 0
-    assert "assistant> OK" in output
+    assert "assistant>" not in output
+    assert "OK" in output
+    assert "──────── summary:" in output
     assert "activity=" not in output
 
 
@@ -1538,9 +1842,59 @@ def test_normal_interactive_chat_suppresses_activity_transcript_lines_on_tty_std
 
     output = stdout.getvalue()
     assert exit_code == 0
-    assert "assistant> OK" in output
+    assert "assistant>" not in output
+    assert "OK" in output
+    assert "──────── summary:" in output
     assert "activity=" not in output
     assert "streaming" in output
+
+
+def test_tty_interactive_chat_renders_inline_timer_without_residual_before_answer() -> None:
+    stdout = TtyStringIO()
+    stdin = StringIO("hello\n/exit\n")
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "--color", "never"],
+            client_factory=FakeCliClient,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "──────── Worked for 0s" in output
+    assert "──────── submitting" not in output
+    assert "──────── turn" not in output
+    assert "\x1b7" in output
+    assert "submitting | turn 1" in output
+    assert output.split("OK", 1)[0].endswith("\r\x1b[2K\n")
+    assert "OK\n──────── summary:" in output
+
+
+def test_interactive_bottom_status_bar_is_static_while_inline_timer_shimmers() -> None:
+    stdout = TtyStringIO()
+    stdin = StringIO("hello\n/exit\n")
+
+    exit_code = asyncio.run(
+        cli.run(
+            ["chat", "--color", "always"],
+            client_factory=FakeCliClient,
+            stdout=stdout,
+            stdin=stdin,
+        ),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    bottom_status_chunks = [chunk.split("\x1b8", 1)[0] for chunk in output.split("\x1b7")[1:]]
+    assert bottom_status_chunks
+    assert all("\x1b[1m" not in chunk for chunk in bottom_status_chunks)
+    assert all("\x1b[2m" not in chunk for chunk in bottom_status_chunks)
+    inline_chunks = [chunk for chunk in output.split("\r\x1b[2K")[1:] if "────────" in chunk]
+    assert inline_chunks
+    assert any("\x1b[1m" in chunk and "\x1b[2m" in chunk for chunk in inline_chunks)
 
 
 def test_developer_interactive_chat_keeps_activity_transcript_lines() -> None:
@@ -1558,7 +1912,9 @@ def test_developer_interactive_chat_keeps_activity_transcript_lines() -> None:
 
     output = stdout.getvalue()
     assert exit_code == 0
-    assert "assistant> OK" in output
+    assert "assistant>" not in output
+    assert "OK" in output
+    assert "──────── summary:" in output
     assert "activity=submitting" in output
 
 
@@ -1577,7 +1933,9 @@ def test_tty_interactive_chat_animates_status_bar_while_waiting_for_stream() -> 
 
     output = stdout.getvalue()
     assert exit_code == 0
-    assert "assistant> late" in output
+    assert "assistant>" not in output
+    assert "late" in output
+    assert "──────── summary:" in output
     assert "activity=" not in output
     assert "turn 1" in output
 
@@ -1726,7 +2084,7 @@ def test_tty_cancel_command_marks_activity_cancelled_before_return() -> None:
                 content="slow answer",
                 sensitivity="project",
                 client_message_id="client-cancel-event",
-                assistant_prefix="assistant> ",
+                assistant_prefix=None,
                 stdin=stdin,
                 allow_tty_cancel_command=True,
                 on_stream_event=lambda event_type, _data: events.append(event_type),
@@ -1755,7 +2113,9 @@ def test_color_always_styles_tty_assistant_output() -> None:
 
     output = stdout.getvalue()
     assert exit_code == 0
-    assert "\x1b[32massistant> OK" in output
+    assert "\x1b[32mOK" in output
+    assert "\x1b[2;36m──────── summary:" in output
+    assert "assistant>" not in output
 
 
 def test_color_never_suppresses_tty_assistant_color() -> None:
@@ -1773,8 +2133,10 @@ def test_color_never_suppresses_tty_assistant_color() -> None:
 
     output = stdout.getvalue()
     assert exit_code == 0
-    assert "assistant> OK" in output
-    assert "\x1b[32massistant>" not in output
+    assert "assistant>" not in output
+    assert "OK" in output
+    assert "──────── summary:" in output
+    assert "\x1b[32m" not in output
 
 
 def test_color_always_styles_tool_and_error_roles() -> None:
@@ -1934,10 +2296,10 @@ def test_interactive_line_reader_uses_readline_history() -> None:
         readline_module=readline,
     )
 
-    assert reader.readline("jarvis> ") == "hello"
-    assert reader.readline("jarvis> ") == ""
-    assert reader.readline("jarvis> ") == "/help"
-    assert prompts == ["jarvis> ", "jarvis> ", "jarvis> "]
+    assert reader.readline("") == "hello"
+    assert reader.readline("") == ""
+    assert reader.readline("") == "/help"
+    assert prompts == ["", "", ""]
     assert readline.history == ["hello", "/help"]
 
 
@@ -1956,8 +2318,8 @@ def test_interactive_line_reader_can_filter_sensitive_history() -> None:
         should_add_history=lambda line: not line.startswith("/memory add"),
     )
 
-    assert reader.readline("jarvis> ") == "normal message"
-    assert reader.readline("jarvis> ") == "/memory add private fact"
+    assert reader.readline("") == "normal message"
+    assert reader.readline("") == "/memory add private fact"
     assert readline.history == ["normal message"]
 
 
@@ -1978,8 +2340,8 @@ def test_interactive_line_reader_removes_input_auto_history_before_filtering() -
         should_add_history=lambda line: not line.startswith("/memory add"),
     )
 
-    assert reader.readline("jarvis> ") == "normal message"
-    assert reader.readline("jarvis> ") == "/memory add private fact"
+    assert reader.readline("") == "normal message"
+    assert reader.readline("") == "/memory add private fact"
     assert readline.history == ["normal message"]
 
 
@@ -1999,7 +2361,7 @@ def test_interactive_line_reader_returns_none_on_eof() -> None:
         readline_module=FakeReadline(),
     )
 
-    assert reader.readline("jarvis> ") is None
+    assert reader.readline("") is None
 
 
 def test_cli_without_subcommand_starts_interactive_chat() -> None:
@@ -2026,7 +2388,9 @@ def test_cli_without_subcommand_starts_interactive_chat() -> None:
     assert "Jarvis CLI" in output
     assert "Type / to show commands" in output
     assert "Use Up/Down for in-session history" in output
-    assert "assistant> OK\n" in output
+    assert "assistant>" not in output
+    assert "OK" in output
+    assert "──────── summary:" in output
     assert output.rstrip().endswith("bye")
     assert clients[0].calls == [
         (
@@ -2149,7 +2513,9 @@ def test_cli_interactive_slash_commands_manage_session_and_memory() -> None:
     assert "memory> memory-1" in output
     assert "memory> memory-1 active fact project project.personal_assistant saved" in output
     assert "conversation> new conversation" in output
-    assert "assistant> OK\n" in output
+    assert "assistant>" not in output
+    assert "OK" in output
+    assert "──────── summary:" in output
     assert clients[0].calls == [
         (
             "create_memory",
@@ -2422,7 +2788,7 @@ def test_cli_renders_approval_prompt() -> None:
             content="use tool",
             sensitivity="project",
             client_message_id="client-approval",
-            assistant_prefix="assistant> ",
+            assistant_prefix=None,
         ),
     )
 

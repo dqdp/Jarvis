@@ -40,7 +40,7 @@ async def stream_with_optional_cancel_command(
                 if line == "":
                     line_polling_enabled = False
                     continue
-                if line.strip().startswith("/cancel"):
+                if is_cancel_command(line):
                     yield CLI_CANCEL_EVENT, {}
                     return
                 yield CLI_IGNORED_INPUT_EVENT, {}
@@ -77,6 +77,16 @@ async def cancel_server_request(
         stdout.write(f"cancelled> request {request_id}\n")
         return
     stdout.write(f"request> {request_id} {status or 'unchanged'}\n")
+
+
+def poll_tty_line(stdin: TextIO, *, enabled: bool) -> str | None:
+    if not enabled or not _can_poll_tty_line(stdin):
+        return None
+    return _read_available_tty_line(stdin)
+
+
+def is_cancel_command(line: str) -> bool:
+    return line.strip().startswith("/cancel")
 
 
 def _can_poll_tty_line(stdin: TextIO) -> bool:

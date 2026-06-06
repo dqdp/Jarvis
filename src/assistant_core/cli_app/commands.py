@@ -16,12 +16,17 @@ from assistant_core.cli_app.config import (
     LOOP_STRATEGY_CHOICES,
 )
 from assistant_core.cli_app.interactive import run_interactive_chat, submit_and_stream_message
+from assistant_core.cli_app.message_stream import assistant_character_delay_seconds_for_output
 from assistant_core.cli_app.renderers import (
     write_content_ingest,
     write_content_reindex,
     write_content_sources,
     write_content_status,
     write_memory_list,
+)
+from assistant_core.cli_app.terminal_rendering import (
+    TerminalColorScheme,
+    resolve_terminal_color_enabled,
 )
 from assistant_core.cli_app.utils import _display_text, _required_str
 
@@ -94,6 +99,9 @@ async def _run_command(
                 active_project_namespace=args.project_namespace,
             )
             conversation_id = _required_str(conversation, "conversation_id")
+        color_scheme = TerminalColorScheme(
+            enabled=resolve_terminal_color_enabled(args.color, stdout=stdout, plain=args.plain)
+        )
         return await submit_and_stream_message(
             client=client,
             stdout=stdout,
@@ -103,8 +111,14 @@ async def _run_command(
             loop_strategy=args.loop_strategy,
             working_directory=args.working_directory or str(Path.cwd()),
             client_message_id=args.client_message_id,
-            assistant_prefix=None,
+            assistant_prefix=color_scheme.start("assistant"),
+            assistant_suffix=color_scheme.reset,
             stdin=stdin,
+            assistant_character_delay_seconds=assistant_character_delay_seconds_for_output(
+                stdout=stdout,
+                plain=args.plain,
+            ),
+            color_scheme=color_scheme,
         )
 
     if args.command == "memory" and args.memory_command == "add":
