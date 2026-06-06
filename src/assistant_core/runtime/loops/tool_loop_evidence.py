@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 import json
 import re
@@ -35,6 +35,7 @@ class LiveStateEvidencePlan:
     candidate_tool_names: frozenset[str]
     missing_tool_names: frozenset[str]
     families: frozenset[LiveStateEvidenceFamily] = frozenset()
+    missing_families: frozenset[LiveStateEvidenceFamily] = frozenset()
     unavailable_reason: str | None = None
 
 
@@ -438,12 +439,18 @@ def live_state_evidence_plan(
         )
         if calculator_missing:
             missing_tool_names = frozenset({*missing_tool_names, "calculator.evaluate"})
+    missing_families = _missing_families_for_family_candidates(
+        per_family_candidates,
+        missing_tool_names,
+        family,
+    )
     return LiveStateEvidencePlan(
         family=family,
         evidence_required=True,
         candidate_tool_names=candidate_tool_names,
         missing_tool_names=missing_tool_names,
         families=families,
+        missing_families=missing_families,
         unavailable_reason="live_state_tool_unavailable" if unavailable else None,
     )
 
@@ -818,6 +825,23 @@ def _missing_tool_names_for_family_candidates(
     return frozenset(missing)
 
 
+def _missing_families_for_family_candidates(
+    per_family_candidates: dict[LiveStateEvidenceFamily, frozenset[str]],
+    missing_tool_names: frozenset[str],
+    primary_family: LiveStateEvidenceFamily,
+) -> frozenset[LiveStateEvidenceFamily]:
+    missing = {
+        family
+        for family, family_candidates in per_family_candidates.items()
+        if family_candidates & missing_tool_names
+    }
+    if "calculator.evaluate" in missing_tool_names:
+        missing.add(LiveStateEvidenceFamily.LIVE_STATE_MATH)
+    if not missing and missing_tool_names:
+        missing.add(primary_family)
+    return frozenset(missing)
+
+
 def _current_time_delta_has_unsupported_target(value: str) -> bool:
     return _matches_any(
         _CURRENT_TIME_DELTA_PATTERNS,
@@ -1006,11 +1030,139 @@ def request_requires_initial_tool_evidence(
         return False
     if request_plan.final_answer_requires_observation():
         return True
-    return request_needs_live_state_math_evidence(
+    return final_answer_missing_evidence_plan(
         request,
         request_plan,
         tool_observation_refs=(),
+    ) is not None
+
+
+def final_answer_missing_evidence_plan(
+    request: LoopExecutionRequest,
+    request_plan: ToolRequestPlan,
+    *,
+    tool_observation_refs: tuple[ToolObservationRef, ...],
+) -> LiveStateEvidencePlan | None:
+    plan = _without_terminal_unavailable_observations(
+        live_state_evidence_plan(
+            request,
+            request_plan,
+            tool_observation_refs=tool_observation_refs,
+        ),
+        tool_observation_refs,
     )
+    if not plan.evidence_required:
+        return None
+    if not plan.candidate_tool_names:
+        return None
+    if not plan.missing_tool_names:
+        return None
+    return plan
+
+
+def failed_observation_exhausts_missing_evidence(
+    request: LoopExecutionRequest,
+    request_plan: ToolRequestPlan,
+    observation_ref: ToolObservationRef,
+    tool_observation_refs: tuple[ToolObservationRef, ...],
+) -> bool:
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=tool_observation_refs,
+    )
+    if not plan.evidence_required:
+        return False
+    if plan.missing_tool_names != frozenset({observation_ref.tool_name}):
+        return False
+    if not _is_terminal_unavailable_observation(observation_ref):
+        return False
+    non_math_families = plan.families - frozenset({LiveStateEvidenceFamily.LIVE_STATE_MATH})
+    return len(non_math_families) <= 1
+
+
+def _without_terminal_unavailable_observations(
+    plan: LiveStateEvidencePlan,
+    tool_observation_refs: tuple[ToolObservationRef, ...],
+) -> LiveStateEvidencePlan:
+    if not plan.missing_tool_names:
+        return plan
+    terminal_tool_names = frozenset(
+        ref.tool_name
+        for ref in tool_observation_refs
+        if ref.tool_name in plan.missing_tool_names and _is_terminal_unavailable_observation(ref)
+    )
+    if not terminal_tool_names:
+        return plan
+    missing_tool_names = plan.missing_tool_names - terminal_tool_names
+    return replace(
+        plan,
+        missing_tool_names=missing_tool_names,
+        missing_families=_missing_families_for_tool_names(missing_tool_names, plan),
+    )
+
+
+def _is_terminal_unavailable_observation(ref: ToolObservationRef) -> bool:
+    if ref.status not in {ToolObservationStatus.FAILED, ToolObservationStatus.TIMEOUT}:
+        return False
+    return ref.error_code not in {
+        "invalid_arguments",
+        "unknown_tool",
+        "tool_disabled",
+    }
+
+
+def _missing_families_for_tool_names(
+    missing_tool_names: frozenset[str],
+    plan: LiveStateEvidencePlan,
+) -> frozenset[LiveStateEvidenceFamily]:
+    if not missing_tool_names:
+        return frozenset()
+    families: set[LiveStateEvidenceFamily] = set()
+    if "calculator.evaluate" in missing_tool_names:
+        families.add(LiveStateEvidenceFamily.LIVE_STATE_MATH)
+    if "datetime.now" in missing_tool_names:
+        datetime_families = plan.families & {
+            LiveStateEvidenceFamily.CURRENT_TIME,
+            LiveStateEvidenceFamily.CURRENT_DATE,
+        }
+        families.update(datetime_families or {LiveStateEvidenceFamily.CURRENT_TIME})
+    if "datetime.until" in missing_tool_names:
+        families.add(LiveStateEvidenceFamily.CURRENT_TIME)
+    tool_family_by_name = {
+        "tool.system.read.resources": LiveStateEvidenceFamily.SYSTEM_RESOURCES,
+        "tool.system.read.network": LiveStateEvidenceFamily.SYSTEM_NETWORK,
+        "tool.system.read.hardware": LiveStateEvidenceFamily.SYSTEM_HARDWARE,
+        "tool.system.read.sensors": LiveStateEvidenceFamily.SYSTEM_SENSORS,
+        "daemon.status": LiveStateEvidenceFamily.DAEMON_STATUS,
+    }
+    families.update(
+        family
+        for tool_name, family in tool_family_by_name.items()
+        if tool_name in missing_tool_names
+    )
+    if not families and plan.family is not None:
+        families.add(plan.family)
+    return frozenset(family for family in families if family in plan.families or family is plan.family)
+
+
+def final_answer_deferred_missing_evidence_plan(
+    request: LoopExecutionRequest,
+    request_plan: ToolRequestPlan,
+    *,
+    tool_observation_refs: list[ToolObservationRef],
+    used_tool_calls: int,
+) -> LiveStateEvidencePlan | None:
+    plan = final_answer_missing_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=tuple(tool_observation_refs),
+    )
+    if plan is None:
+        return None
+    if used_tool_calls >= request.budget.max_tool_calls:
+        raise RuntimeError("required_tool_evidence_missing")
+    return plan
 
 
 def should_defer_final_answer_for_calculator_evidence(
@@ -1023,15 +1175,15 @@ def should_defer_final_answer_for_calculator_evidence(
     allowed = request_plan.allowed_tool_names or frozenset()
     if "calculator.evaluate" not in allowed:
         return False
-    if not request_needs_live_state_math_evidence(
+    plan = final_answer_deferred_missing_evidence_plan(
         request,
         request_plan,
-        tool_observation_refs=tuple(tool_observation_refs),
-    ):
+        tool_observation_refs=tool_observation_refs,
+        used_tool_calls=used_tool_calls,
+    )
+    if plan is None:
         return False
-    if used_tool_calls >= request.budget.max_tool_calls:
-        raise RuntimeError("required_tool_evidence_missing")
-    return True
+    return plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
 
 
 def request_needs_live_state_math_evidence(

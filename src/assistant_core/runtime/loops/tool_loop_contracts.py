@@ -6,6 +6,7 @@ from assistant_core.domain.loops import (
     ToolProposalParseError,
     ToolRequestPlan,
 )
+from assistant_core.runtime.loops.tool_loop_evidence import LiveStateEvidencePlan
 from assistant_core.runtime.loops.tool_catalog import allowed_tool_catalog
 
 
@@ -56,6 +57,7 @@ def tool_proposal_output_contract(
     *,
     completed_observations: int,
     calculator_evidence_required: bool = False,
+    missing_evidence_plan: LiveStateEvidencePlan | None = None,
 ) -> str:
     policy = request_plan.policy
     allowed = request_plan.allowed_tool_names
@@ -101,7 +103,9 @@ def tool_proposal_output_contract(
                 "collect the relevant live-state tool observation and a calculator.evaluate "
                 "observation before final_answer."
             )
-        if calculator_evidence_required:
+        if missing_evidence_plan is not None:
+            lines.append(missing_evidence_output_contract(missing_evidence_plan))
+        elif calculator_evidence_required:
             lines.append(
                 "final_answer is not valid yet. The request asks to compare live-state data "
                 "with an arithmetic expression, so both a relevant live-state observation and "
@@ -118,6 +122,40 @@ def tool_proposal_output_contract(
             "For countdown or time-until questions that depend on the current moment, "
             "use datetime.now and then datetime.until; do not calculate live time "
             "intervals in final_answer."
+        )
+    return " ".join(lines)
+
+
+def missing_evidence_output_contract(plan: LiveStateEvidencePlan) -> str:
+    missing_family_values = sorted(family.value for family in plan.missing_families)
+    family = (
+        missing_family_values[0]
+        if missing_family_values
+        else plan.family.value
+        if plan.family is not None
+        else "unknown"
+    )
+    families = ", ".join(sorted(family.value for family in plan.missing_families)) or family
+    missing = ", ".join(sorted(plan.missing_tool_names)) or "none"
+    candidates = ", ".join(sorted(plan.candidate_tool_names)) or "none"
+    lines = [
+        "final_answer is not valid yet.",
+        f"The missing live-state evidence family: {family}.",
+        f"missing live-state evidence families: {families}.",
+        f"missing tool evidence: {missing}.",
+        f"candidate evidence tools: {candidates}.",
+        (
+            "Return one relevant missing tool_call next. Do not answer from prompt "
+            "knowledge, memory, or prior observations while this evidence is missing."
+        ),
+    ]
+    live_state_missing = bool(plan.missing_tool_names - {"calculator.evaluate"})
+    if plan.family is not None and plan.family.value == "live_state_math" and live_state_missing:
+        lines.append("A relevant live-state observation is required before final_answer.")
+    if "calculator.evaluate" in plan.missing_tool_names:
+        lines.append(
+            "If calculator.evaluate is missing, evaluate only the arithmetic expression "
+            "from the user request."
         )
     return " ".join(lines)
 

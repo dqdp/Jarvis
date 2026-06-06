@@ -17,6 +17,7 @@ from assistant_core.runtime.loops.tool_loop_evidence import (
     contains_live_state_intent,
     detect_live_state_family,
     live_state_evidence_plan,
+    request_requires_initial_tool_evidence,
     request_needs_live_state_math_evidence,
     should_defer_final_answer_for_calculator_evidence,
 )
@@ -909,6 +910,7 @@ def test_live_state_evidence_plan_keeps_missing_tools_for_unobserved_family() ->
         }
     )
     assert plan.missing_tool_names == frozenset({"datetime.now"})
+    assert plan.missing_families == frozenset({LiveStateEvidenceFamily.CURRENT_TIME})
 
 
 @pytest.mark.parametrize(
@@ -1655,6 +1657,29 @@ def test_live_state_math_plan_stays_blocked_when_calculator_is_unavailable_after
     assert plan.candidate_tool_names == frozenset({"tool.system.read.resources"})
     assert plan.missing_tool_names == frozenset()
     assert plan.unavailable_reason == "live_state_tool_unavailable"
+
+
+def test_request_requires_initial_tool_evidence_for_live_state_with_allowed_candidate() -> None:
+    assert request_requires_initial_tool_evidence(
+        _request("what is current CPU usage?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+    )
+
+
+def test_request_requires_initial_tool_evidence_ignores_live_state_near_miss() -> None:
+    assert (
+        request_requires_initial_tool_evidence(
+            _request("what does CPU usage mean?"),
+            _plan(
+                "tool.system.read.resources",
+                live_state_tool_names=("tool.system.read.resources",),
+            ),
+        )
+        is False
+    )
 
 
 def test_legacy_live_state_intent_wrapper_keeps_existing_math_guard_behavior() -> None:
