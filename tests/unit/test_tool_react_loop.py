@@ -2933,6 +2933,7 @@ def test_tool_react_loop_current_time_negative_formulations_do_not_finalize_dete
     "user_input",
     [
         "Сколько сейчас времени?",
+        "сколько времени в данный момент?",
         "сейчас сколько времени?",
         "сколько сейчас?",
         "какое время сейчас?",
@@ -3047,6 +3048,60 @@ def test_tool_react_loop_ru_en_near_misses_do_not_finalize_deterministically(
     assert gateway.calls == ["datetime.now"]
     assert result.used_tool_calls == 1
     assert router.structured_calls == 2
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_location_scoped_time_requires_datetime_without_local_finalizer() -> None:
+    result, gateway, router = _run_current_time_observation_scenario(
+        "what time is it in Paris?",
+        structured_responses=[
+            {"action": "final_answer"},
+            {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+            {"action": "final_answer"},
+        ],
+        chat_response="I need timezone data to answer Paris time.",
+    )
+
+    assert result.response_text == "I need timezone data to answer Paris time."
+    assert gateway.calls == ["datetime.now"]
+    assert result.used_tool_calls == 1
+    assert router.structured_calls == 3
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_current_date_requires_datetime_before_final_answer() -> None:
+    result, gateway, router = _run_current_time_observation_scenario(
+        "какая дата в данный момент?",
+        structured_responses=[
+            {"action": "final_answer"},
+            {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+            {"action": "final_answer"},
+        ],
+        chat_response="Сегодня 5 июня 2026.",
+    )
+
+    assert result.response_text == "Сегодня 5 июня 2026."
+    assert gateway.calls == ["datetime.now"]
+    assert result.used_tool_calls == 1
+    assert router.structured_calls == 3
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_countdown_requires_datetime_without_local_time_finalizer() -> None:
+    result, gateway, router = _run_current_time_observation_scenario(
+        "сколько времени до нового года?",
+        structured_responses=[
+            {"action": "final_answer"},
+            {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+            {"action": "final_answer"},
+        ],
+        chat_response="Финальный ответ формируется моделью по наблюдению времени.",
+    )
+
+    assert result.response_text == "Финальный ответ формируется моделью по наблюдению времени."
+    assert gateway.calls == ["datetime.now"]
+    assert result.used_tool_calls == 1
+    assert router.structured_calls == 3
     assert router.chat_calls == 1
 
 

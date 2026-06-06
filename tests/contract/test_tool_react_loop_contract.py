@@ -672,6 +672,37 @@ def test_tool_react_loop_executes_datetime_tool_then_final_answer() -> None:
     assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
 
 
+def test_tool_react_loop_requires_datetime_before_current_time_final_answer() -> None:
+    async def scenario():
+        router = ScriptedRouter(
+            [
+                {"action": "final_answer"},
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+            ],
+            chat_text="wrong unevidenced time",
+        )
+        loop, _store, assembler, event_log = _loop(router=router)
+        result = await loop.run_turn(
+            _request(
+                user_input="сколько времени в данный момент?",
+                sensitivity=Sensitivity.PUBLIC,
+                metadata=_tool_plan_metadata("datetime.now"),
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, router, assembler, events
+
+    result, router, assembler, events = asyncio.run(scenario())
+
+    assert result.response_text.startswith("Сейчас ")
+    assert result.response_text.endswith(".")
+    assert result.used_tool_calls == 1
+    assert router.calls == 2
+    assert router.chat_calls == 0
+    assert assembler.tool_ref_counts == [0, 0]
+    assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
+
+
 def test_tool_react_loop_uses_chat_model_when_tools_are_disabled() -> None:
     async def scenario():
         router = ScriptedRouter([], chat_text="plain answer")

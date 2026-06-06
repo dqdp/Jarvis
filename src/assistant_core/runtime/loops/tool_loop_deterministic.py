@@ -201,7 +201,7 @@ _ALLOWED_CURRENT_TIME_PREFIX_CONTEXT: dict[str, str] = {
 }
 
 _ALLOWED_CURRENT_TIME_SUFFIX_CONTEXT: dict[str, str] = {
-    "ru": r"(?:|пожалуйста)",
+    "ru": r"(?:|пожалуйста|в\s+данн\w*\s+момент)",
     "en": r"(?:|please|pls)",
     "es": r"",
     "fr": r"(?:|est-il)",
@@ -222,7 +222,7 @@ _CURRENT_TIME_ADDITIONAL_INTENT_PATTERNS: tuple[str, ...] = (
 
 _CURRENT_TIME_LOCATION_CONTEXT_PATTERNS: tuple[str, ...] = (
     r"\b(?:in|at|for)\b",
-    r"(?:^|\s)(?:в|во|на|у)\s+\S+",
+    r"(?:^|\s)(?:в|во|на|у)\s+(?!дан\w*\s+момент\b)\S+",
     r"\bفي\b",
 )
 
@@ -273,7 +273,7 @@ _CURRENT_TIME_LANGUAGE_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 _CURRENT_TIME_NEGATIVE_PATTERNS: tuple[str, ...] = (
-    r"(?:который\s+час|сколько.*врем(?:я|ени)|какое.*время)\s+в\s+",
+    r"(?:который\s+час|сколько.*врем(?:я|ени)|какое.*время)\s+в\s+(?!данн\w*\s+момент\b)",
     r"часов\w*\s+пояс",
     r"что\s+значит.*который\s+час",
     r"сколько\s+врем(?:я|ени)\s+до\b",

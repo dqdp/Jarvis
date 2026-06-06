@@ -96,6 +96,59 @@ def test_live_state_evidence_plan_detects_current_time_modifier_and_candidates()
     assert plan.missing_tool_names == frozenset({"datetime.now"})
 
 
+def test_live_state_evidence_plan_requires_datetime_for_bare_current_time_question() -> None:
+    plan = live_state_evidence_plan(
+        _request("какое время?"),
+        _plan("datetime.now", live_state_tool_names=("datetime.now",)),
+        tool_observation_refs=(),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.evidence_required is True
+    assert plan.candidate_tool_names == frozenset({"datetime.now"})
+    assert plan.missing_tool_names == frozenset({"datetime.now"})
+    assert plan.missing_families == frozenset({LiveStateEvidenceFamily.CURRENT_TIME})
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "сколько времени в Париже?",
+        "какое время в Париже?",
+        "what time is it in Paris?",
+        "current local time in Berlin?",
+    ],
+)
+def test_live_state_evidence_plan_requires_datetime_for_location_scoped_time(
+    user_input: str,
+) -> None:
+    plan = live_state_evidence_plan(
+        _request(user_input),
+        _plan("datetime.now", live_state_tool_names=("datetime.now",)),
+        tool_observation_refs=(),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.evidence_required is True
+    assert plan.candidate_tool_names == frozenset({"datetime.now"})
+    assert plan.missing_tool_names == frozenset({"datetime.now"})
+    assert plan.missing_families == frozenset({LiveStateEvidenceFamily.CURRENT_TIME})
+
+
+def test_live_state_evidence_plan_requires_datetime_for_current_date() -> None:
+    plan = live_state_evidence_plan(
+        _request("какая дата в данный момент?"),
+        _plan("datetime.now", live_state_tool_names=("datetime.now",)),
+        tool_observation_refs=(),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_DATE
+    assert plan.evidence_required is True
+    assert plan.candidate_tool_names == frozenset({"datetime.now"})
+    assert plan.missing_tool_names == frozenset({"datetime.now"})
+    assert plan.missing_families == frozenset({LiveStateEvidenceFamily.CURRENT_DATE})
+
+
 def test_live_state_evidence_plan_accepts_completed_datetime_until_for_countdown() -> None:
     plan = live_state_evidence_plan(
         _request("сколько секунд до нового года?"),
@@ -160,6 +213,132 @@ def test_live_state_evidence_plan_rejects_datetime_until_with_unmatched_from_iso
                     "unit": "seconds",
                     "from_iso": "2000-01-01T00:00:00+00:00",
                 },
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset({"datetime.now", "datetime.until"})
+    assert plan.missing_tool_names == plan.candidate_tool_names
+
+
+def test_live_state_evidence_plan_rejects_datetime_until_content_with_unmatched_from_iso() -> None:
+    plan = live_state_evidence_plan(
+        _request("сколько секунд до нового года?"),
+        _plan(
+            "datetime.now",
+            "datetime.until",
+            live_state_tool_names=("datetime.now", "datetime.until"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.until",
+                content=(
+                    '{"target": "next_new_year", '
+                    '"unit": "seconds", '
+                    '"from_iso": "2000-01-01T00:00:00+00:00"}'
+                ),
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset({"datetime.now", "datetime.until"})
+    assert plan.missing_tool_names == plan.candidate_tool_names
+
+
+def test_live_state_evidence_plan_rejects_datetime_until_argument_match_with_unmatched_content_from_iso() -> None:
+    plan = live_state_evidence_plan(
+        _request("сколько секунд до нового года?"),
+        _plan(
+            "datetime.now",
+            "datetime.until",
+            live_state_tool_names=("datetime.now", "datetime.until"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.until",
+                arguments={
+                    "target": "next_new_year",
+                    "unit": "seconds",
+                },
+                content=(
+                    '{"target": "next_new_year", '
+                    '"unit": "seconds", '
+                    '"from_iso": "2000-01-01T00:00:00+00:00"}'
+                ),
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset({"datetime.now", "datetime.until"})
+    assert plan.missing_tool_names == plan.candidate_tool_names
+
+
+def test_live_state_evidence_plan_rejects_datetime_until_unmatched_argument_from_iso_even_when_content_matches() -> None:
+    now_iso = "2026-06-05T20:59:07+03:00"
+    plan = live_state_evidence_plan(
+        _request("сколько секунд до нового года?"),
+        _plan(
+            "datetime.now",
+            "datetime.until",
+            live_state_tool_names=("datetime.now", "datetime.until"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.now",
+                content=f'{{"iso": "{now_iso}"}}',
+                structured_content={"iso": now_iso},
+            ),
+            _completed_ref(
+                "datetime.until",
+                arguments={
+                    "target": "next_new_year",
+                    "unit": "seconds",
+                    "from_iso": "2000-01-01T00:00:00+00:00",
+                },
+                content=(
+                    '{"target": "next_new_year", '
+                    '"unit": "seconds", '
+                    f'"from_iso": "{now_iso}"}}'
+                ),
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset({"datetime.now", "datetime.until"})
+    assert plan.missing_tool_names == plan.candidate_tool_names
+
+
+def test_live_state_evidence_plan_rejects_datetime_until_unmatched_content_from_iso_even_when_structured_matches() -> None:
+    now_iso = "2026-06-05T20:59:07+03:00"
+    plan = live_state_evidence_plan(
+        _request("сколько секунд до нового года?"),
+        _plan(
+            "datetime.now",
+            "datetime.until",
+            live_state_tool_names=("datetime.now", "datetime.until"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.now",
+                content=f'{{"iso": "{now_iso}"}}',
+                structured_content={"iso": now_iso},
+            ),
+            _completed_ref(
+                "datetime.until",
+                structured_content={
+                    "target": "next_new_year",
+                    "unit": "seconds",
+                    "from_iso": now_iso,
+                },
+                content=(
+                    '{"target": "next_new_year", '
+                    '"unit": "seconds", '
+                    '"from_iso": "2000-01-01T00:00:00+00:00"}'
+                ),
             ),
         ),
     )

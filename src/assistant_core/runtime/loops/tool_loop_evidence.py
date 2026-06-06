@@ -190,6 +190,7 @@ _CURRENT_TIME_PATTERNS: tuple[str, ...] = (
     r"который\s+час",
     r"сколько\s+сейчас\s+врем(?:я|ени)",
     r"сейчас\s+сколько\s+врем(?:я|ени)?",
+    r"какое\s+время",
     r"какое\s+сейчас\s+время",
     r"какое\s+в\s+данн\w*\s+момент\s+время",
     r"какое\s+время\s+(?:сейчас|в\s+данн\w*\s+момент)",
@@ -800,14 +801,21 @@ def _missing_tool_names_for_family_candidates(
                 and len(family_candidates) > 1
                 and not _current_time_delta_has_unsupported_target(request_text)
             ):
-                has_any_delta_observation = any(
-                    _has_matching_completed_observation_for_delta(
-                        tool_name,
-                        request,
+                has_any_delta_observation = (
+                    not _has_conflicting_datetime_until_observation(
+                        request_text,
                         tool_observation_refs,
-                        request_text=request_text,
                     )
-                    for tool_name in family_candidates
+                    and any(
+                        _has_matching_completed_observation_for_delta(
+                            tool_name,
+                            request,
+                            tool_observation_refs,
+                            request_text=request_text,
+                            require_observed_datetime_source=True,
+                        )
+                        for tool_name in family_candidates
+                    )
                 )
                 if not has_any_delta_observation:
                     missing.update(family_candidates)
@@ -871,6 +879,7 @@ def _has_matching_completed_observation_for_delta(
     tool_observation_refs: tuple[ToolObservationRef, ...],
     *,
     request_text: str | None = None,
+    require_observed_datetime_source: bool = False,
 ) -> bool:
     if tool_name == "datetime.until":
         expected_arguments = _expected_datetime_until_arguments(
@@ -883,6 +892,7 @@ def _has_matching_completed_observation_for_delta(
                 ref,
                 expected_arguments=expected_arguments,
                 tool_observation_refs=tool_observation_refs,
+                require_observed_datetime_source=require_observed_datetime_source,
             )
             for ref in tool_observation_refs
         )
@@ -899,20 +909,98 @@ def _datetime_until_observation_matches_request(
     *,
     expected_arguments: dict[str, str],
     tool_observation_refs: tuple[ToolObservationRef, ...],
+    require_observed_datetime_source: bool,
 ) -> bool:
+    if not is_completed_observation(ref) or ref.tool_name != "datetime.until":
+        return False
+    observed_arguments = _datetime_until_observed_arguments(ref)
     if (
-        not is_completed_observation(ref)
-        or ref.tool_name != "datetime.until"
-        or ref.arguments.get("target") != expected_arguments["target"]
-        or ref.arguments.get("unit") != expected_arguments["unit"]
+        observed_arguments.get("target") != expected_arguments["target"]
+        or observed_arguments.get("unit") != expected_arguments["unit"]
     ):
         return False
-    from_iso = ref.arguments.get("from_iso")
-    if from_iso is None:
+    from_iso_values = _datetime_until_from_iso_values(ref)
+    if not from_iso_values:
         return True
-    if not isinstance(from_iso, str) or not from_iso.strip():
+    if not require_observed_datetime_source:
+        return True
+    observed_sources = _completed_datetime_now_iso_values(tool_observation_refs)
+    return bool(observed_sources) and from_iso_values <= observed_sources
+
+
+def _has_conflicting_datetime_until_observation(
+    request_text: str,
+    tool_observation_refs: tuple[ToolObservationRef, ...],
+) -> bool:
+    expected_arguments = _expected_datetime_until_arguments(request_text)
+    if expected_arguments is None:
         return False
-    return from_iso in _completed_datetime_now_iso_values(tool_observation_refs)
+    observed_sources = _completed_datetime_now_iso_values(tool_observation_refs)
+    for ref in tool_observation_refs:
+        if not is_completed_observation(ref) or ref.tool_name != "datetime.until":
+            continue
+        observed_arguments = _datetime_until_observed_arguments(ref)
+        if (
+            observed_arguments.get("target") != expected_arguments["target"]
+            or observed_arguments.get("unit") != expected_arguments["unit"]
+        ):
+            continue
+        from_iso_values = _datetime_until_from_iso_values(ref)
+        if from_iso_values and (not observed_sources or not from_iso_values <= observed_sources):
+            return True
+    return False
+
+
+def _datetime_until_observed_arguments(ref: ToolObservationRef) -> dict[str, str]:
+    payload = _datetime_until_payload(ref)
+    target = _first_string(ref.arguments.get("target"), payload.get("target"))
+    unit = _first_string(ref.arguments.get("unit"), payload.get("unit"))
+    if target is None or unit is None:
+        return {}
+    observed = {"target": target, "unit": unit}
+    from_iso = _first_string(payload.get("from_iso"), ref.arguments.get("from_iso"))
+    if from_iso is not None:
+        observed["from_iso"] = from_iso
+    return observed
+
+
+def _datetime_until_payload(ref: ToolObservationRef) -> dict:
+    payload = ref.structured_content
+    if not isinstance(payload, dict) and ref.content_type == "application/json":
+        try:
+            parsed = json.loads(ref.content)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            payload = parsed
+    return payload if isinstance(payload, dict) else {}
+
+
+def _datetime_until_content_payload(ref: ToolObservationRef) -> dict:
+    if ref.content_type != "application/json":
+        return {}
+    try:
+        parsed = json.loads(ref.content)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _datetime_until_from_iso_values(ref: ToolObservationRef) -> frozenset[str]:
+    values = {
+        value
+        for value in (
+            ref.arguments.get("from_iso"),
+            _datetime_until_payload(ref).get("from_iso"),
+            _datetime_until_content_payload(ref).get("from_iso"),
+        )
+        if isinstance(value, str) and value.strip()
+    }
+    return frozenset(values)
+
+
+def _first_string(*values: object) -> str | None:
+    return next((value for value in values if isinstance(value, str)), None)
 
 
 def _completed_datetime_now_iso_values(
