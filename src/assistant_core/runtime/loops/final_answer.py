@@ -235,6 +235,8 @@ class FinalAnswerStep:
         context_manifest_refs: list[str],
         tool_observation_refs: list[ToolObservationRef],
         source_step_id: str | None = None,
+        source: str = "deterministic_recovery",
+        degraded: bool = True,
     ) -> LoopExecutionResult:
         completion = await self._conversation_store.complete_assistant_response(
             CompleteAssistantResponseCommand(
@@ -261,7 +263,7 @@ class FinalAnswerStep:
             "step_id": step_started.payload["step_id"],
             "step_index": step_started.payload["step_index"],
             "action": "final_answer",
-            "source": "deterministic_recovery",
+            "source": source,
         }
         if source_step_id is not None:
             completed_payload["source_step_id"] = source_step_id
@@ -284,7 +286,7 @@ class FinalAnswerStep:
                 "used_tool_calls": used_tool_calls,
                 "context_manifest_refs": list(context_manifest_refs),
                 "tool_observation_refs": [ref.tool_call_id for ref in tool_observation_refs],
-                "source": "deterministic_recovery",
+                "source": source,
             },
             causation_id=assistant_event.event_id,
             sensitivity=request.current_message_sensitivity,
@@ -308,7 +310,7 @@ class FinalAnswerStep:
             used_tool_calls=used_tool_calls,
             context_manifest_refs=tuple(context_manifest_refs),
             tool_observation_refs=tuple(tool_observation_refs),
-            degraded=True,
+            degraded=degraded,
         )
 
 

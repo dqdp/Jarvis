@@ -321,11 +321,7 @@ def test_project_shell_read_adapter_exists_without_write_shell_for_pm06a() -> No
 
 def test_runtime_does_not_import_tool_or_shell_adapters() -> None:
     _assert_no_import_prefixes(
-        [
-            path
-            for path in _python_files("runtime")
-            if path.name != "tool_react.py"
-        ],
+        _python_files("runtime"),
         {
             "assistant_core.toolgateway",
             "assistant_core.tools",
@@ -640,6 +636,59 @@ def test_tool_react_loop_delegates_approval_and_proposal_execution() -> None:
     assert (SRC_ROOT / "runtime" / "loops" / "tool_proposal_executor.py").is_file()
     assert "async def _wait_for_approval" not in loop_source
     assert "async def _execute_tool_proposal" not in loop_source
+
+
+def test_tool_react_loop_delegates_contracts_evidence_and_deterministic_answers() -> None:
+    loop_source = (SRC_ROOT / "runtime" / "loops" / "tool_react.py").read_text(encoding="utf-8")
+    expected_modules = [
+        SRC_ROOT / "runtime" / "loops" / "tool_loop_contracts.py",
+        SRC_ROOT / "runtime" / "loops" / "tool_loop_evidence.py",
+        SRC_ROOT / "runtime" / "loops" / "tool_loop_deterministic.py",
+    ]
+
+    assert [path.name for path in expected_modules if not path.is_file()] == []
+    forbidden_helpers = {
+        "def _tool_proposal_output_contract",
+        "def _tool_observation_recovery_output_contract",
+        "def _should_defer_final_answer_for_calculator_evidence",
+        "def _request_needs_live_state_math_evidence",
+        "def _deterministic_datetime_now_response",
+        "def _current_time_question_language",
+    }
+
+    assert sorted(helper for helper in forbidden_helpers if helper in loop_source) == []
+
+
+def test_deterministic_tool_answer_paths_are_explicitly_allowlisted() -> None:
+    deterministic_path = SRC_ROOT / "runtime" / "loops" / "tool_loop_deterministic.py"
+    source = deterministic_path.read_text(encoding="utf-8")
+
+    assert "ALLOWED_DETERMINISTIC_RESPONSE_IDS" in source
+    assert "current_time_from_datetime_now" in source
+    assert "calendar" not in source.lower()
+    assert "christmas" not in source.lower()
+    assert "рождеств" not in source.lower()
+
+
+def test_tool_react_loop_delegates_finalization_and_stream_payload_helpers() -> None:
+    loop_source = (SRC_ROOT / "runtime" / "loops" / "tool_react.py").read_text(encoding="utf-8")
+    expected_modules = [
+        SRC_ROOT / "runtime" / "loops" / "tool_loop_finalization.py",
+        SRC_ROOT / "runtime" / "loops" / "tool_loop_streaming.py",
+    ]
+
+    assert [path.name for path in expected_modules if not path.is_file()] == []
+    forbidden_helpers = {
+        "def _should_use_final_chat_without_proposal",
+        "def _should_fallback_to_final_chat_after_malformed_proposal",
+        "def _should_fallback_to_final_chat_after_structured_error",
+        "def _should_fallback_to_final_chat_after_proposal_timeout",
+        "def _tool_call_signature",
+        "def _is_structured_output_validation_error",
+        "def _failed_stream_payload",
+    }
+
+    assert sorted(helper for helper in forbidden_helpers if helper in loop_source) == []
 
 
 def test_loop_strategies_do_not_import_storage_adapters() -> None:
@@ -989,6 +1038,7 @@ def test_known_facades_stay_below_god_module_size() -> None:
         SRC_ROOT / "cli_app" / "line_reader.py": 300,
         SRC_ROOT / "cli_app" / "renderers.py": 220,
         SRC_ROOT / "tools" / "gateway.py": 850,
+        SRC_ROOT / "runtime" / "loops" / "tool_react.py": 1200,
         SRC_ROOT / "context_assembly" / "deterministic.py": 780,
     }
     offenders = [

@@ -1642,6 +1642,49 @@ def test_tool_react_loop_passes_tool_proposal_contract_to_context_assembler() ->
     assert "Do not wrap the JSON in markdown" in contract
 
 
+def test_tool_react_loop_proposal_contract_limits_live_state_tools_to_live_state() -> None:
+    class ContractContextAssembler(FakeContextAssembler):
+        def __init__(self) -> None:
+            self.seen_contracts: list[str | None] = []
+
+        async def assemble(self, request):
+            self.seen_contracts.append(getattr(request, "output_contract", None))
+            return await super().assemble(request)
+
+    async def scenario():
+        assembler = ContractContextAssembler()
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=assembler,
+            model_router=FakeStructuredAndChatRouter(
+                [{"action": "final_answer"}],
+                chat_response="done",
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "datetime.now",
+                        "calculator.evaluate",
+                        live_state_tool_names=("datetime.now",),
+                    ),
+                ),
+                user_input="сколько секунд пройдет с прошлого Рождества до следующего?",
+            )
+        )
+        return assembler.seen_contracts[0]
+
+    contract = asyncio.run(scenario())
+
+    assert contract is not None
+    assert "Use live-state tools only when the answer requires current" in contract
+    assert "Self-contained calendar, duration, or arithmetic questions" in contract
+    assert 'return {"action":"final_answer"}' in contract
+
+
 def test_tool_react_loop_proposal_contract_prefers_distinct_tools_for_incomplete_evidence() -> None:
     class ContractContextAssembler(FakeContextAssembler):
         def __init__(self) -> None:
@@ -2271,6 +2314,398 @@ def test_tool_react_loop_does_not_synthesize_datetime_until_before_finalizing_co
     assert router.chat_calls == 1
 
 
+def _run_current_time_observation_scenario(
+    user_input: str,
+    *,
+    structured_responses: list[dict] | None = None,
+    chat_response: str = "wrong model time",
+):
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append(request.tool_name)
+            now = datetime.now(UTC)
+            content = '{"iso": "2026-06-05T20:59:07+03:00"}'
+            return ToolObservation(
+                tool_call_id=f"tool-call-{request.tool_name}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            structured_responses
+            or [{"action": "tool_call", "tool_name": "datetime.now", "arguments": {}}],
+            chat_response=chat_response,
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        request = replace(
+            _request(
+                metadata=_tool_plan_metadata(
+                    "datetime.now",
+                    "datetime.until",
+                    live_state_tool_names=("datetime.now", "datetime.until"),
+                )
+            ),
+            user_input=user_input,
+        )
+        result = await loop.run_turn(request)
+        return result, gateway, router
+
+    return asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("user_input", "expected_response"),
+    [
+        ("который час?", "Сейчас 20:59."),
+        ("сколько времени?", "Сейчас 20:59."),
+        ("сколько время?", "Сейчас 20:59."),
+        ("подскажи текущее время", "Сейчас 20:59."),
+        ("какое сейчас время?", "Сейчас 20:59."),
+        ("What time is it?", "It is 20:59."),
+        ("what's the time now?", "It is 20:59."),
+        ("current local time please", "It is 20:59."),
+        ("tell me the time", "It is 20:59."),
+        ("time now?", "It is 20:59."),
+        ("¿Qué hora es?", "Son las 20:59."),
+        ("dime la hora actual", "Son las 20:59."),
+        ("Quelle heure est-il ?", "Il est 20:59."),
+        ("donne-moi l'heure actuelle", "Il est 20:59."),
+        ("Wie spät ist es?", "Es ist 20:59."),
+        ("aktuelle Uhrzeit bitte", "Es ist 20:59."),
+        ("Che ore sono?", "Sono le 20:59."),
+        ("dimmi l'ora attuale", "Sono le 20:59."),
+        ("Que horas são?", "São 20:59."),
+        ("qual é a hora atual?", "São 20:59."),
+        ("котра година?", "Зараз 20:59."),
+        ("скільки зараз часу?", "Зараз 20:59."),
+        ("która jest godzina?", "Jest 20:59."),
+        ("jaki jest aktualny czas?", "Jest 20:59."),
+        ("Saat kaç?", "Saat 20:59."),
+        ("şu an saat kaç?", "Saat 20:59."),
+        ("كم الساعة؟", "الوقت الآن 20:59."),
+        ("今何時ですか", "現在時刻は20:59です。"),
+        ("现在几点？", "现在是20:59。"),
+    ],
+)
+def test_tool_react_loop_current_time_formulations_finalize_from_observation(
+    user_input: str,
+    expected_response: str,
+) -> None:
+    result, gateway, router = _run_current_time_observation_scenario(user_input)
+
+    assert result.response_text == expected_response
+    assert gateway.calls == ["datetime.now"]
+    assert result.used_tool_calls == 1
+    assert result.used_model_calls == 1
+    assert result.degraded is False
+    assert router.structured_calls == 1
+    assert router.chat_calls == 0
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "сколько времени до нового года?",
+        "сколько секунд до нового года?",
+        "через сколько времени будет новый год?",
+        "сколько времени заняла операция?",
+        "который час был вчера в Москве?",
+        "какое время поставить в cron?",
+        "объясни команду time в bash",
+        "что такое системное время?",
+        "what is the time complexity of merge sort?",
+        "how much time does merge sort take?",
+        "how long until New Year?",
+        "what time was it yesterday in London?",
+        "set a timer for five minutes",
+        "do you have a clock tool?",
+        "show me Python time.time examples",
+        "quelle est la complexité temporelle du tri fusion?",
+        "combien de temps jusqu'au Nouvel An ?",
+        "wie lange bis Neujahr?",
+        "was ist die Laufzeitkomplexität von Quicksort?",
+        "che tempo di esecuzione ha merge sort?",
+        "quanto tempo manca a Capodanno?",
+        "qual é a complexidade temporal do merge sort?",
+        "ile czasu do nowego roku?",
+        "algorytm ma złożoność czasową O(n)?",
+        "yeni yıla ne kadar kaldı?",
+        "zaman karmaşıklığı nedir?",
+        "скільки часу до нового року?",
+        "яка часова складність merge sort?",
+    ],
+)
+def test_tool_react_loop_current_time_negative_formulations_do_not_finalize_deterministically(
+    user_input: str,
+) -> None:
+    result, gateway, router = _run_current_time_observation_scenario(
+        user_input,
+        structured_responses=[
+            {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+            {"action": "final_answer"},
+        ],
+        chat_response="fallback final answer",
+    )
+
+    assert result.response_text == "fallback final answer"
+    assert gateway.calls == ["datetime.now"]
+    assert result.used_tool_calls == 1
+    assert router.structured_calls == 2
+    assert router.chat_calls == 1
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "Сколько сейчас времени?",
+        "сейчас сколько времени?",
+        "сколько сейчас?",
+        "какое время сейчас?",
+        "текущее местное время?",
+        "местное время сейчас?",
+        "назови текущее время",
+        "скажи время",
+        "скажи, который час",
+        "подскажи, пожалуйста, который час",
+        "сколько на часах?",
+        "что там по времени?",
+        "время сейчас",
+        "What time is it now?",
+        "what is the current time?",
+        "what's current local time?",
+        "current time?",
+        "local time?",
+        "time please",
+        "the time please",
+        "please tell me what time it is",
+        "can you tell me the time?",
+        "can you give me the current time?",
+        "got the time?",
+        "do you know what time it is?",
+        "what does the clock say?",
+        "clock time now?",
+    ],
+)
+def test_tool_react_loop_ru_en_current_time_variants_finalize_from_observation(
+    user_input: str,
+) -> None:
+    result, gateway, router = _run_current_time_observation_scenario(user_input)
+
+    assert result.response_text in {"Сейчас 20:59.", "It is 20:59."}
+    assert gateway.calls == ["datetime.now"]
+    assert result.used_tool_calls == 1
+    assert result.used_model_calls == 1
+    assert result.degraded is False
+    assert router.structured_calls == 1
+    assert router.chat_calls == 0
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "сколько сейчас времени в Лондоне?",
+        "сколько сейчас времени в Токио?",
+        "который час в Нью-Йорке?",
+        "какое сейчас время в UTC?",
+        "который час был вчера?",
+        "который часовой пояс у Москвы?",
+        "что значит который час?",
+        "сколько времени нужно на задачу?",
+        "сколько времени занимает merge sort?",
+        "какое время выполнения у алгоритма?",
+        "поставь таймер на 5 минут",
+        "напомни мне в 7 вечера",
+        "какое время поставить в cron для запуска?",
+        "покажи примеры datetime.now в Python",
+        "покажи системное время в логах",
+        "what time is it in London?",
+        "what time is it in Tokyo right now?",
+        "what is the current time in UTC?",
+        "what time zone is Moscow in?",
+        "what did 'what time is it' mean in that quote?",
+        "how much time is needed for the task?",
+        "how long does merge sort take?",
+        "what is the runtime of this algorithm?",
+        "what is the execution time of the benchmark?",
+        "set a timer for 5 minutes",
+        "remind me at 7pm",
+        "what cron time should I use?",
+        "show Python datetime.now examples",
+        "read the system time from the logs",
+        "What time is it, and how many seconds until Christmas?",
+        "tell me the time and how many seconds until Christmas",
+        "في دبي كم الساعة؟",
+        "東京は今何時ですか",
+        "北京现在几点",
+        "Который час, и сколько секунд осталось до Рождества?",
+        "كم الساعة في دبي؟",
+        "今何時ですか 東京",
+        "现在几点 北京",
+        "time now in Tokyo?",
+        "what does the clock say in London?",
+        "what's the time in Paris?",
+        "current local time in Berlin?",
+        "¿Qué hora es en Madrid?",
+        "Quelle heure est-il à Paris ?",
+        "Wie spät ist es in Berlin?",
+        "Che ore sono a Roma?",
+        "Que horas são em Lisboa?",
+        "która jest godzina w Warszawie?",
+        "Saat kaç Istanbul?",
+        "котра година в Києві?",
+        "скільки зараз часу в Києві?",
+    ],
+)
+def test_tool_react_loop_ru_en_near_misses_do_not_finalize_deterministically(
+    user_input: str,
+) -> None:
+    result, gateway, router = _run_current_time_observation_scenario(
+        user_input,
+        structured_responses=[
+            {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+            {"action": "final_answer"},
+        ],
+        chat_response="fallback final answer",
+    )
+
+    assert result.response_text == "fallback final answer"
+    assert gateway.calls == ["datetime.now"]
+    assert result.used_tool_calls == 1
+    assert router.structured_calls == 2
+    assert router.chat_calls == 1
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "сколько секунд прошло с последнего Рождества?",
+        "посчитай секунды с последнего Рождества",
+        "прошло сколько секунд с последнего рождества?",
+        "сколько секунд пройдет с прошлого Рождества до следующего?",
+        "сколько секунд между прошлым и следующим Рождеством?",
+        "сколько секунд прошло с Рождества?",
+        "сколько минут прошло с последнего Рождества?",
+        "сколько секунд осталось до Рождества?",
+        "сколько секунд прошло с последнего Нового года?",
+        "how many seconds have passed since last Christmas?",
+        "seconds since last Christmas?",
+        "calculate seconds elapsed since last Christmas",
+        "how many seconds from last Christmas to next Christmas?",
+        "how many seconds are between last and next Christmas?",
+        "how many seconds since Christmas?",
+        "how many minutes have passed since last Christmas?",
+        "how many seconds until Christmas?",
+        "how many seconds since last New Year?",
+    ],
+)
+def test_tool_react_loop_does_not_hardcode_calendar_duration_answers_after_datetime_observation(
+    user_input: str,
+) -> None:
+    result, gateway, router = _run_current_time_observation_scenario(
+        user_input,
+        structured_responses=[
+            {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+            {"action": "final_answer"},
+        ],
+        chat_response="fallback final answer",
+    )
+
+    assert result.response_text == "fallback final answer"
+    assert gateway.calls == ["datetime.now"]
+    assert result.used_tool_calls == 1
+    assert router.structured_calls == 2
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_answers_current_time_from_datetime_observation_without_final_chat() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append(request.tool_name)
+            now = datetime.now(UTC)
+            content = '{"iso": "2026-06-05T20:59:07+03:00"}'
+            return ToolObservation(
+                tool_call_id=f"tool-call-{request.tool_name}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [{"action": "tool_call", "tool_name": "datetime.now", "arguments": {}}],
+            chat_response="wrong model time",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        request = replace(
+            _request(
+                metadata=_tool_plan_metadata(
+                    "datetime.now",
+                    "datetime.until",
+                    live_state_tool_names=("datetime.now", "datetime.until"),
+                )
+            ),
+            user_input="который час?",
+        )
+        result = await loop.run_turn(request)
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "Сейчас 20:59."
+    assert gateway.calls == ["datetime.now"]
+    assert result.used_tool_calls == 1
+    assert result.used_model_calls == 1
+    assert result.degraded is False
+    assert router.structured_calls == 1
+    assert router.chat_calls == 0
+
+
 def test_tool_react_loop_does_not_force_datetime_until_for_current_time_question() -> None:
     class Gateway:
         def __init__(self) -> None:
@@ -2331,6 +2766,142 @@ def test_tool_react_loop_does_not_force_datetime_until_for_current_time_question
     result, gateway, router = asyncio.run(scenario())
 
     assert result.response_text == "Сейчас 18:14."
+    assert gateway.calls == ["datetime.now"]
+    assert result.used_tool_calls == 1
+    assert result.used_model_calls == 1
+    assert result.degraded is False
+    assert router.structured_calls == 1
+    assert router.chat_calls == 0
+
+
+def test_tool_react_loop_recovers_malformed_current_time_tool_call_with_datetime_now() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            content = '{"iso": "2026-06-02T18:14:39+03:00"}'
+            return ToolObservation(
+                tool_call_id=f"tool-call-{request.tool_name}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now"},
+                {"action": "final_answer"},
+            ],
+            chat_response="Сейчас 18:14.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        request = replace(
+            _request(
+                metadata=_tool_plan_metadata(
+                    "datetime.now",
+                    "datetime.until",
+                    live_state_tool_names=("datetime.now", "datetime.until"),
+                )
+            ),
+            user_input="сколько время?",
+        )
+        result = await loop.run_turn(request)
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "Сейчас 18:14."
+    assert gateway.calls == [("datetime.now", {})]
+    assert result.used_tool_calls == 1
+    assert result.used_model_calls == 1
+    assert result.degraded is False
+    assert router.structured_calls == 1
+    assert router.chat_calls == 0
+
+
+def test_tool_react_loop_does_not_deterministically_finalize_duration_question() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append(request.tool_name)
+            now = datetime.now(UTC)
+            content = '{"iso": "2026-06-02T18:14:39+03:00"}'
+            return ToolObservation(
+                tool_call_id=f"tool-call-{request.tool_name}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+            ],
+            chat_response="Финальный ответ формируется моделью по доступному наблюдению.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        request = replace(
+            _request(
+                metadata=_tool_plan_metadata(
+                    "datetime.now",
+                    "datetime.until",
+                    live_state_tool_names=("datetime.now", "datetime.until"),
+                )
+            ),
+            user_input="сколько времени до нового года?",
+        )
+        result = await loop.run_turn(request)
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "Финальный ответ формируется моделью по доступному наблюдению."
     assert gateway.calls == ["datetime.now"]
     assert result.used_tool_calls == 1
     assert router.structured_calls == 2
@@ -3518,6 +4089,89 @@ def test_tool_react_loop_does_not_reuse_completed_deferred_step_for_tool_executi
         if event.event_type is EventType.AGENT_STEP_COMPLETED:
             completed_step_ids.add(event.payload["step_id"])
     assert tool_started_after_completion == []
+
+
+def test_tool_react_loop_malformed_final_proposal_after_observation_uses_observed_contract() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
+            return ToolObservation(
+                tool_call_id="tool-call-resources",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    class ContractContextAssembler(FakeContextAssembler):
+        def __init__(self) -> None:
+            self.final_contract: str | None = None
+
+        async def assemble(self, request):
+            if request.purpose == "final_answer":
+                self.final_contract = request.output_contract
+            return await super().assemble(request)
+
+    async def scenario():
+        gateway = Gateway()
+        assembler = ContractContextAssembler()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {"metric": "cpu_and_memory"},
+                },
+                {"action": "final_answer", "answer": "CPU usage is lower than expected."},
+            ],
+            chat_response="CPU usage is 10.2%.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=assembler,
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "tool.system.read.resources",
+                        live_state_tool_names=("tool.system.read.resources",),
+                    ),
+                    budget=replace(_budget(), max_tool_calls=2),
+                ),
+                user_input="what is current CPU usage?",
+            )
+        )
+        return result, gateway, router, assembler.final_contract
+
+    result, gateway, router, final_contract = asyncio.run(scenario())
+
+    assert result.response_text == "CPU usage is 10.2%."
+    assert gateway.calls == [("tool.system.read.resources", {"metric": "cpu_and_memory"})]
+    assert router.structured_calls == 2
+    assert router.chat_calls == 1
+    assert final_contract is not None
+    assert "completed tool observation" in final_contract
+    assert "No completed tool observation is available" not in final_contract
 
 
 def test_tool_react_loop_defers_malformed_final_proposal_to_calculator_evidence() -> None:
