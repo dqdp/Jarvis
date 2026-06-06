@@ -285,6 +285,7 @@ class ToolObservationRef:
     structured_schema_version: int | None = None
     parse_status: Any = None
     parse_warnings: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
     arguments: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -310,6 +311,7 @@ class ToolObservationRef:
             structured_schema_version=observation.structured_schema_version,
             parse_status=observation.parse_status,
             parse_warnings=observation.parse_warnings,
+            metadata=_safe_observation_ref_metadata(observation.metadata),
             arguments=arguments or {},
         )
 
@@ -327,12 +329,34 @@ class ToolObservationRef:
         elif not isinstance(self.parse_status, ToolParseStatus):
             object.__setattr__(self, "parse_status", ToolParseStatus(self.parse_status))
         object.__setattr__(self, "parse_warnings", tuple(self.parse_warnings))
+        object.__setattr__(self, "metadata", dict(self.metadata))
         object.__setattr__(self, "arguments", dict(self.arguments))
         object.__setattr__(
             self,
             "error_code",
             safe_tool_observation_error_code(self.error_code),
         )
+
+
+_OBSERVATION_REF_METADATA_KEYS = frozenset(
+    {
+        "exit_code",
+        "family",
+        "source",
+        "stderr_truncated",
+        "stdout_truncated",
+        "unavailable",
+    }
+)
+
+
+def _safe_observation_ref_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key in _OBSERVATION_REF_METADATA_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, (bool, int, str)):
+            safe[key] = value
+    return safe
 
 
 @dataclass(frozen=True)

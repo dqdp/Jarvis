@@ -10,12 +10,14 @@ from assistant_core.domain.loops import (
     ToolRequestPlan,
 )
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolObservationStatus
+from assistant_core.domain.tools import ToolObservationStatus, ToolParseStatus
 from assistant_core.runtime.loops.tool_loop_evidence import (
     LiveStateEvidenceFamily,
     LiveStateEvidencePlan,
     contains_live_state_intent,
     detect_live_state_family,
+    failed_observation_exhausts_missing_evidence,
+    final_answer_missing_evidence_plan,
     live_state_evidence_plan,
     request_requires_initial_tool_evidence,
     request_needs_live_state_math_evidence,
@@ -70,7 +72,12 @@ def _completed_ref(
     arguments: dict | None = None,
     content: str = "{}",
     structured_content: dict | None = None,
+    structured_schema: str | None = None,
+    parse_status: ToolParseStatus | None = None,
+    metadata: dict | None = None,
 ) -> ToolObservationRef:
+    if metadata is None and arguments and isinstance(arguments.get("argv"), list):
+        metadata = {"exit_code": 0}
     return ToolObservationRef(
         tool_call_id=f"tool-call-{tool_name}",
         tool_name=tool_name,
@@ -79,7 +86,22 @@ def _completed_ref(
         content_type="application/json",
         sensitivity=Sensitivity.PROJECT,
         structured_content=structured_content,
+        structured_schema=structured_schema,
+        parse_status=parse_status,
+        metadata=metadata or {},
         arguments=arguments or {},
+    )
+
+
+def _failed_ref(tool_name: str, *, error_code: str = "tool_failed") -> ToolObservationRef:
+    return ToolObservationRef(
+        tool_call_id=f"tool-call-{tool_name}",
+        tool_name=tool_name,
+        status=ToolObservationStatus.FAILED,
+        content="",
+        content_type="text/plain",
+        sensitivity=Sensitivity.PROJECT,
+        error_code=error_code,
     )
 
 
@@ -1235,11 +1257,9 @@ def test_live_state_evidence_plan_keeps_threshold_clause_in_mixed_near_miss_requ
         tool_observation_refs=(),
     )
 
-    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
     assert LiveStateEvidenceFamily.SYSTEM_RESOURCES in plan.families
-    assert plan.candidate_tool_names == frozenset(
-        {"tool.system.read.resources", "calculator.evaluate"}
-    )
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.resources"})
     assert plan.missing_tool_names == plan.candidate_tool_names
 
 
@@ -1254,11 +1274,9 @@ def test_live_state_evidence_plan_keeps_newline_threshold_clause_in_mixed_near_m
         tool_observation_refs=(),
     )
 
-    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
     assert LiveStateEvidenceFamily.SYSTEM_RESOURCES in plan.families
-    assert plan.candidate_tool_names == frozenset(
-        {"tool.system.read.resources", "calculator.evaluate"}
-    )
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.resources"})
     assert plan.missing_tool_names == plan.candidate_tool_names
 
 
@@ -1273,11 +1291,9 @@ def test_live_state_evidence_plan_keeps_colon_threshold_clause_in_mixed_near_mis
         tool_observation_refs=(),
     )
 
-    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
     assert LiveStateEvidenceFamily.SYSTEM_RESOURCES in plan.families
-    assert plan.candidate_tool_names == frozenset(
-        {"tool.system.read.resources", "calculator.evaluate"}
-    )
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.resources"})
     assert plan.missing_tool_names == plan.candidate_tool_names
 
 
@@ -1292,11 +1308,9 @@ def test_live_state_evidence_plan_keeps_semicolon_threshold_clause_in_mixed_near
         tool_observation_refs=(),
     )
 
-    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
     assert LiveStateEvidenceFamily.SYSTEM_RESOURCES in plan.families
-    assert plan.candidate_tool_names == frozenset(
-        {"tool.system.read.resources", "calculator.evaluate"}
-    )
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.resources"})
     assert plan.missing_tool_names == plan.candidate_tool_names
 
 
@@ -1639,7 +1653,7 @@ def test_live_state_evidence_plan_requires_live_state_and_calculator_for_math() 
         "использование памяти как максимум 8GB?",
     ],
 )
-def test_live_state_evidence_plan_treats_threshold_comparison_as_live_state_math(
+def test_live_state_evidence_plan_treats_threshold_comparison_as_live_state_only(
     user_input: str,
 ) -> None:
     plan = live_state_evidence_plan(
@@ -1653,12 +1667,13 @@ def test_live_state_evidence_plan_treats_threshold_comparison_as_live_state_math
         tool_observation_refs=(),
     )
 
-    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
-    assert "calculator.evaluate" in plan.candidate_tool_names
-    assert plan.missing_tool_names == plan.candidate_tool_names
+    assert plan.family is not LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert "calculator.evaluate" not in plan.candidate_tool_names
+    assert "calculator.evaluate" not in plan.missing_tool_names
+    assert plan.candidate_tool_names
 
 
-def test_live_state_evidence_plan_keeps_threshold_calculator_missing_for_unsupported_comparison() -> None:
+def test_live_state_evidence_plan_clears_threshold_comparison_with_live_observation_only() -> None:
     plan = live_state_evidence_plan(
         _request("is current CPU usage over 80%?"),
         _plan(
@@ -1672,11 +1687,11 @@ def test_live_state_evidence_plan_keeps_threshold_calculator_missing_for_unsuppo
         ),
     )
 
-    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
-    assert plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
+    assert plan.missing_tool_names == frozenset()
 
 
-def test_live_state_evidence_plan_keeps_threshold_calculator_missing_after_mismatch() -> None:
+def test_live_state_evidence_plan_ignores_threshold_calculator_mismatch_after_live_observation() -> None:
     plan = live_state_evidence_plan(
         _request("is current CPU usage over 80%?"),
         _plan(
@@ -1690,12 +1705,12 @@ def test_live_state_evidence_plan_keeps_threshold_calculator_missing_after_misma
         ),
     )
 
-    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
-    assert plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
+    assert plan.missing_tool_names == frozenset()
 
 
 @pytest.mark.parametrize("expression", ["80", "80+1", "180-100", "1 < 80", "80 == 80", "80 > 1"])
-def test_live_state_evidence_plan_keeps_threshold_calculator_missing_for_non_comparison(
+def test_live_state_evidence_plan_ignores_threshold_calculator_non_comparison_after_live_observation(
     expression: str,
 ) -> None:
     plan = live_state_evidence_plan(
@@ -1711,8 +1726,8 @@ def test_live_state_evidence_plan_keeps_threshold_calculator_missing_for_non_com
         ),
     )
 
-    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
-    assert plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
+    assert plan.missing_tool_names == frozenset()
 
 
 @pytest.mark.parametrize(
@@ -1773,6 +1788,727 @@ def test_live_state_evidence_plan_clears_missing_tools_after_matching_observatio
     assert plan.missing_tool_names == frozenset()
 
 
+def test_live_state_evidence_plan_disk_request_requires_disk_resource_observation() -> None:
+    default_resource_plan = live_state_evidence_plan(
+        _request("what is current disk space available?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"metric": "cpu_and_memory"},
+                structured_content={"cpu": {"used_percent": 10.2}},
+            ),
+        ),
+    )
+    disk_resource_plan = live_state_evidence_plan(
+        _request("what is current disk space available?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["df", "-h"]},
+                structured_content={"filesystems": []},
+            ),
+        ),
+    )
+
+    assert default_resource_plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+    assert disk_resource_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_cpu_and_disk_request_requires_relevant_resource_observations() -> None:
+    disk_only_plan = live_state_evidence_plan(
+        _request("what is current CPU usage and disk space available?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["df", "-h"]},
+                structured_content={"filesystems": []},
+            ),
+        ),
+    )
+    complete_plan = live_state_evidence_plan(
+        _request("what is current CPU usage and disk space available?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"metric": "cpu_and_memory"},
+                structured_content={"cpu": {"used_percent": 10.2}},
+            ),
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["df", "-h"]},
+                structured_content={"filesystems": []},
+            ),
+        ),
+    )
+
+    assert disk_only_plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+    assert complete_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_cpu_and_memory_request_requires_both_resource_subtypes() -> None:
+    memory_only_plan = live_state_evidence_plan(
+        _request("what is current CPU usage and memory usage?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["free", "-m"]},
+                structured_schema="system.memory_overview",
+                structured_content={"available": "18000 MiB"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+    cpu_only_plan = live_state_evidence_plan(
+        _request("what is current CPU usage and memory usage?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["top", "-l", "1", "-n", "0"]},
+                structured_schema="system.cpu_overview",
+                structured_content={"used_percent": 20.0},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+    complete_plan = live_state_evidence_plan(
+        _request("what is current CPU usage and memory usage?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["top", "-l", "1", "-n", "0"]},
+                structured_schema="system.cpu_overview",
+                structured_content={"used_percent": 20.0},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["free", "-m"]},
+                structured_schema="system.memory_overview",
+                structured_content={"available": "18000 MiB"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert memory_only_plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+    assert cpu_only_plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+    assert complete_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_process_resource_request_rejects_global_resource_observation() -> None:
+    global_memory_plan = live_state_evidence_plan(
+        _request("is the Python process memory usage greater than 10*e?"),
+        _plan(
+            "calculator.evaluate",
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["free", "-m"]},
+                structured_schema="system.memory_overview",
+                structured_content={"available": "18000 MiB"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+            _completed_ref("calculator.evaluate", arguments={"expression": "10*e"}),
+        ),
+    )
+    global_cpu_plan = live_state_evidence_plan(
+        _request("what is current CPU usage of the Python process?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["top", "-l", "1", "-n", "0"]},
+                structured_schema="system.cpu_overview",
+                structured_content={"used_percent": 20.0},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert global_memory_plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert global_memory_plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+    assert global_cpu_plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
+    assert global_cpu_plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+
+
+def test_live_state_evidence_plan_raw_diagnostics_requires_usable_observation_metadata() -> None:
+    unavailable_plan = live_state_evidence_plan(
+        _request("what is current CPU usage?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["top", "-l", "1", "-n", "0"]},
+                structured_content=None,
+                metadata={"unavailable": True, "source": "top"},
+            ),
+        ),
+    )
+    nonzero_plan = live_state_evidence_plan(
+        _request("am I connected to the internet?"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["ifconfig"]},
+                structured_content={"stdout": ""},
+                metadata={"exit_code": 1},
+            ),
+        ),
+    )
+
+    assert unavailable_plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+    assert nonzero_plan.missing_tool_names == frozenset({"tool.system.read.network"})
+
+
+def test_live_state_evidence_plan_unavailable_sensor_snapshot_does_not_clear_evidence() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is the CPU temperature?"),
+        _plan(
+            "tool.system.read.sensors",
+            live_state_tool_names=("tool.system.read.sensors",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.sensors",
+                structured_schema="system.sensor_snapshot",
+                structured_content={"available": False, "source": "powermetrics"},
+                parse_status=ToolParseStatus.PARSED,
+                metadata={"unavailable": True, "source": "powermetrics"},
+            ),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset({"tool.system.read.sensors"})
+
+
+@pytest.mark.parametrize(
+    ("user_input", "tool_name"),
+    [
+        ("покажи текущие ресурсы", "tool.system.read.resources"),
+        ("network diagnostics", "tool.system.read.network"),
+        ("hardware metadata", "tool.system.read.hardware"),
+    ],
+)
+def test_live_state_evidence_plan_broad_system_request_rejects_unavailable_observation(
+    user_input: str,
+    tool_name: str,
+) -> None:
+    plan = live_state_evidence_plan(
+        _request(user_input),
+        _plan(tool_name, live_state_tool_names=(tool_name,)),
+        tool_observation_refs=(
+            _completed_ref(
+                tool_name,
+                content='{"available": false, "reason": "backend_not_found"}',
+                metadata={"unavailable": True, "source": "missing-backend"},
+            ),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset({tool_name})
+
+
+def test_live_state_evidence_plan_broad_network_request_rejects_nonzero_exit_without_retained_argv() -> None:
+    plan = live_state_evidence_plan(
+        _request("network diagnostics"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                content='{"exit_code": 1, "stdout": "", "stderr": "command failed"}',
+                metadata={"exit_code": 1},
+            ),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset({"tool.system.read.network"})
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "what is my current local IP address?",
+        "am I connected to the internet?",
+    ],
+)
+def test_live_state_evidence_plan_ip_addr_schema_can_satisfy_local_network_evidence(
+    user_input: str,
+) -> None:
+    plan = live_state_evidence_plan(
+        _request(user_input),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["ip", "addr"]},
+                structured_schema="system.vpn_status",
+                structured_content={"interfaces": []},
+                parse_status=ToolParseStatus.PARSED,
+                metadata={"exit_code": 0},
+            ),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_disk_available_rejects_path_usage_observation() -> None:
+    du_plan = live_state_evidence_plan(
+        _request("what is current disk space available?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["du", "-sh", "."]},
+                structured_content={"stdout": "12K ."},
+            ),
+        ),
+    )
+    df_plan = live_state_evidence_plan(
+        _request("what is current disk space available?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["df", "-h"]},
+                structured_schema="system.disk_free",
+                structured_content={"filesystems": []},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert du_plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+    assert df_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_battery_request_requires_battery_hardware_observation() -> None:
+    default_hardware_plan = live_state_evidence_plan(
+        _request("what is current battery level?"),
+        _plan(
+            "tool.system.read.hardware",
+            live_state_tool_names=("tool.system.read.hardware",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.hardware",
+                arguments={"argv": ["sysctl", "-n", "hw.logicalcpu"]},
+                structured_content={"cores": 10},
+            ),
+        ),
+    )
+    battery_plan = live_state_evidence_plan(
+        _request("what is current battery level?"),
+        _plan(
+            "tool.system.read.hardware",
+            live_state_tool_names=("tool.system.read.hardware",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.hardware",
+                arguments={"argv": ["pmset", "-g", "batt"]},
+                structured_content={"percentage": 77},
+            ),
+        ),
+    )
+
+    assert default_hardware_plan.missing_tool_names == frozenset({"tool.system.read.hardware"})
+    assert battery_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_hardware_request_requires_ram_observation() -> None:
+    core_plan = live_state_evidence_plan(
+        _request("how much RAM do I have?"),
+        _plan(
+            "tool.system.read.hardware",
+            live_state_tool_names=("tool.system.read.hardware",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.hardware",
+                arguments={"argv": ["sysctl", "-n", "hw.logicalcpu"]},
+                structured_content={"cores": 10},
+            ),
+        ),
+    )
+    memory_plan = live_state_evidence_plan(
+        _request("how much RAM do I have?"),
+        _plan(
+            "tool.system.read.hardware",
+            live_state_tool_names=("tool.system.read.hardware",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.hardware",
+                arguments={"argv": ["sysctl", "-n", "hw.memsize"]},
+                structured_content={"bytes": 25_769_803_776},
+            ),
+        ),
+    )
+
+    assert core_plan.missing_tool_names == frozenset({"tool.system.read.hardware"})
+    assert memory_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_hardware_request_requires_cpu_brand_observation() -> None:
+    memory_plan = live_state_evidence_plan(
+        _request("what processor do I have?"),
+        _plan(
+            "tool.system.read.hardware",
+            live_state_tool_names=("tool.system.read.hardware",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.hardware",
+                arguments={"argv": ["sysctl", "-n", "hw.memsize"]},
+                structured_content={"bytes": 25_769_803_776},
+            ),
+        ),
+    )
+    core_schema_plan = live_state_evidence_plan(
+        _request("what processor do I have?"),
+        _plan(
+            "tool.system.read.hardware",
+            live_state_tool_names=("tool.system.read.hardware",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.hardware",
+                arguments={"argv": ["sysctl", "-n", "hw.logicalcpu"]},
+                structured_schema="system.cpu_overview",
+                structured_content={"logical_cores": 10, "source": "sysctl"},
+                parse_status=ToolParseStatus.PARTIAL,
+            ),
+        ),
+    )
+    cpu_brand_plan = live_state_evidence_plan(
+        _request("what processor do I have?"),
+        _plan(
+            "tool.system.read.hardware",
+            live_state_tool_names=("tool.system.read.hardware",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.hardware",
+                arguments={"argv": ["sysctl", "-n", "machdep.cpu.brand_string"]},
+                structured_content={"brand": "Apple M4"},
+            ),
+        ),
+    )
+
+    assert memory_plan.missing_tool_names == frozenset({"tool.system.read.hardware"})
+    assert core_schema_plan.missing_tool_names == frozenset({"tool.system.read.hardware"})
+    assert cpu_brand_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_hardware_mixed_request_requires_every_subtype() -> None:
+    battery_only_plan = live_state_evidence_plan(
+        _request("How many CPU cores are there and what is current battery level?"),
+        _plan(
+            "tool.system.read.hardware",
+            live_state_tool_names=("tool.system.read.hardware",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.hardware",
+                arguments={"argv": ["pmset", "-g", "batt"]},
+                structured_schema="system.battery_charge",
+                structured_content={"percent": 77},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+    complete_plan = live_state_evidence_plan(
+        _request("How many CPU cores are there and what is current battery level?"),
+        _plan(
+            "tool.system.read.hardware",
+            live_state_tool_names=("tool.system.read.hardware",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.hardware",
+                arguments={"argv": ["pmset", "-g", "batt"]},
+                structured_schema="system.battery_charge",
+                structured_content={"percent": 77},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+            _completed_ref(
+                "tool.system.read.hardware",
+                arguments={"argv": ["sysctl", "-n", "hw.logicalcpu"]},
+                structured_schema="system.cpu_overview",
+                structured_content={"logical_cpus": 10},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert battery_only_plan.missing_tool_names == frozenset({"tool.system.read.hardware"})
+    assert complete_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_os_request_requires_os_hardware_observation() -> None:
+    default_hardware_plan = live_state_evidence_plan(
+        _request("what macOS version is this machine running?"),
+        _plan(
+            "tool.system.read.hardware",
+            live_state_tool_names=("tool.system.read.hardware",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.hardware",
+                arguments={"argv": ["sysctl", "-n", "hw.logicalcpu"]},
+                structured_content={"cores": 10},
+            ),
+        ),
+    )
+    os_plan = live_state_evidence_plan(
+        _request("what macOS version is this machine running?"),
+        _plan(
+            "tool.system.read.hardware",
+            live_state_tool_names=("tool.system.read.hardware",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.hardware",
+                arguments={"argv": ["sw_vers"]},
+                structured_content={"product_name": "macOS"},
+            ),
+        ),
+    )
+
+    assert default_hardware_plan.missing_tool_names == frozenset({"tool.system.read.hardware"})
+    assert os_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_vpn_request_requires_vpn_network_observation() -> None:
+    netstat_plan = live_state_evidence_plan(
+        _request("is VPN connected right now?"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["netstat", "-an"]},
+                structured_content={"stdout": "tcp4 0 0 *.443 *.* LISTEN"},
+            ),
+        ),
+    )
+    unparsed_vpn_plan = live_state_evidence_plan(
+        _request("is VPN connected right now?"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["scutil", "--nc", "list"]},
+                structured_schema="system.vpn_status",
+                structured_content=None,
+                parse_status=ToolParseStatus.UNPARSED,
+            ),
+        ),
+    )
+    vpn_plan = live_state_evidence_plan(
+        _request("is VPN connected right now?"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["scutil", "--nc", "list"]},
+                structured_schema="system.vpn_status",
+                structured_content={"connected": True},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert netstat_plan.missing_tool_names == frozenset({"tool.system.read.network"})
+    assert unparsed_vpn_plan.missing_tool_names == frozenset({"tool.system.read.network"})
+    assert vpn_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_ip_request_requires_ip_network_observation() -> None:
+    netstat_plan = live_state_evidence_plan(
+        _request("what is my current local IP address?"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["netstat", "-an"]},
+                structured_content={"stdout": "tcp4 0 0 *.443 *.* LISTEN"},
+            ),
+        ),
+    )
+    local_ip_plan = live_state_evidence_plan(
+        _request("what is my current local IP address?"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["ifconfig"]},
+                structured_content={"stdout": "en0: inet 192.168.1.10 netmask 0xffffff00"},
+            ),
+        ),
+    )
+    public_ip_plan = live_state_evidence_plan(
+        _request("what is my public IP address?"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["ifconfig"]},
+                structured_content={"stdout": "en0: inet 192.168.1.10 netmask 0xffffff00"},
+            ),
+        ),
+    )
+
+    assert netstat_plan.missing_tool_names == frozenset({"tool.system.read.network"})
+    assert local_ip_plan.missing_tool_names == frozenset()
+    assert public_ip_plan.missing_tool_names == frozenset({"tool.system.read.network"})
+
+
+def test_live_state_evidence_plan_internet_status_requires_connectivity_network_observation() -> None:
+    netstat_plan = live_state_evidence_plan(
+        _request("am I connected to the internet?"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["netstat", "-an"]},
+                structured_content={"stdout": "tcp4 0 0 *.443 *.* LISTEN"},
+            ),
+        ),
+    )
+    interface_plan = live_state_evidence_plan(
+        _request("am I connected to the internet?"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["ifconfig"]},
+                structured_content={"stdout": "en0: status: active"},
+            ),
+        ),
+    )
+
+    assert netstat_plan.missing_tool_names == frozenset({"tool.system.read.network"})
+    assert interface_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_load_average_requires_load_average_observation() -> None:
+    resource_overview_plan = live_state_evidence_plan(
+        _request("what is load average?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                structured_schema="system.resource_overview",
+                structured_content={
+                    "cpu": {"used_percent": 20.0},
+                    "memory": {"used_percent": 70.0},
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+    uptime_plan = live_state_evidence_plan(
+        _request("what is load average?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["uptime"]},
+                structured_content={"stdout": "load averages: 1.20 1.10 1.00"},
+            ),
+        ),
+    )
+
+    assert resource_overview_plan.missing_tool_names == frozenset(
+        {"tool.system.read.resources"}
+    )
+    assert uptime_plan.missing_tool_names == frozenset()
+
+
 def test_live_state_evidence_plan_clears_parenthesized_calculator_expression() -> None:
     request = _request("is CPU load greater than 10*(e+1)")
     request_plan = _plan(
@@ -1791,6 +2527,36 @@ def test_live_state_evidence_plan_clears_parenthesized_calculator_expression() -
 
     assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
     assert plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_requires_every_calculator_expression_for_live_state_math() -> None:
+    request = _request("is CPU greater than 10*e and memory greater than 2*pi?")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    partial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            _completed_ref("tool.system.read.resources"),
+            _completed_ref("calculator.evaluate", arguments={"expression": "10*e"}),
+        ),
+    )
+    complete_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            _completed_ref("tool.system.read.resources"),
+            _completed_ref("calculator.evaluate", arguments={"expression": "10*e"}),
+            _completed_ref("calculator.evaluate", arguments={"expression": "2*pi"}),
+        ),
+    )
+
+    assert partial_plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert partial_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert complete_plan.missing_tool_names == frozenset()
 
 
 def test_live_state_evidence_plan_reports_unavailable_when_relevant_tool_is_not_allowed() -> None:
@@ -1834,8 +2600,61 @@ def test_live_state_math_plan_stays_blocked_when_calculator_is_unavailable_after
     assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
     assert plan.evidence_required is True
     assert plan.candidate_tool_names == frozenset({"tool.system.read.resources"})
-    assert plan.missing_tool_names == frozenset()
+    assert plan.missing_tool_names == frozenset({"calculator.evaluate"})
     assert plan.unavailable_reason == "live_state_tool_unavailable"
+
+
+def test_failed_live_state_observation_exhausts_single_subtype_evidence() -> None:
+    request = _request("what is current battery level?")
+    request_plan = _plan(
+        "tool.system.read.hardware",
+        live_state_tool_names=("tool.system.read.hardware",),
+    )
+    failed_ref = _failed_ref("tool.system.read.hardware")
+
+    assert failed_observation_exhausts_missing_evidence(
+        request,
+        request_plan,
+        failed_ref,
+        (failed_ref,),
+    )
+
+
+def test_failed_live_state_observation_does_not_exhaust_same_family_multi_subtype_evidence() -> None:
+    request = _request("How many CPU cores are there and what is current battery level?")
+    request_plan = _plan(
+        "tool.system.read.hardware",
+        live_state_tool_names=("tool.system.read.hardware",),
+    )
+    failed_ref = _failed_ref("tool.system.read.hardware")
+
+    assert (
+        failed_observation_exhausts_missing_evidence(
+            request,
+            request_plan,
+            failed_ref,
+            (failed_ref,),
+        )
+        is False
+    )
+
+
+def test_terminal_unavailable_observation_does_not_clear_same_family_multi_subtype_missing_evidence() -> None:
+    request = _request("How many CPU cores are there and what is current battery level?")
+    request_plan = _plan(
+        "tool.system.read.hardware",
+        live_state_tool_names=("tool.system.read.hardware",),
+    )
+    failed_ref = _failed_ref("tool.system.read.hardware")
+
+    plan = final_answer_missing_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(failed_ref,),
+    )
+
+    assert plan is not None
+    assert plan.missing_tool_names == frozenset({"tool.system.read.hardware"})
 
 
 def test_request_requires_initial_tool_evidence_for_live_state_with_allowed_candidate() -> None:

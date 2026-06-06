@@ -207,7 +207,65 @@ def _safe_observation_arguments(proposal: ToolProposal) -> dict[str, object]:
         return _safe_calculator_arguments(proposal)
     if proposal.tool_name == "datetime.until":
         return _safe_datetime_until_arguments(proposal)
+    if proposal.tool_name in _SYSTEM_DIAGNOSTICS_TOOL_NAMES:
+        return _safe_system_diagnostics_arguments(proposal)
     return {}
+
+
+_SYSTEM_DIAGNOSTICS_TOOL_NAMES = frozenset(
+    {
+        "tool.system.read.resources",
+        "tool.system.read.network",
+        "tool.system.read.hardware",
+        "tool.system.read.sensors",
+    }
+)
+_SAFE_SYSTEM_DIAGNOSTICS_ARGV = frozenset(
+    {
+        ("df", "-h"),
+        ("df", "-k"),
+        ("df", "-P"),
+        ("free",),
+        ("free", "-h"),
+        ("free", "-m"),
+        ("ifconfig",),
+        ("ip", "addr"),
+        ("lscpu",),
+        ("lshw",),
+        ("lshw", "-short"),
+        ("pmset", "-g", "batt"),
+        ("scutil", "--nc", "list"),
+        ("sw_vers",),
+        ("sysctl", "-n", "hw.logicalcpu"),
+        ("sysctl", "-n", "hw.memsize"),
+        ("sysctl", "-n", "hw.ncpu"),
+        ("sysctl", "-n", "hw.physicalcpu"),
+        ("sysctl", "-n", "machdep.cpu.brand_string"),
+        ("top", "-b", "-n", "1"),
+        ("top", "-l", "1"),
+        ("top", "-l", "1", "-n", "0"),
+        ("uname", "-a"),
+        ("upower", "-i", "/org/freedesktop/UPower/devices/DisplayDevice"),
+        ("uptime",),
+        ("vm_stat",),
+    }
+)
+_SAFE_SYSTEM_RESOURCE_METRICS = frozenset({"resources", "cpu_and_memory"})
+
+
+def _safe_system_diagnostics_arguments(proposal: ToolProposal) -> dict[str, object]:
+    safe_arguments: dict[str, object] = {}
+    argv = proposal.arguments.get("argv")
+    if (
+        isinstance(argv, list)
+        and all(isinstance(arg, str) for arg in argv)
+        and tuple(argv) in _SAFE_SYSTEM_DIAGNOSTICS_ARGV
+    ):
+        safe_arguments["argv"] = list(argv)
+    metric = proposal.arguments.get("metric")
+    if isinstance(metric, str) and metric in _SAFE_SYSTEM_RESOURCE_METRICS:
+        safe_arguments["metric"] = metric
+    return safe_arguments
 
 
 def _safe_calculator_arguments(proposal: ToolProposal) -> dict[str, object]:

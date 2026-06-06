@@ -6,6 +6,7 @@ from typing import Any
 
 from assistant_core.domain.loops import ToolRequestPlan
 from assistant_core.domain.tools import (
+    NON_RECOVERABLE_TOOL_OBSERVATION_ERROR_CODES,
     SAFE_TOOL_OBSERVATION_ERROR_CODES,
     ToolObservationStatus,
     safe_tool_observation_error_code,
@@ -63,7 +64,11 @@ class ToolObservationRecoveryPolicy:
         if tool_call_id is not None:
             details["tool_call_id"] = tool_call_id
         if (
-            observation_status in _RECOVERABLE_OBSERVATION_STATUSES
+            _is_recoverable_observation_status(
+                observation_status,
+                observation_error_code=observation_error_code,
+                tool_requires_live_state=tool_requires_live_state,
+            )
             and observation_error_code not in _NON_RECOVERABLE_ERROR_CODES
             and request_plan.final_answer_allowed_after_observation(completed_observations)
             and consecutive_failures <= max_consecutive_failures
@@ -86,11 +91,23 @@ _RECOVERABLE_OBSERVATION_STATUSES = {
     ToolObservationStatus.FAILED,
     ToolObservationStatus.TIMEOUT,
 }
-_NON_RECOVERABLE_ERROR_CODES = {
-    "unknown_tool",
-    "tool_disabled",
-}
+_NON_RECOVERABLE_ERROR_CODES = NON_RECOVERABLE_TOOL_OBSERVATION_ERROR_CODES
 _DENIED_PASSTHROUGH_ERROR_CODES = set(SAFE_TOOL_OBSERVATION_ERROR_CODES) - {"tool_error"}
+
+
+def _is_recoverable_observation_status(
+    status: ToolObservationStatus,
+    *,
+    observation_error_code: str | None,
+    tool_requires_live_state: bool,
+) -> bool:
+    if status in _RECOVERABLE_OBSERVATION_STATUSES:
+        return True
+    return (
+        status == ToolObservationStatus.DENIED
+        and tool_requires_live_state
+        and observation_error_code in {None, "tool_error", "tool_failed"}
+    )
 
 
 def _error_code(status: ToolObservationStatus) -> str:

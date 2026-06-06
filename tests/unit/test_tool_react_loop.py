@@ -23,7 +23,7 @@ from assistant_core.domain.loops import (
 )
 from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolObservationStatus
+from assistant_core.domain.tools import ToolObservationStatus, ToolParseStatus
 from assistant_core.models.router import StructuredOutputValidationError
 from assistant_core.runtime.loops.failure_policy import LoopFailureDecision
 from assistant_core.runtime.loops.observation_recovery import (
@@ -659,6 +659,81 @@ def test_tool_observation_recovery_policy_matrix_matches_pm08l_contract() -> Non
         consecutive_failures=1,
         max_consecutive_failures=1,
     )
+    live_state_denied = policy.decide(
+        request_plan=ToolRequestPlan("available", frozenset({"datetime.now"})),
+        observation_status=ToolObservationStatus.DENIED,
+        tool_call_id="tool-call-denied",
+        completed_observations=0,
+        consecutive_failures=1,
+        max_consecutive_failures=1,
+        tool_requires_live_state=True,
+    )
+    live_state_approval_denied = policy.decide(
+        request_plan=ToolRequestPlan("available", frozenset({"datetime.now"})),
+        observation_status=ToolObservationStatus.DENIED,
+        observation_error_code="approval_denied",
+        completed_observations=0,
+        consecutive_failures=1,
+        max_consecutive_failures=1,
+        tool_requires_live_state=True,
+    )
+    live_state_failed_approval_denied = policy.decide(
+        request_plan=ToolRequestPlan("available", frozenset({"datetime.now"})),
+        observation_status=ToolObservationStatus.FAILED,
+        observation_error_code="approval_denied",
+        completed_observations=0,
+        consecutive_failures=1,
+        max_consecutive_failures=1,
+        tool_requires_live_state=True,
+    )
+    live_state_failed_approval_required_for_diagnostics = policy.decide(
+        request_plan=ToolRequestPlan(
+            "available",
+            frozenset({"tool.system.read.resources"}),
+        ),
+        observation_status=ToolObservationStatus.FAILED,
+        observation_error_code="approval_required_for_system_diagnostics",
+        completed_observations=0,
+        consecutive_failures=1,
+        max_consecutive_failures=1,
+        tool_requires_live_state=True,
+    )
+    live_state_failed_approval_not_found = policy.decide(
+        request_plan=ToolRequestPlan(
+            "available",
+            frozenset({"tool.system.read.resources"}),
+        ),
+        observation_status=ToolObservationStatus.FAILED,
+        observation_error_code="approval_not_found",
+        completed_observations=0,
+        consecutive_failures=1,
+        max_consecutive_failures=1,
+        tool_requires_live_state=True,
+    )
+    live_state_failed_working_directory_required = policy.decide(
+        request_plan=ToolRequestPlan(
+            "available",
+            frozenset({"tool.system.read.resources"}),
+        ),
+        observation_status=ToolObservationStatus.FAILED,
+        observation_error_code="working_directory_required",
+        completed_observations=0,
+        consecutive_failures=1,
+        max_consecutive_failures=1,
+        tool_requires_live_state=True,
+    )
+    live_state_failed_unsupported_command = policy.decide(
+        request_plan=ToolRequestPlan(
+            "available",
+            frozenset({"tool.system.read.resources"}),
+        ),
+        observation_status=ToolObservationStatus.FAILED,
+        observation_error_code="unsupported_command",
+        completed_observations=0,
+        consecutive_failures=1,
+        max_consecutive_failures=1,
+        tool_requires_live_state=True,
+    )
     denied_approval_expired = policy.decide(
         request_plan=ToolRequestPlan("available", frozenset({"fake.echo"})),
         observation_status=ToolObservationStatus.DENIED,
@@ -693,6 +768,33 @@ def test_tool_observation_recovery_policy_matrix_matches_pm08l_contract() -> Non
     assert optional_invalid_arguments.error_code == "invalid_arguments"
     assert required_failed.action == ToolObservationRecoveryAction.FAIL
     assert optional_denied.action == ToolObservationRecoveryAction.FAIL
+    assert live_state_denied.action == ToolObservationRecoveryAction.FINALIZE
+    assert live_state_denied.error_code == "tool_observation_denied"
+    assert live_state_denied.details["tool_call_id"] == "tool-call-denied"
+    assert live_state_approval_denied.action == ToolObservationRecoveryAction.FAIL
+    assert live_state_approval_denied.error_code == "approval_denied"
+    assert live_state_failed_approval_denied.action == ToolObservationRecoveryAction.FAIL
+    assert live_state_failed_approval_denied.error_code == "approval_denied"
+    assert (
+        live_state_failed_approval_required_for_diagnostics.action
+        == ToolObservationRecoveryAction.FAIL
+    )
+    assert (
+        live_state_failed_approval_required_for_diagnostics.error_code
+        == "approval_required_for_system_diagnostics"
+    )
+    assert live_state_failed_approval_not_found.action == ToolObservationRecoveryAction.FAIL
+    assert live_state_failed_approval_not_found.error_code == "approval_not_found"
+    assert (
+        live_state_failed_working_directory_required.action
+        == ToolObservationRecoveryAction.FAIL
+    )
+    assert (
+        live_state_failed_working_directory_required.error_code
+        == "working_directory_required"
+    )
+    assert live_state_failed_unsupported_command.action == ToolObservationRecoveryAction.FAIL
+    assert live_state_failed_unsupported_command.error_code == "unsupported_command"
     assert denied_approval_expired.action == ToolObservationRecoveryAction.FAIL
     assert denied_approval_expired.error_code == "approval_expired"
     assert denied_approval_expired.details["observation_error_code"] == "approval_expired"
@@ -764,7 +866,7 @@ def test_tool_react_loop_recovers_to_final_answer_after_optional_failed_observat
     assert result.response_text == "answer without live tool"
     assert result.used_tool_calls == 1
     assert result.tool_observation_refs[0].status == ToolObservationStatus.FAILED
-    assert router.structured_calls == 1
+    assert router.structured_calls == 2
     assert router.chat_calls == 1
     assert assembler.calls[-1] == (
         "final_answer",
@@ -966,6 +1068,272 @@ def test_tool_react_loop_relevant_failed_live_state_observation_uses_unavailable
     )
 
 
+def test_tool_react_loop_live_state_approval_denied_fails_closed() -> None:
+    class DeniedResourcesGateway:
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            return ToolObservation.empty(
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.DENIED,
+                sensitivity=request.sensitivity,
+                started_at=now,
+                completed_at=now,
+                error={"code": "approval_denied", "message": "resource read denied"},
+            )
+
+    async def scenario():
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {"metric": "cpu_and_memory"},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="incorrect fallback",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=DeniedResourcesGateway(),
+        )
+        with pytest.raises(RuntimeError, match="approval_denied"):
+            await loop.run_turn(
+                replace(
+                    _request(
+                        metadata=_tool_plan_metadata(
+                            "tool.system.read.resources",
+                            live_state_tool_names=("tool.system.read.resources",),
+                        ),
+                        budget=replace(_budget(), max_tool_calls=2),
+                    ),
+                    user_input="what is current CPU usage?",
+                )
+            )
+        return router, event_log.events
+
+    router, events = asyncio.run(scenario())
+
+    assert router.structured_calls == 1
+    assert router.chat_calls == 0
+    assert EventType.REQUEST_PROCESSING_FAILED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_relevant_denied_live_state_observation_uses_unavailable_recovery() -> None:
+    class DeniedResourcesGateway:
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            return ToolObservation.empty(
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.DENIED,
+                sensitivity=request.sensitivity,
+                started_at=now,
+                completed_at=now,
+            )
+
+    async def scenario():
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {"metric": "cpu_and_memory"},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="incorrect fallback",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=DeniedResourcesGateway(),
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "tool.system.read.resources",
+                        live_state_tool_names=("tool.system.read.resources",),
+                    ),
+                    budget=replace(_budget(), max_tool_calls=2),
+                ),
+                user_input="what is current CPU usage?",
+            )
+        )
+        return result, router, event_log.events
+
+    result, router, events = asyncio.run(scenario())
+
+    assert result.response_text == "The requested live state is unavailable."
+    assert result.degraded is True
+    assert result.used_tool_calls == 1
+    assert router.structured_calls == 1
+    assert router.chat_calls == 0
+    assert not any(
+        event.payload.get("action") == "final_answer_deferred_missing_evidence"
+        for event in events
+        if event.event_type is EventType.AGENT_STEP_COMPLETED
+    )
+
+
+def test_tool_react_loop_failed_live_state_math_observation_uses_unavailable_recovery_without_calculator() -> None:
+    class FailedResourcesGateway:
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            return ToolObservation.empty(
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.FAILED,
+                sensitivity=request.sensitivity,
+                started_at=now,
+                completed_at=now,
+                error={"code": "tool_failed", "message": "resource read failed"},
+            )
+
+    async def scenario():
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {"metric": "cpu_and_memory"},
+                },
+                {
+                    "action": "tool_call",
+                    "tool_name": "calculator.evaluate",
+                    "arguments": {"expression": "10*e"},
+                },
+            ],
+            chat_response="incorrect fallback",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=FailedResourcesGateway(),
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "calculator.evaluate",
+                        "tool.system.read.resources",
+                        live_state_tool_names=("tool.system.read.resources",),
+                    ),
+                    budget=replace(_budget(), max_tool_calls=2),
+                ),
+                user_input="is current CPU usage greater than 10*e?",
+            )
+        )
+        return result, router, event_log.events
+
+    result, router, events = asyncio.run(scenario())
+
+    assert result.response_text == "The requested live state is unavailable."
+    assert result.degraded is True
+    assert result.used_tool_calls == 1
+    assert router.structured_calls == 1
+    assert router.chat_calls == 0
+    assert not any(
+        event.payload.get("tool_name") == "calculator.evaluate"
+        for event in events
+        if event.event_type is EventType.TOOL_CALL_REQUESTED
+    )
+
+
+def test_tool_react_loop_failed_builtin_live_state_math_observation_uses_unavailable_recovery_without_metadata() -> None:
+    class FailedResourcesGateway:
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            return ToolObservation.empty(
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.FAILED,
+                sensitivity=request.sensitivity,
+                started_at=now,
+                completed_at=now,
+                error={"code": "tool_failed", "message": "resource read failed"},
+            )
+
+    async def scenario():
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {"metric": "cpu_and_memory"},
+                },
+                {
+                    "action": "tool_call",
+                    "tool_name": "calculator.evaluate",
+                    "arguments": {"expression": "10*e"},
+                },
+            ],
+            chat_response="incorrect fallback",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=FailedResourcesGateway(),
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "calculator.evaluate",
+                        "tool.system.read.resources",
+                    ),
+                    budget=replace(_budget(), max_tool_calls=2),
+                ),
+                user_input="is current CPU usage greater than 10*e?",
+            )
+        )
+        return result, router, event_log.events
+
+    result, router, events = asyncio.run(scenario())
+
+    assert result.response_text == "The requested live state is unavailable."
+    assert result.degraded is True
+    assert result.used_tool_calls == 1
+    assert router.structured_calls == 1
+    assert router.chat_calls == 0
+    assert not any(
+        event.payload.get("tool_name") == "calculator.evaluate"
+        for event in events
+        if event.event_type is EventType.TOOL_CALL_REQUESTED
+    )
+
+
 def test_tool_react_loop_failed_live_state_observation_does_not_finalize_while_other_evidence_missing() -> None:
     class Gateway:
         def __init__(self) -> None:
@@ -1060,6 +1428,99 @@ def test_tool_react_loop_failed_live_state_observation_does_not_finalize_while_o
     assert deferred.payload["missing_tool_names"] == ["tool.system.read.resources"]
     assert deferred.payload["agent_state"] == AgentLoopState.FINALIZING.value
     assert deferred.payload["agent_step"] == AgentLoopStep.FINAL.value
+    assert not any(
+        event.payload.get("source") == "deterministic_recovery"
+        for event in events
+        if event.event_type is EventType.AGENT_LOOP_COMPLETED
+    )
+
+
+def test_tool_react_loop_failed_live_state_math_observation_does_not_finalize_while_other_live_evidence_missing() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                return ToolObservation.empty(
+                    tool_name=request.tool_name,
+                    status=ToolObservationStatus.FAILED,
+                    sensitivity=request.sensitivity,
+                    started_at=now,
+                    completed_at=now,
+                    error={"code": "tool_failed", "message": "datetime read failed"},
+                )
+            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
+            return ToolObservation(
+                tool_call_id=f"tool-call-{len(self.calls)}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {"metric": "cpu_and_memory"},
+                },
+            ],
+            chat_response="incorrect fallback",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=gateway,
+        )
+        with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
+            await loop.run_turn(
+                replace(
+                    _request(
+                        metadata=_tool_plan_metadata(
+                            "calculator.evaluate",
+                            "datetime.now",
+                            "tool.system.read.resources",
+                            live_state_tool_names=(
+                                "datetime.now",
+                                "tool.system.read.resources",
+                            ),
+                        ),
+                        budget=replace(_budget(), max_tool_calls=2),
+                    ),
+                    user_input="what time is it and is current CPU usage greater than 10*e?",
+                )
+            )
+        return gateway, router, event_log.events
+
+    gateway, router, events = asyncio.run(scenario())
+
+    assert gateway.calls == [
+        ("datetime.now", {}),
+        ("tool.system.read.resources", {"metric": "cpu_and_memory"}),
+    ]
+    assert router.structured_calls == 2
+    assert router.chat_calls == 0
     assert not any(
         event.payload.get("source") == "deterministic_recovery"
         for event in events
@@ -5106,6 +5567,167 @@ def test_tool_react_loop_blocks_final_answer_in_contract_when_calculator_evidenc
     assert "calculator.evaluate" in (assembler.seen_contracts[1] or "")
 
 
+def test_tool_react_loop_fails_final_answer_when_live_state_math_calculator_is_not_allowed() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
+            return ToolObservation(
+                tool_call_id=f"tool-call-{len(self.calls)}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {"metric": "cpu_and_memory"},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="incorrect final answer",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=gateway,
+        )
+        with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
+            await loop.run_turn(
+                replace(
+                    _request(
+                        metadata=_tool_plan_metadata(
+                            "tool.system.read.resources",
+                            live_state_tool_names=("tool.system.read.resources",),
+                        )
+                    ),
+                    user_input="is CPU load greater than 10*e",
+                )
+            )
+        return gateway, router, event_log.events
+
+    gateway, router, events = asyncio.run(scenario())
+
+    assert gateway.calls == [("tool.system.read.resources", {"metric": "cpu_and_memory"})]
+    assert router.structured_calls == 1
+    assert router.chat_calls == 0
+    assert EventType.REQUEST_PROCESSING_FAILED in [event.event_type for event in events]
+
+
+def test_tool_react_loop_failed_calculator_does_not_clear_live_state_math_evidence() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "calculator.evaluate":
+                return ToolObservation.empty(
+                    tool_name=request.tool_name,
+                    status=ToolObservationStatus.FAILED,
+                    sensitivity=request.sensitivity,
+                    started_at=now,
+                    completed_at=now,
+                    error={"code": "tool_failed", "message": "calculator failed"},
+                )
+            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
+            return ToolObservation(
+                tool_call_id=f"tool-call-{len(self.calls)}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {"metric": "cpu_and_memory"},
+                },
+                {
+                    "action": "tool_call",
+                    "tool_name": "calculator.evaluate",
+                    "arguments": {"expression": "10*e"},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="incorrect final answer",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=gateway,
+        )
+        with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
+            await loop.run_turn(
+                replace(
+                    _request(
+                        metadata=_tool_plan_metadata(
+                            "calculator.evaluate",
+                            "tool.system.read.resources",
+                            live_state_tool_names=("tool.system.read.resources",),
+                        ),
+                        budget=replace(_budget(), max_tool_calls=2),
+                    ),
+                    user_input="is CPU load greater than 10*e",
+                )
+            )
+        return gateway, router, event_log.events
+
+    gateway, router, events = asyncio.run(scenario())
+
+    assert gateway.calls == [
+        ("tool.system.read.resources", {"metric": "cpu_and_memory"}),
+        ("calculator.evaluate", {"expression": "10*e"}),
+    ]
+    assert router.structured_calls == 2
+    assert router.chat_calls == 0
+    assert EventType.REQUEST_PROCESSING_FAILED in [event.event_type for event in events]
+
+
 def test_tool_react_loop_does_not_synthesize_partial_calculator_expression_for_blocked_final_answer() -> None:
     class Gateway:
         def __init__(self) -> None:
@@ -5741,6 +6363,91 @@ def test_tool_react_loop_preserves_safe_datetime_until_arguments_in_observation_
         "from_iso": "2026-06-05T20:59:07+03:00",
         "target": "next_new_year",
         "unit": "seconds",
+    }
+
+
+def test_tool_react_loop_preserves_safe_system_diagnostics_arguments_and_metadata() -> None:
+    class Gateway:
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            content = '{"cpu": {"used_percent": 20.0}, "source": "fake"}'
+            return ToolObservation(
+                tool_call_id="tool-call-resources",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+                metadata={
+                    "family": "resources",
+                    "source": "top",
+                    "exit_code": 0,
+                    "cwd": "/Users/alex/private-project",
+                },
+                structured_content={"cpu": {"used_percent": 20.0}, "source": "fake"},
+                structured_schema="system.cpu_overview",
+                structured_schema_version=1,
+                parse_status=ToolParseStatus.PARSED,
+            )
+
+    async def scenario():
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {
+                        "argv": ["top", "-l", "1", "-n", "0"],
+                        "metric": "cpu_and_memory",
+                        "cwd": "/Users/alex/private-project",
+                    },
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="CPU usage is 20%.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=Gateway(),
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "tool.system.read.resources",
+                        live_state_tool_names=("tool.system.read.resources",),
+                    ),
+                    budget=replace(_budget(), max_tool_calls=2),
+                ),
+                user_input="what is current CPU usage?",
+            )
+        )
+        return result
+
+    result = asyncio.run(scenario())
+
+    observation_ref = result.tool_observation_refs[0]
+    assert observation_ref.arguments == {
+        "argv": ["top", "-l", "1", "-n", "0"],
+        "metric": "cpu_and_memory",
+    }
+    assert observation_ref.metadata == {
+        "exit_code": 0,
+        "family": "resources",
+        "source": "top",
     }
 
 
@@ -6422,6 +7129,162 @@ def test_tool_react_loop_allows_distinct_live_state_tools_after_completed_snapsh
     ]
     assert result.used_tool_calls == 2
     assert router.structured_calls == 2
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_preserves_safe_system_diagnostics_argv_for_network_evidence() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            content = (
+                '{"exit_code": 0, '
+                '"stdout": "en0: inet 192.168.1.10 netmask 0xffffff00\\n", '
+                '"stderr": "", '
+                '"truncated": {"stdout": false, "stderr": false}}'
+            )
+            return ToolObservation(
+                tool_call_id="tool-call-network",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.network",
+                    "arguments": {"argv": ["ifconfig"]},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="Local IP address is 192.168.1.10.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "tool.system.read.network",
+                        live_state_tool_names=("tool.system.read.network",),
+                    ),
+                    budget=replace(_budget(), max_tool_calls=1),
+                ),
+                user_input="what is my current local IP address?",
+            )
+        )
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "Local IP address is 192.168.1.10."
+    assert result.tool_observation_refs[0].arguments == {"argv": ["ifconfig"]}
+    assert gateway.calls == [("tool.system.read.network", {"argv": ["ifconfig"]})]
+    assert router.structured_calls == 1
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_preserves_safe_system_diagnostics_argv_for_hardware_evidence() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            content = (
+                '{"exit_code": 0, '
+                '"stdout": "25769803776\\n", '
+                '"stderr": "", '
+                '"truncated": {"stdout": false, "stderr": false}}'
+            )
+            return ToolObservation(
+                tool_call_id="tool-call-hardware",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.hardware",
+                    "arguments": {"argv": ["sysctl", "-n", "hw.memsize"]},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="Installed RAM is 24 GiB.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "tool.system.read.hardware",
+                        live_state_tool_names=("tool.system.read.hardware",),
+                    ),
+                    budget=replace(_budget(), max_tool_calls=1),
+                ),
+                user_input="how much RAM do I have?",
+            )
+        )
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "Installed RAM is 24 GiB."
+    assert result.tool_observation_refs[0].arguments == {
+        "argv": ["sysctl", "-n", "hw.memsize"],
+    }
+    assert gateway.calls == [
+        ("tool.system.read.hardware", {"argv": ["sysctl", "-n", "hw.memsize"]}),
+    ]
+    assert router.structured_calls == 1
     assert router.chat_calls == 1
 
 

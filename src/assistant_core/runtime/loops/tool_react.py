@@ -69,6 +69,7 @@ from assistant_core.runtime.loops.tool_loop_evidence import (
     final_answer_deferred_missing_evidence_plan as _final_answer_deferred_missing_evidence_plan,
     final_answer_missing_evidence_plan as _final_answer_missing_evidence_plan,
     failed_observation_exhausts_missing_evidence as _failed_observation_exhausts_missing_evidence,
+    is_live_state_tool_name as _is_live_state_tool_name,
     request_requires_initial_tool_evidence as _request_requires_initial_tool_evidence,
     TOOL_PROPOSAL_MAX_MODEL_CALL_SECONDS as _DEFAULT_TOOL_PROPOSAL_MAX_MODEL_CALL_SECONDS,
     tool_proposal_model_call_timeout as _tool_proposal_model_call_timeout,
@@ -1166,6 +1167,8 @@ _KNOWN_TOOL_POLICIES = {"disabled", "available", "required"}
 
 
 def _tool_requires_live_state(metadata: dict[str, Any], tool_name: str) -> bool:
+    if _is_live_state_tool_name(tool_name):
+        return True
     raw_live_state_names = metadata.get("agent_live_state_tool_names")
     if isinstance(raw_live_state_names, list):
         return tool_name in {item for item in raw_live_state_names if isinstance(item, str)}

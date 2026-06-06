@@ -11,7 +11,11 @@ from assistant_core.domain.loops import (
     ToolObservationRef,
     ToolRequestPlan,
 )
-from assistant_core.domain.tools import ToolObservationStatus
+from assistant_core.domain.tools import (
+    NON_RECOVERABLE_TOOL_OBSERVATION_ERROR_CODES,
+    ToolObservationStatus,
+    ToolParseStatus,
+)
 
 
 TOOL_PROPOSAL_MAX_MODEL_CALL_SECONDS = 8.0
@@ -94,6 +98,9 @@ _SYSTEM_RESOURCE_TOOL_NAMES = frozenset({"tool.system.read.resources"})
 _SYSTEM_NETWORK_TOOL_NAMES = frozenset({"tool.system.read.network"})
 _SYSTEM_HARDWARE_TOOL_NAMES = frozenset({"tool.system.read.hardware"})
 _SYSTEM_SENSOR_TOOL_NAMES = frozenset({"tool.system.read.sensors"})
+_NON_RECOVERABLE_LIVE_STATE_ERROR_CODES = (
+    NON_RECOVERABLE_TOOL_OBSERVATION_ERROR_CODES | frozenset({"invalid_arguments"})
+)
 
 _NON_LIVE_TIME_CONTEXT_PATTERNS: tuple[str, ...] = (
     r"сколько\s+врем(?:я|ени)\s+(?:занимает|занял|займет|нужно|требуется)",
@@ -352,6 +359,110 @@ _SYSTEM_HARDWARE_PATTERNS: tuple[str, ...] = (
     r"\bbattery\b.*(?:заряд|остал|сколько|процент|уровень|статус)",
     r"(?:заряд|сколько|остал|процент|уровень|статус).*\bbattery\b",
 )
+_SYSTEM_DISK_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\bdisk\b.*\b(?:usage|used|free|available|status|space)\b",
+    r"\bdisk\s+space\b.*\b(?:available|free|used)\b",
+    r"(?:свобод|занято|мест).*(?:диск|накопител)",
+    r"(?:диск|накопител).*(?:свобод|занято|мест|статус)",
+)
+_SYSTEM_CPU_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\b(?:cpu|processor)\b.*\b(?:load|usage|used|utili[sz]ation|percent|%)\b",
+    r"\b(?:cpu|processor|cores?)\b.*\bbusy\b",
+    r"\b(?:current|live)\s+(?:cpu|processor)\b",
+    r"\b(?:cpu|processor)\b.*\b(?:over|above|under|below|greater|less|higher|lower)\b.*\d",
+    r"\b(?:cpu|processor)\b.*\d+(?:[.,]\d+)?\s*(?:%|gb|mb|gib|mib)?\s*(?:\+|or\s+(?:higher|lower|less|more))",
+    r"(?:загрузк|загруж).*(?:cpu|процессор|цп)",
+    r"(?:cpu|процессор|цп).*(?:загрузк|загруж)",
+    r"(?:сейчас|текущ|сколько|занято|использ).*(?:процессор|цп)",
+    r"(?:процессор|цп).*(?:сейчас|текущ|занято|использ|нагрузк)",
+)
+_SYSTEM_MEMORY_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\b(?:memory|ram)\b.*\b(?:usage|used|free|available|current|utili[sz]ation)\b",
+    r"\b(?:usage|utili[sz]ation)\b.*\b(?:memory|ram)\b",
+    r"\b(?:current|live)\s+(?:memory|ram)\b",
+    r"\b(?:memory|ram)\b.*\b(?:over|above|under|below|greater|less|higher|lower)\b.*\d",
+    r"\b(?:memory|ram)\b.*\d+(?:[.,]\d+)?\s*(?:%|gb|mb|gib|mib)?\s*(?:\+|or\s+(?:higher|lower|less|more))",
+    r"(?:сейчас|текущ|сколько|занято|использ).*(?:памят|оператив)",
+    r"(?:памят|оператив).*(?:сейчас|текущ|занято|использ)",
+)
+_SYSTEM_LOAD_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\b(?:cpu|processor)\b.*\b(?:load|usage|used|utili[sz]ation|percent|%)\b",
+    r"\b(?:cpu|processor|cores?)\b.*\bbusy\b",
+    r"\b(?:current\s+)?system\s+load\b",
+    r"\bload\s+average\b",
+    r"\bsystem\s+load\b.*\b(?:over|above|under|below|greater|less|higher|lower)\b.*\d",
+    r"нагрузк.*(?:cpu|процессор|цп|систем|сейчас|текущ)",
+    r"(?:процессор|цп|систем).*(?:нагрузк)",
+)
+_SYSTEM_LOAD_AVERAGE_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\b(?:current\s+)?system\s+load\b",
+    r"\bload\s+average\b",
+    r"\bsystem\s+load\b",
+)
+_SYSTEM_BATTERY_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\bbattery\b.*\b(?:left|charge|status|level|percent|percentage|remaining|current)\b",
+    r"\bbattery\b.*\b(?:over|above|under|below|greater|less|higher|lower)\b.*\d",
+    r"\b(?:how\s+much|current|remaining)\s+battery\b",
+    r"(?:батар|аккумулятор).*(?:заряд|остал|сколько|сейчас|процент|уровень|статус)",
+    r"(?:заряд|сколько|остал|процент|уровень|статус).*(?:батар|аккумулятор)",
+)
+_SYSTEM_OS_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\b(?:what\s+is\s+(?:the\s+)?)?(?:os|operating\s+system)\s+(?:version|build)\b",
+    r"\b(?:which|what)\s+macos\s+(?:build|version)\b",
+    r"\bos\s+metadata\b",
+    r"(?:какой|какая|какую).*(?:macos|макос|ос|операцион).*(?:билд|сборк|верси)",
+    r"(?:верси|билд|сборк).*(?:macos|макос|ос|операцион)",
+)
+_SYSTEM_HARDWARE_MEMORY_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\bhow\s+much\s+(?:ram|memory)\s+do\s+i\s+have\b",
+    r"\b(?:installed|total|physical)\s+(?:ram|memory)\b",
+    r"\b(?:ram|memory)\b.*\b(?:installed|total|capacity|do\s+i\s+have)\b",
+    r"(?:сколько|объем|размер).*(?:памят|оператив)",
+    r"(?:памят|оператив).*(?:сколько|объем|размер|у\s+меня)",
+)
+_SYSTEM_HARDWARE_CPU_CORE_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\bhow\s+many\s+(?:cpu\s+)?cores?\b",
+    r"\bcpu\s+core\s+count\b",
+    r"\b(?:logical|physical)\s+cpu\s+count\b",
+    r"(?:сколько|количеств).*(?:ядер|ядр).*(?:cpu|процессор|цп)",
+    r"(?:cpu|процессор|цп).*(?:сколько|количеств|ядер|ядр)",
+)
+_SYSTEM_HARDWARE_CPU_BRAND_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\bwhat\s+(?:processor|cpu)\s+do\s+i\s+have\b",
+    r"\b(?:what|which)\s+(?:processor|cpu)\b",
+    r"\b(?:processor|cpu)\s+(?:model|brand|string|name)\b",
+    r"какой\s+у\s+меня\s+(?:процессор|cpu|цп)",
+    r"какой\s+(?:процессор|cpu|цп)\s+у\s+меня",
+    r"какой\s+процессор.*(?:mac|мак|комп|ноут|устройств|этом)",
+)
+_SYSTEM_VPN_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\bvpn\b.*\b(?:connected|status|current|up|down|running)\b",
+    r"\bis\b.*\bvpn\b.*\b(?:connected|up|down|running)\b",
+    r"\b(?:status|current|connected)\b.*\bvpn\b",
+    r"(?:vpn|впн).*(?:подключ|статус|работ|включ|connected|status|up|down)",
+    r"(?:подключ|статус|работ|включ).*(?:vpn|впн)",
+)
+_SYSTEM_PUBLIC_IP_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\b(?:external|public)\s+ip(?:\s+address)?\b",
+    r"внешн\w*\s+(?:ip|айпи)|публичн\w*\s+(?:ip|айпи)",
+)
+_SYSTEM_LOCAL_IP_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\b(?:current|local|my)\s+ip(?:\s+address)?\b",
+    r"\bip\s+address\b.*\b(?:current|local|my)\b",
+    r"(?:локальн|текущ|мой|мо[её]).*(?:ip|айпи)",
+)
+_SYSTEM_CONNECTIVITY_EVIDENCE_PATTERNS: tuple[str, ...] = (
+    r"\bam\s+i\s+online(?:\s+(?:right\s+)?now)?\b",
+    r"\bam\s+i\s+connected\s+to\s+(?:the\s+)?internet\b",
+    r"\b(?:wi[- ]?fi|wifi|internet)\b.*\b(?:connected|status|up|down|online)\b",
+    r"\bis\s+(?:the\s+)?(?:wi[- ]?fi|wifi|internet)\s+(?:connected|up|down|online)\b",
+    r"\b(?:internet|network|wi[- ]?fi|wifi)\b.*\bworking\b",
+    r"\bis\s+(?:my\s+)?network\s+(?:up|down|connected|online|offline)\b",
+    r"\bis\s+(?:my\s+)?(?:wi[- ]?fi|wifi)\s+(?:on|off)\b",
+    r"(?:интернет|wifi|wi-fi|вайфай).*(?:подключ|статус|работ|онлайн)",
+    r"(?:работ).*(?:интернет|wifi|wi-fi|вайфай|сеть)",
+    r"(?:подключ|статус|работ|онлайн).*(?:интернет|wifi|wi-fi|вайфай)",
+)
 _DAEMON_STATUS_PATTERNS: tuple[str, ...] = (
     r"\bdaemon\s+(?:status|running|state)\b",
     r"\bdaemon\s+(?:health|healthy|unhealthy)\b",
@@ -381,15 +492,20 @@ def live_state_evidence_plan(
 
     family = base_families[0]
     families = frozenset(base_families)
-    if _needs_calculator_for_live_state_math(scoped_text) and families & {
-        LiveStateEvidenceFamily.CURRENT_TIME,
-        LiveStateEvidenceFamily.CURRENT_DATE,
-        LiveStateEvidenceFamily.SYSTEM_RESOURCES,
-        LiveStateEvidenceFamily.SYSTEM_NETWORK,
-        LiveStateEvidenceFamily.SYSTEM_HARDWARE,
-        LiveStateEvidenceFamily.SYSTEM_SENSORS,
-        LiveStateEvidenceFamily.DAEMON_STATUS,
-    }:
+    if (
+        contains_arithmetic_expression(scoped_text)
+        and _needs_calculator_for_live_state_math(scoped_text)
+        and families
+        & {
+            LiveStateEvidenceFamily.CURRENT_TIME,
+            LiveStateEvidenceFamily.CURRENT_DATE,
+            LiveStateEvidenceFamily.SYSTEM_RESOURCES,
+            LiveStateEvidenceFamily.SYSTEM_NETWORK,
+            LiveStateEvidenceFamily.SYSTEM_HARDWARE,
+            LiveStateEvidenceFamily.SYSTEM_SENSORS,
+            LiveStateEvidenceFamily.DAEMON_STATUS,
+        }
+    ):
         family = LiveStateEvidenceFamily.LIVE_STATE_MATH
         families = frozenset({*families, LiveStateEvidenceFamily.LIVE_STATE_MATH})
 
@@ -431,7 +547,7 @@ def live_state_evidence_plan(
         request,
         tool_observation_refs,
     )
-    if family is LiveStateEvidenceFamily.LIVE_STATE_MATH and "calculator.evaluate" in candidate_tool_names:
+    if family is LiveStateEvidenceFamily.LIVE_STATE_MATH and candidate_tool_names:
         calculator_missing = not _has_matching_completed_observation(
             "calculator.evaluate",
             request,
@@ -1078,15 +1194,424 @@ def _has_matching_completed_observation(
     request_text: str | None = None,
 ) -> bool:
     if tool_name == "calculator.evaluate":
+        return _has_all_matching_calculator_observations(
+            request_text or request.user_input,
+            tool_observation_refs,
+        )
+    if tool_name == "tool.system.read.resources":
+        return _resource_observations_match_request(
+            request_text or request.user_input,
+            tool_observation_refs,
+        )
+    if tool_name == "tool.system.read.hardware":
+        return _hardware_observations_match_request(
+            request_text or request.user_input,
+            tool_observation_refs,
+        )
+    if tool_name == "tool.system.read.network":
+        return _network_observations_match_request(
+            request_text or request.user_input,
+            tool_observation_refs,
+        )
+    if tool_name.startswith("tool.system.read."):
         return any(
             is_completed_observation(ref)
             and ref.tool_name == tool_name
-            and calculator_observation_matches_text(ref, request_text or request.user_input)
+            and not _system_ref_is_unavailable(ref)
             for ref in tool_observation_refs
         )
     return any(
         is_completed_observation(ref) and ref.tool_name == tool_name
         for ref in tool_observation_refs
+    )
+
+
+def _resource_observations_match_request(
+    request_text: str,
+    tool_observation_refs: tuple[ToolObservationRef, ...],
+) -> bool:
+    refs = tuple(
+        ref
+        for ref in tool_observation_refs
+        if is_completed_observation(ref) and ref.tool_name == "tool.system.read.resources"
+    )
+    if not refs:
+        return False
+    if _is_process_scoped_resource_request(request_text):
+        return False
+    requires_disk = _matches_any(_SYSTEM_DISK_EVIDENCE_PATTERNS, request_text)
+    requires_cpu = _matches_any(_SYSTEM_CPU_EVIDENCE_PATTERNS, request_text)
+    requires_memory = _matches_any(_SYSTEM_MEMORY_EVIDENCE_PATTERNS, request_text)
+    requires_load_average = _matches_any(_SYSTEM_LOAD_AVERAGE_EVIDENCE_PATTERNS, request_text)
+    requires_load = (
+        _matches_any(_SYSTEM_LOAD_EVIDENCE_PATTERNS, request_text) and not requires_load_average
+    )
+    if not any((requires_disk, requires_cpu, requires_memory, requires_load, requires_load_average)):
+        return any(_system_ref_can_satisfy_broad_family(ref) for ref in refs)
+    if requires_disk and not any(_resource_ref_matches_disk(ref) for ref in refs):
+        return False
+    if requires_cpu and not any(_resource_ref_matches_cpu(ref) for ref in refs):
+        return False
+    if requires_memory and not any(_resource_ref_matches_memory(ref) for ref in refs):
+        return False
+    if requires_load and not any(_resource_ref_matches_load(ref) for ref in refs):
+        return False
+    if requires_load_average and not any(_resource_ref_matches_load_average(ref) for ref in refs):
+        return False
+    return True
+
+
+def _resource_ref_matches_disk(ref: ToolObservationRef) -> bool:
+    if _system_ref_schema(ref) is not None:
+        return _system_ref_has_schema(ref, "system.disk_free")
+    return _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv_command(ref) == "df"
+
+
+def _resource_ref_matches_cpu(ref: ToolObservationRef) -> bool:
+    if _resource_ref_matches_disk(ref):
+        return False
+    if _system_ref_has_schema(ref, "system.resource_overview") or _system_ref_has_schema(
+        ref,
+        "system.cpu_overview",
+    ):
+        return True
+    if _system_ref_schema(ref) is not None:
+        return False
+    if _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv_command(ref) in {"top"}:
+        return True
+    return _resource_ref_is_generic_cpu_memory_snapshot(ref)
+
+
+def _resource_ref_matches_memory(ref: ToolObservationRef) -> bool:
+    if _resource_ref_matches_disk(ref):
+        return False
+    if _system_ref_has_schema(ref, "system.resource_overview") or _system_ref_has_schema(
+        ref,
+        "system.memory_overview",
+    ):
+        return True
+    if _system_ref_schema(ref) is not None:
+        return False
+    if _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv_command(ref) in {
+        "free",
+        "vm_stat",
+    }:
+        return True
+    return _resource_ref_is_generic_cpu_memory_snapshot(ref)
+
+
+def _resource_ref_matches_load(ref: ToolObservationRef) -> bool:
+    if _resource_ref_matches_disk(ref):
+        return False
+    if _system_ref_has_schema(ref, "system.resource_overview") or _system_ref_has_schema(
+        ref,
+        "system.cpu_overview",
+    ):
+        return True
+    if _system_ref_schema(ref) is not None:
+        return False
+    if _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv_command(ref) in {
+        "top",
+        "uptime",
+    }:
+        return True
+    return _resource_ref_is_generic_cpu_memory_snapshot(ref)
+
+
+def _resource_ref_matches_load_average(ref: ToolObservationRef) -> bool:
+    if _resource_ref_matches_disk(ref):
+        return False
+    if _system_ref_schema(ref) is not None:
+        return (
+            _system_ref_has_schema(ref, "system.resource_overview")
+            or _system_ref_has_schema(ref, "system.cpu_overview")
+        ) and _structured_has_any_key(
+            ref,
+            {"load_average", "load_1m", "load_5m", "load_15m"},
+        )
+    return _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv_command(ref) == "uptime"
+
+
+def _resource_ref_is_generic_cpu_memory_snapshot(ref: ToolObservationRef) -> bool:
+    if _system_ref_schema(ref) is not None:
+        return False
+    if not _system_ref_has_usable_raw_diagnostics(ref):
+        return False
+    argv = _system_ref_argv(ref)
+    if argv and argv[0] not in {"top", "free", "vm_stat"}:
+        return False
+    metric = ref.arguments.get("metric")
+    return not argv or metric in {"resources", "cpu_and_memory"}
+
+
+def _hardware_observations_match_request(
+    request_text: str,
+    tool_observation_refs: tuple[ToolObservationRef, ...],
+) -> bool:
+    refs = tuple(
+        ref
+        for ref in tool_observation_refs
+        if is_completed_observation(ref) and ref.tool_name == "tool.system.read.hardware"
+    )
+    if not refs:
+        return False
+    requires_battery = _matches_any(_SYSTEM_BATTERY_EVIDENCE_PATTERNS, request_text)
+    requires_os = _matches_any(_SYSTEM_OS_EVIDENCE_PATTERNS, request_text)
+    requires_memory = _matches_any(_SYSTEM_HARDWARE_MEMORY_EVIDENCE_PATTERNS, request_text)
+    requires_core_count = _matches_any(_SYSTEM_HARDWARE_CPU_CORE_EVIDENCE_PATTERNS, request_text)
+    requires_cpu_brand = _matches_any(_SYSTEM_HARDWARE_CPU_BRAND_EVIDENCE_PATTERNS, request_text)
+    if not any(
+        (
+            requires_battery,
+            requires_os,
+            requires_memory,
+            requires_core_count,
+            requires_cpu_brand,
+        )
+    ):
+        return any(_system_ref_can_satisfy_broad_family(ref) for ref in refs)
+    if requires_battery and not any(_hardware_ref_matches_battery(ref) for ref in refs):
+        return False
+    if requires_os and not any(_hardware_ref_matches_os(ref) for ref in refs):
+        return False
+    if requires_memory and not any(_hardware_ref_matches_memory(ref) for ref in refs):
+        return False
+    if requires_core_count and not any(_hardware_ref_matches_core_count(ref) for ref in refs):
+        return False
+    if requires_cpu_brand and not any(_hardware_ref_matches_cpu_brand(ref) for ref in refs):
+        return False
+    return True
+
+
+def _hardware_ref_matches_battery(ref: ToolObservationRef) -> bool:
+    if _system_ref_schema(ref) is not None:
+        return _system_ref_has_schema(ref, "system.battery_charge")
+    return _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv(ref) in {
+        ("pmset", "-g", "batt"),
+        ("upower", "-i", "/org/freedesktop/UPower/devices/DisplayDevice"),
+    }
+
+
+def _hardware_ref_matches_os(ref: ToolObservationRef) -> bool:
+    if _system_ref_schema(ref) is not None:
+        return _system_ref_has_schema(ref, "system.os_version")
+    return _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv(ref) in {
+        ("sw_vers",),
+        ("uname", "-a"),
+    }
+
+
+def _hardware_ref_matches_memory(ref: ToolObservationRef) -> bool:
+    if _system_ref_schema(ref) is not None:
+        return _system_ref_has_schema(ref, "system.memory_overview")
+    return _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv(ref) in {
+        ("sysctl", "-n", "hw.memsize"),
+        ("lshw",),
+        ("lshw", "-short"),
+    }
+
+
+def _hardware_ref_matches_core_count(ref: ToolObservationRef) -> bool:
+    if _system_ref_schema(ref) is not None:
+        return _system_ref_has_schema(ref, "system.cpu_overview")
+    return _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv(ref) in {
+        ("sysctl", "-n", "hw.ncpu"),
+        ("sysctl", "-n", "hw.logicalcpu"),
+        ("sysctl", "-n", "hw.physicalcpu"),
+        ("lscpu",),
+    }
+
+
+def _hardware_ref_matches_cpu_brand(ref: ToolObservationRef) -> bool:
+    if _system_ref_schema(ref) is not None:
+        return _system_ref_has_schema(ref, "system.cpu_overview") and _structured_has_any_key(
+            ref,
+            {"brand", "model", "processor", "processor_model", "cpu_model", "name"},
+        )
+    return _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv(ref) in {
+        ("sysctl", "-n", "machdep.cpu.brand_string"),
+        ("lscpu",),
+        ("lshw",),
+        ("lshw", "-short"),
+    }
+
+
+def _network_observations_match_request(
+    request_text: str,
+    tool_observation_refs: tuple[ToolObservationRef, ...],
+) -> bool:
+    refs = tuple(
+        ref
+        for ref in tool_observation_refs
+        if is_completed_observation(ref) and ref.tool_name == "tool.system.read.network"
+    )
+    if not refs:
+        return False
+    if _matches_any(_SYSTEM_VPN_EVIDENCE_PATTERNS, request_text):
+        return any(_network_ref_matches_vpn(ref) for ref in refs)
+    if _matches_any(_SYSTEM_PUBLIC_IP_EVIDENCE_PATTERNS, request_text):
+        return any(_network_ref_matches_public_ip(ref) for ref in refs)
+    if _matches_any(_SYSTEM_LOCAL_IP_EVIDENCE_PATTERNS, request_text):
+        return any(_network_ref_matches_local_ip(ref) for ref in refs)
+    if _matches_any(_SYSTEM_CONNECTIVITY_EVIDENCE_PATTERNS, request_text):
+        return any(_network_ref_matches_connectivity(ref) for ref in refs)
+    return any(_system_ref_can_satisfy_broad_family(ref) for ref in refs)
+
+
+def _network_ref_matches_vpn(ref: ToolObservationRef) -> bool:
+    if _system_ref_schema(ref) is not None:
+        return _system_ref_has_schema(ref, "system.vpn_status")
+    return _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv(ref) in {
+        ("scutil", "--nc", "list"),
+        ("ip", "addr"),
+    }
+
+
+def _network_ref_matches_public_ip(ref: ToolObservationRef) -> bool:
+    return _system_ref_has_schema(ref, "system.public_ip_address")
+
+
+def _network_ref_matches_local_ip(ref: ToolObservationRef) -> bool:
+    if _system_ref_has_schema(ref, "system.local_ip_address") or _system_ref_has_schema(
+        ref,
+        "system.network_interfaces",
+    ):
+        return True
+    if _system_ref_schema(ref) is not None and _system_ref_argv(ref) != ("ip", "addr"):
+        return False
+    return _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv(ref) in {
+        ("ifconfig",),
+        ("ip", "addr"),
+    }
+
+
+def _network_ref_matches_connectivity(ref: ToolObservationRef) -> bool:
+    if _system_ref_has_schema(ref, "system.network_connectivity") or _system_ref_has_schema(
+        ref,
+        "system.network_interfaces",
+    ):
+        return True
+    if _system_ref_schema(ref) is not None and _system_ref_argv(ref) != ("ip", "addr"):
+        return False
+    return _system_ref_has_usable_raw_diagnostics(ref) and _system_ref_argv(ref) in {
+        ("ifconfig",),
+        ("ip", "addr"),
+    }
+
+
+def _is_process_scoped_resource_request(request_text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:process|daemon|service|pid|python|node|java|postgres|redis)\b",
+            request_text,
+            flags=re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:процесс|демон|служб|пид)\b",
+            request_text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _system_ref_argv(ref: ToolObservationRef) -> tuple[str, ...]:
+    argv = ref.arguments.get("argv")
+    if not isinstance(argv, (list, tuple)):
+        return ()
+    if not all(isinstance(arg, str) for arg in argv):
+        return ()
+    return tuple(argv)
+
+
+def _system_ref_argv_command(ref: ToolObservationRef) -> str | None:
+    argv = _system_ref_argv(ref)
+    return argv[0] if argv else None
+
+
+def _system_ref_has_usable_raw_diagnostics(ref: ToolObservationRef) -> bool:
+    if _system_ref_is_unavailable(ref):
+        return False
+    exit_code = ref.metadata.get("exit_code")
+    if isinstance(exit_code, int):
+        return exit_code == 0
+    content_exit_code = _system_ref_content_exit_code(ref)
+    if content_exit_code is not None:
+        return content_exit_code == 0
+    return not _system_ref_argv(ref)
+
+
+def _system_ref_content_exit_code(ref: ToolObservationRef) -> int | None:
+    if ref.content_type != "application/json":
+        return None
+    try:
+        content = json.loads(ref.content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(content, dict):
+        return None
+    exit_code = content.get("exit_code")
+    return exit_code if isinstance(exit_code, int) else None
+
+
+def _system_ref_is_unavailable(ref: ToolObservationRef) -> bool:
+    return ref.metadata.get("unavailable") is True
+
+
+def _system_ref_can_satisfy_broad_family(ref: ToolObservationRef) -> bool:
+    if _system_ref_is_unavailable(ref):
+        return False
+    if _system_ref_schema(ref) is not None:
+        if not isinstance(ref.structured_content, dict):
+            return False
+        return ref.parse_status in {None, ToolParseStatus.PARSED, ToolParseStatus.PARTIAL}
+    return _system_ref_has_usable_raw_diagnostics(ref)
+
+
+def _system_ref_has_schema(ref: ToolObservationRef, schema: str) -> bool:
+    if _system_ref_is_unavailable(ref):
+        return False
+    if _system_ref_schema(ref) != schema:
+        return False
+    if not isinstance(ref.structured_content, dict):
+        return False
+    if ref.parse_status is None:
+        return True
+    return ref.parse_status in {ToolParseStatus.PARSED, ToolParseStatus.PARTIAL}
+
+
+def _structured_has_any_key(ref: ToolObservationRef, keys: set[str]) -> bool:
+    if not isinstance(ref.structured_content, dict):
+        return False
+    return any(key in ref.structured_content for key in keys)
+
+
+def _system_ref_schema(ref: ToolObservationRef) -> str | None:
+    if isinstance(ref.structured_schema, str) and ref.structured_schema:
+        return ref.structured_schema
+    if isinstance(ref.structured_content, dict):
+        schema = ref.structured_content.get("schema")
+        if isinstance(schema, str) and schema:
+            return schema
+    return None
+
+
+def _has_all_matching_calculator_observations(
+    request_text: str,
+    tool_observation_refs: tuple[ToolObservationRef, ...],
+) -> bool:
+    expected_expressions = arithmetic_expression_candidates(request_text)
+    if not expected_expressions:
+        return False
+    completed_expressions = {
+        normalize_calculator_expression(ref.arguments["expression"])
+        for ref in tool_observation_refs
+        if is_completed_observation(ref)
+        and ref.tool_name == "calculator.evaluate"
+        and isinstance(ref.arguments.get("expression"), str)
+    }
+    return all(
+        normalize_calculator_expression(expected) in completed_expressions
+        for expected in expected_expressions
     )
 
 
@@ -1137,6 +1662,7 @@ def final_answer_missing_evidence_plan(
             request_plan,
             tool_observation_refs=tool_observation_refs,
         ),
+        request.user_input,
         tool_observation_refs,
     )
     if not plan.evidence_required:
@@ -1145,6 +1671,8 @@ def final_answer_missing_evidence_plan(
         return None
     if not plan.missing_tool_names:
         return None
+    if not (plan.missing_tool_names & plan.candidate_tool_names):
+        raise RuntimeError("required_tool_evidence_missing")
     return plan
 
 
@@ -1161,16 +1689,69 @@ def failed_observation_exhausts_missing_evidence(
     )
     if not plan.evidence_required:
         return False
-    if plan.missing_tool_names != frozenset({observation_ref.tool_name}):
+    if not is_live_state_tool_name(observation_ref.tool_name):
+        return False
+    if observation_ref.tool_name not in plan.missing_tool_names:
         return False
     if not _is_terminal_unavailable_observation(observation_ref):
         return False
     non_math_families = plan.families - frozenset({LiveStateEvidenceFamily.LIVE_STATE_MATH})
-    return len(non_math_families) <= 1
+    if len(non_math_families) > 1:
+        return False
+    if _system_tool_request_requires_multiple_subtypes(request.user_input, observation_ref.tool_name):
+        return False
+    remaining_missing = plan.missing_tool_names - frozenset({observation_ref.tool_name})
+    if plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH:
+        return remaining_missing <= frozenset({"calculator.evaluate"})
+    return not remaining_missing
+
+
+def _system_tool_request_requires_multiple_subtypes(request_text: str, tool_name: str) -> bool:
+    if tool_name == "tool.system.read.resources":
+        subtypes: set[str] = set()
+        requires_load_average = _matches_any(_SYSTEM_LOAD_AVERAGE_EVIDENCE_PATTERNS, request_text)
+        if _matches_any(_SYSTEM_DISK_EVIDENCE_PATTERNS, request_text):
+            subtypes.add("disk")
+        if _matches_any(_SYSTEM_MEMORY_EVIDENCE_PATTERNS, request_text):
+            subtypes.add("memory")
+        if requires_load_average:
+            subtypes.add("load_average")
+        if _matches_any(_SYSTEM_CPU_EVIDENCE_PATTERNS, request_text) or (
+            _matches_any(_SYSTEM_LOAD_EVIDENCE_PATTERNS, request_text) and not requires_load_average
+        ):
+            subtypes.add("cpu_load")
+        return len(subtypes) > 1
+    if tool_name == "tool.system.read.hardware":
+        subtypes = {
+            name
+            for name, patterns in (
+                ("battery", _SYSTEM_BATTERY_EVIDENCE_PATTERNS),
+                ("os", _SYSTEM_OS_EVIDENCE_PATTERNS),
+                ("memory", _SYSTEM_HARDWARE_MEMORY_EVIDENCE_PATTERNS),
+                ("core_count", _SYSTEM_HARDWARE_CPU_CORE_EVIDENCE_PATTERNS),
+                ("cpu_brand", _SYSTEM_HARDWARE_CPU_BRAND_EVIDENCE_PATTERNS),
+            )
+            if _matches_any(patterns, request_text)
+        }
+        return len(subtypes) > 1
+    if tool_name == "tool.system.read.network":
+        subtypes = {
+            name
+            for name, patterns in (
+                ("vpn", _SYSTEM_VPN_EVIDENCE_PATTERNS),
+                ("public_ip", _SYSTEM_PUBLIC_IP_EVIDENCE_PATTERNS),
+                ("local_ip", _SYSTEM_LOCAL_IP_EVIDENCE_PATTERNS),
+                ("connectivity", _SYSTEM_CONNECTIVITY_EVIDENCE_PATTERNS),
+            )
+            if _matches_any(patterns, request_text)
+        }
+        return len(subtypes) > 1
+    return False
 
 
 def _without_terminal_unavailable_observations(
     plan: LiveStateEvidencePlan,
+    request_text: str,
     tool_observation_refs: tuple[ToolObservationRef, ...],
 ) -> LiveStateEvidencePlan:
     if not plan.missing_tool_names:
@@ -1178,7 +1759,10 @@ def _without_terminal_unavailable_observations(
     terminal_tool_names = frozenset(
         ref.tool_name
         for ref in tool_observation_refs
-        if ref.tool_name in plan.missing_tool_names and _is_terminal_unavailable_observation(ref)
+        if ref.tool_name in plan.missing_tool_names
+        and is_live_state_tool_name(ref.tool_name)
+        and not _system_tool_request_requires_multiple_subtypes(request_text, ref.tool_name)
+        and _is_terminal_unavailable_observation(ref)
     )
     if not terminal_tool_names:
         return plan
@@ -1191,13 +1775,11 @@ def _without_terminal_unavailable_observations(
 
 
 def _is_terminal_unavailable_observation(ref: ToolObservationRef) -> bool:
+    if ref.status == ToolObservationStatus.DENIED:
+        return ref.error_code in {None, "tool_error", "tool_failed"}
     if ref.status not in {ToolObservationStatus.FAILED, ToolObservationStatus.TIMEOUT}:
         return False
-    return ref.error_code not in {
-        "invalid_arguments",
-        "unknown_tool",
-        "tool_disabled",
-    }
+    return ref.error_code not in _NON_RECOVERABLE_LIVE_STATE_ERROR_CODES
 
 
 def _missing_families_for_tool_names(
@@ -1306,13 +1888,17 @@ def calculator_observation_matches_text(
     ref: ToolObservationRef,
     value: str,
 ) -> bool:
-    expected = expected_calculator_expression(value)
-    if expected is None:
+    expected_expressions = arithmetic_expression_candidates(value)
+    if not expected_expressions:
         return False
     actual = ref.arguments.get("expression")
     if not isinstance(actual, str):
         return False
-    return normalize_calculator_expression(actual) == normalize_calculator_expression(expected)
+    actual_normalized = normalize_calculator_expression(actual)
+    return any(
+        actual_normalized == normalize_calculator_expression(expected)
+        for expected in expected_expressions
+    )
 
 
 def expected_calculator_expression(value: str) -> str | None:
