@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 from assistant_core.domain.conversations import UpdateAssistantRequestStatusCommand
 from assistant_core.domain.loops import LoopExecutionRequest, ToolObservationRef, ToolProposal, ToolProposalParseError
@@ -202,8 +203,14 @@ def _ensure_tool_budget(*, used_tool_calls: int, request: LoopExecutionRequest) 
 
 
 def _safe_observation_arguments(proposal: ToolProposal) -> dict[str, object]:
-    if proposal.tool_name != "calculator.evaluate":
-        return {}
+    if proposal.tool_name == "calculator.evaluate":
+        return _safe_calculator_arguments(proposal)
+    if proposal.tool_name == "datetime.until":
+        return _safe_datetime_until_arguments(proposal)
+    return {}
+
+
+def _safe_calculator_arguments(proposal: ToolProposal) -> dict[str, object]:
     expression = proposal.arguments.get("expression")
     if not isinstance(expression, str) or not expression.strip():
         return {}
@@ -211,6 +218,60 @@ def _safe_observation_arguments(proposal: ToolProposal) -> dict[str, object]:
     if redact_content(expression, content_type="text/plain") != expression:
         return {}
     return {"expression": expression}
+
+
+def _safe_datetime_until_arguments(proposal: ToolProposal) -> dict[str, object]:
+    target = _safe_short_string_argument(proposal, "target", max_length=100)
+    unit = _safe_short_string_argument(proposal, "unit", max_length=20)
+    if target != "next_new_year" or unit not in {
+        "seconds",
+        "minutes",
+        "hours",
+        "days",
+    }:
+        return {}
+    safe_arguments: dict[str, object] = {"target": target, "unit": unit}
+    if "from_iso" in proposal.arguments:
+        from_iso = _safe_iso_datetime_argument(proposal, "from_iso", max_length=80)
+        if from_iso is None:
+            return {}
+        safe_arguments["from_iso"] = from_iso
+    return safe_arguments
+
+
+def _safe_iso_datetime_argument(
+    proposal: ToolProposal,
+    argument_name: str,
+    *,
+    max_length: int,
+) -> str | None:
+    value = _safe_short_string_argument(
+        proposal,
+        argument_name,
+        max_length=max_length,
+    )
+    if value is None:
+        return None
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value
+
+
+def _safe_short_string_argument(
+    proposal: ToolProposal,
+    argument_name: str,
+    *,
+    max_length: int,
+) -> str | None:
+    value = proposal.arguments.get(argument_name)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()[:max_length]
+    if redact_content(value, content_type="text/plain") != value:
+        return None
+    return value
 
 
 def _remaining_timeout(deadline: float, operation_timeout: float) -> float:

@@ -3033,7 +3033,10 @@ def test_tool_react_loop_executes_model_selected_datetime_until_without_source()
                 {
                     "action": "tool_call",
                     "tool_name": "datetime.until",
-                    "arguments": {"target": "next_new_year", "unit": "seconds"},
+                    "arguments": {
+                        "target": "next_new_year",
+                        "unit": "seconds",
+                    },
                 },
                 {"action": "final_answer"},
             ],
@@ -4474,6 +4477,213 @@ def test_tool_react_loop_omits_secret_like_calculator_expression_from_observatio
     result = asyncio.run(scenario())
 
     assert result.response_text == "safe fallback answer"
+    assert result.tool_observation_refs[0].arguments == {}
+
+
+def test_tool_react_loop_preserves_safe_datetime_until_arguments_in_observation_ref() -> None:
+    class Gateway:
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            content = (
+                '{"target": "next_new_year", '
+                '"target_iso": "2027-01-01T00:00:00+03:00", '
+                '"seconds": 18337521, '
+                '"unit": "seconds", '
+                '"value": 18337521}'
+            )
+            return ToolObservation(
+                tool_call_id="tool-call-datetime-until",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.until",
+                    "arguments": {
+                        "target": "next_new_year",
+                        "unit": "seconds",
+                        "from_iso": "2026-06-05T20:59:07+03:00",
+                    },
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="До Нового года осталось 18 337 521 секунд.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=Gateway(),
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "datetime.until",
+                        live_state_tool_names=("datetime.until",),
+                    ),
+                    budget=replace(_budget(), max_tool_calls=2),
+                ),
+                user_input="сколько секунд до нового года?",
+            )
+        )
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result.response_text == "До Нового года осталось 18 337 521 секунд."
+    assert result.tool_observation_refs[0].arguments == {
+        "from_iso": "2026-06-05T20:59:07+03:00",
+        "target": "next_new_year",
+        "unit": "seconds",
+    }
+
+
+def test_tool_react_loop_omits_unsupported_datetime_until_target_from_observation_ref() -> None:
+    class Gateway:
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            content = '{"target": "next_christmas", "unit": "seconds", "value": 42}'
+            return ToolObservation(
+                tool_call_id="tool-call-datetime-until",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.until",
+                    "arguments": {"target": "next_christmas", "unit": "seconds"},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="Fallback answer.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=Gateway(),
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "datetime.until",
+                        live_state_tool_names=("datetime.until",),
+                    ),
+                    budget=replace(_budget(), max_tool_calls=2),
+                ),
+                user_input="how many seconds until Christmas?",
+            )
+        )
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result.response_text == "Fallback answer."
+    assert result.tool_observation_refs[0].arguments == {}
+
+
+def test_tool_react_loop_omits_invalid_datetime_until_from_iso_from_observation_ref() -> None:
+    class Gateway:
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            now = datetime.now(UTC)
+            content = '{"target": "next_new_year", "unit": "seconds", "value": 42}'
+            return ToolObservation(
+                tool_call_id="tool-call-datetime-until",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.until",
+                    "arguments": {
+                        "target": "next_new_year",
+                        "unit": "seconds",
+                        "from_iso": "not an iso datetime",
+                    },
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="Fallback answer.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=Gateway(),
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "datetime.until",
+                        live_state_tool_names=("datetime.until",),
+                    ),
+                    budget=replace(_budget(), max_tool_calls=2),
+                ),
+                user_input="сколько секунд до нового года?",
+            )
+        )
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result.response_text == "Fallback answer."
     assert result.tool_observation_refs[0].arguments == {}
 
 
