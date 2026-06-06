@@ -447,7 +447,7 @@ def test_tool_react_loop_final_answer_context_includes_available_tool_catalog() 
         result = await loop.run_turn(
             replace(
                 _request(metadata=metadata),
-                user_input="Расскажи про свои инструменты, которые тебе доступны.",
+                user_input="Расскажи, как инструменты устроены в архитектуре.",
             ),
         )
         return result, assembler.final_contract
@@ -470,6 +470,345 @@ def test_tool_react_loop_final_answer_context_includes_available_tool_catalog() 
         "to mention tool identifiers from the allowed tool catalog."
         in final_contract
     )
+
+
+def test_tool_react_loop_deterministically_answers_available_tool_catalog_without_model_or_tool() -> None:
+    class NoContextAssembler(FakeContextAssembler):
+        async def assemble(self, request):
+            raise AssertionError("available-tool finalizer must not assemble context")
+
+    class NoModelRouter:
+        structured_calls = 0
+        chat_calls = 0
+
+        async def structured(self, request):
+            self.structured_calls += 1
+            raise AssertionError("available-tool finalizer must not call structured model")
+
+        async def chat(self, request):
+            self.chat_calls += 1
+            raise AssertionError("available-tool finalizer must not call chat model")
+
+    class Gateway:
+        invoked = False
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.invoked = True
+            raise AssertionError("available-tool finalizer must not call tools")
+
+    async def scenario():
+        router = NoModelRouter()
+        gateway = Gateway()
+        metadata = _tool_plan_metadata("datetime.now", "calculator.evaluate")
+        metadata["agent_allowed_tool_summaries"] = [
+            {
+                "tool_name": "datetime.now",
+                "description": "Read the current local date and time.",
+            },
+            {
+                "tool_name": "calculator.evaluate",
+                "description": "Evaluate deterministic mathematical expressions.",
+            },
+            {
+                "tool_name": "tool.system.read.hardware",
+                "description": "Hidden disabled tool summary.",
+            },
+        ]
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=NoContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(metadata=metadata),
+                user_input="What tools are available right now?",
+            )
+        )
+        return result, router, gateway
+
+    result, router, gateway = asyncio.run(scenario())
+
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 0
+    assert router.structured_calls == 0
+    assert router.chat_calls == 0
+    assert gateway.invoked is False
+    assert "Available local tools for this request:" in result.response_text
+    assert "datetime.now: Read the current local date and time." in result.response_text
+    assert (
+        "calculator.evaluate: Evaluate deterministic mathematical expressions."
+        in result.response_text
+    )
+    assert "tool.system.read.hardware" not in result.response_text
+    assert "Hidden disabled tool summary" not in result.response_text
+
+
+def test_tool_react_loop_deterministically_answers_currently_available_tool_catalog() -> None:
+    class NoModelRouter:
+        async def structured(self, request):
+            raise AssertionError("available-tool finalizer must not call structured model")
+
+        async def chat(self, request):
+            raise AssertionError("available-tool finalizer must not call chat model")
+
+    async def scenario():
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=NoModelRouter(),
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        results = []
+        for user_input in (
+            "What tools are currently available?",
+            "Which tools are available right now?",
+            "Какие инструменты тебе доступны сейчас?",
+            "Какие инструменты доступны тебе сейчас?",
+        ):
+            results.append(
+                await loop.run_turn(
+                    replace(
+                        _request(metadata=_tool_plan_metadata("datetime.now")),
+                        user_input=user_input,
+                    )
+                )
+            )
+        return results
+
+    results = asyncio.run(scenario())
+
+    for result in results:
+        assert result.response_text == "Available local tools for this request:\n- datetime.now."
+        assert result.used_model_calls == 0
+        assert result.used_tool_calls == 0
+
+
+def test_tool_react_loop_deterministically_answers_available_to_you_tool_catalog() -> None:
+    class NoModelRouter:
+        async def structured(self, request):
+            raise AssertionError("available-tool finalizer must not call structured model")
+
+        async def chat(self, request):
+            raise AssertionError("available-tool finalizer must not call chat model")
+
+    async def scenario():
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=NoModelRouter(),
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        return await loop.run_turn(
+            replace(
+                _request(metadata=_tool_plan_metadata("datetime.now")),
+                user_input="What tools are available to you right now?",
+            )
+        )
+
+    result = asyncio.run(scenario())
+
+    assert result.response_text == "Available local tools for this request:\n- datetime.now."
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 0
+
+
+def test_tool_react_loop_deterministically_answers_no_available_tools_without_model() -> None:
+    class NoModelRouter:
+        async def structured(self, request):
+            raise AssertionError("available-tool finalizer must not call structured model")
+
+        async def chat(self, request):
+            raise AssertionError("available-tool finalizer must not call chat model")
+
+    async def scenario():
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=NoModelRouter(),
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        return await loop.run_turn(
+            replace(
+                _request(metadata={"agent_tool_policy": "disabled"}),
+                user_input="Какие инструменты сейчас доступны?",
+            )
+        )
+
+    result = asyncio.run(scenario())
+
+    assert result.response_text == "No local tools are available for this request."
+    assert result.used_model_calls == 0
+    assert result.used_tool_calls == 0
+
+
+def test_tool_react_loop_does_not_deterministically_answer_tool_architecture_question() -> None:
+    async def scenario():
+        router = FakeStructuredAndChatRouter(
+            [{"action": "final_answer"}],
+            chat_response="ordinary architecture answer",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(metadata=_tool_plan_metadata("datetime.now")),
+                user_input="Explain how the tool architecture works.",
+            )
+        )
+        return result, router
+
+    result, router = asyncio.run(scenario())
+
+    assert result.response_text == "ordinary architecture answer"
+    assert router.structured_calls == 1
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_does_not_deterministically_answer_external_tool_catalog_question() -> None:
+    async def scenario():
+        router = FakeStructuredAndChatRouter(
+            [{"action": "final_answer"}],
+            chat_response="ordinary Python tooling answer",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(metadata=_tool_plan_metadata("datetime.now")),
+                user_input="What tools are available in Python?",
+            )
+        )
+        return result, router
+
+    result, router = asyncio.run(scenario())
+
+    assert result.response_text == "ordinary Python tooling answer"
+    assert router.structured_calls == 1
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_does_not_deterministically_answer_current_external_tool_catalog_question() -> None:
+    async def scenario(user_input: str):
+        router = FakeStructuredAndChatRouter(
+            [{"action": "final_answer"}],
+            chat_response="ordinary current Python tooling answer",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(metadata=_tool_plan_metadata("datetime.now")),
+                user_input=user_input,
+            )
+        )
+        return result, router
+
+    for user_input in (
+        "What tools are currently available in Python?",
+        "What tools are available now in AWS?",
+        "In Python what tools are available right now?",
+        "For AWS what tools are currently available?",
+        "Какие инструменты в Python сейчас доступны?",
+        "В Python какие инструменты сейчас доступны?",
+    ):
+        result, router = asyncio.run(scenario(user_input))
+
+        assert result.response_text == "ordinary current Python tooling answer"
+        assert router.structured_calls == 1
+        assert router.chat_calls == 1
+
+
+def test_tool_react_loop_does_not_deterministically_answer_compound_available_tool_and_live_state_question() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime(2026, 6, 6, 12, 34, tzinfo=UTC)
+            content = '{"iso":"2026-06-06T12:34:00+00:00","timezone":"UTC"}'
+            return ToolObservation(
+                tool_call_id="tool-call-now",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario(user_input: str):
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+            ],
+            chat_response="ordinary compound answer",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "datetime.now",
+                        live_state_tool_names=("datetime.now",),
+                    )
+                ),
+                user_input=user_input,
+            )
+        )
+        return result, router, gateway
+
+    for user_input in (
+        "What tools are available right now, and what time is it?",
+        "What tools are currently available? What time is it?",
+    ):
+        result, router, gateway = asyncio.run(scenario(user_input))
+
+        assert result.response_text == "ordinary compound answer"
+        assert router.structured_calls == 2
+        assert router.chat_calls == 1
+        assert gateway.calls == [("datetime.now", {})]
 
 
 def test_tool_react_loop_step_failures_use_loop_failure_policy() -> None:

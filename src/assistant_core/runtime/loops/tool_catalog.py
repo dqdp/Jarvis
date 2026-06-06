@@ -18,7 +18,7 @@ def allowed_tool_catalog(
             or not isinstance(description, str)
         ):
             continue
-        clean_description = " ".join(description.split())[:240]
+        clean_description = " ".join(description.split()).rstrip(".")[:240].rstrip()
         if not clean_description:
             continue
         seen.add(tool_name)

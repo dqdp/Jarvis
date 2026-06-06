@@ -35,6 +35,9 @@ from assistant_core.ports.event_log import EventLogPort
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.ports.model_router import ModelRouterPort
 from assistant_core.ports.tools import ToolGatewayPort
+from assistant_core.runtime.loops.available_tools_finalizer import (
+    deterministic_available_tools_response as _deterministic_available_tools_response,
+)
 from assistant_core.runtime.loops.event_recorder import LoopEventRecorder
 from assistant_core.runtime.loops.failure_policy import LoopFailureDecision, LoopFailurePolicy
 from assistant_core.runtime.loops.final_answer import FinalAnswerStep, FinalAnswerStepError
@@ -223,6 +226,22 @@ class ToolReactLoop:
             active_step_started = step_started
             active_step_id = step_id
             try:
+                deterministic_available_tools_response = _deterministic_available_tools_response(
+                    request.user_input,
+                    request_plan,
+                )
+                if deterministic_available_tools_response is not None:
+                    return await self._final_answer_step.complete_deterministic(
+                        request,
+                        step_started=step_started,
+                        response_text=deterministic_available_tools_response,
+                        used_model_calls=used_model_calls,
+                        used_tool_calls=used_tool_calls,
+                        context_manifest_refs=context_manifest_refs,
+                        tool_observation_refs=tool_observation_refs,
+                        source="deterministic_available_tools",
+                        degraded=False,
+                    )
                 if _should_use_final_chat_without_proposal(
                     request_plan,
                     used_tool_calls=used_tool_calls,
