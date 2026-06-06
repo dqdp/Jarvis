@@ -76,6 +76,8 @@ _LIVE_STATE_THRESHOLD_PATTERN = re.compile(
     r"(?:\b(?:or\s+higher|or\s+lower|or\s+less|or\s+more|or\s+above|or\s+below)\b|\+)"
     r")"
 )
+# Compatibility-only broad check retained for older tests/callers. Production
+# finalization decisions must use typed LiveStateEvidencePlan helpers instead.
 _LEGACY_LIVE_STATE_INTENT_PATTERN = re.compile(
     r"(?ix)"
     r"(?:"
@@ -1961,6 +1963,7 @@ def contains_arithmetic_expression(value: str) -> bool:
 
 
 def contains_live_state_intent(value: str) -> bool:
+    """Compatibility-only boolean check; use live_state_evidence_plan in runtime paths."""
     return _LEGACY_LIVE_STATE_INTENT_PATTERN.search(value) is not None
 
 

@@ -36,6 +36,7 @@ from assistant_core.ports.event_log import EventFilter
 from assistant_core.ports.model_router import ModelRouterPort
 from assistant_core.ports.tools import ToolGatewayPort
 from assistant_core.runtime.loops.available_tools_finalizer import (
+    AVAILABLE_TOOLS_FINALIZER_SOURCE,
     deterministic_available_tools_response as _deterministic_available_tools_response,
 )
 from assistant_core.runtime.loops.event_recorder import LoopEventRecorder
@@ -239,7 +240,7 @@ class ToolReactLoop:
                         used_tool_calls=used_tool_calls,
                         context_manifest_refs=context_manifest_refs,
                         tool_observation_refs=tool_observation_refs,
-                        source="deterministic_available_tools",
+                        source=AVAILABLE_TOOLS_FINALIZER_SOURCE,
                         degraded=False,
                     )
                 if _should_use_final_chat_without_proposal(

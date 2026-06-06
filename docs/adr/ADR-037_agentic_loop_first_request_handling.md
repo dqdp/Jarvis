@@ -55,6 +55,47 @@ request understanding:
 - explicit API/user overrides where they are operational controls, not hidden
   natural-language inference.
 
+Safety guardrails may require evidence before finalization. This is not a
+semantic route classifier and not a direct natural-language execution path. For
+example, if a request appears to ask for a current live fact such as local time
+and an allowed local tool can observe it, the loop must not accept an
+unevidenced `final_answer` that asserts that fact. The model may still choose
+the specific allowed tool through the bounded loop, and execution still goes
+through PolicyPort and ToolGatewayPort.
+
+The evidence guard uses broad live-state intent families rather than exact
+deterministic-question allowlists. It must cover current time/date wording,
+including "what time is it", "current time", "local time", `сколько времени`,
+`который час`, `текущее время`, `в данный момент` and `сейчас`; local machine
+and daemon state such as CPU, memory, load, battery, network/VPN/IP, disk,
+hardware and status wording; and current live values combined with arithmetic,
+threshold or comparison wording. A match only means that completed evidence is
+required before a live-state claim can be accepted.
+
+The guard algorithm is intentionally limited: build the candidate live-state
+tool set from explicit metadata and allowed local tools; lightly normalize user
+text; match broad live-state intent families; produce typed guard metadata with
+the live-state family, evidence requirement and candidate tools; block
+unevidenced live-state `final_answer` when a relevant local tool is allowed;
+then finalize only after a matching completed observation. A future
+unavailable/clarification contract is required before the no-allowed-tool path
+can claim the same hard guard. Location or scope wording may prevent a narrow
+deterministic finalizer, but it must not disable the evidence guard when a
+matching local observation is available.
+
+Deterministic finalization is narrower than the evidence guard. It is allowed
+only as a small source-backed transformation of a completed typed observation,
+such as formatting a completed `datetime.now` observation as `HH:MM`. It must
+not expand into broad natural-language routing, countdown calculation,
+calendar reasoning or direct tool execution before the loop.
+
+The exception for "what tools are available now?" is also source-backed and
+narrow: it answers from the current request's `ToolRequestPlan`, specifically
+`allowed_tool_names` and matching safe summaries. It must not consult RAG or a
+global tool registry, and it must not reveal disabled or hidden tools. Questions
+about tool architecture, documentation or external ecosystems remain ordinary
+model/RAG-capable requests, and compound requests remain inside the bounded loop.
+
 The ReAct/tool loop is therefore the central runtime primitive for normal chat,
 typed input and future voice transcripts.
 
@@ -79,7 +120,9 @@ ToolGateway path.
   behavior for the agentic-loop-first default.
 - Direct answer optimizations are not part of the default natural-language
   path. If reintroduced later, they require a separate ADR and must be limited
-  to unambiguous, non-semantic operations with strong tests.
+  to unambiguous, non-semantic operations with strong tests. Narrow
+  source-backed deterministic finalization after a completed typed observation
+  is part of the bounded loop contract and is not a direct execution route.
 - Voice must submit transcripts through the same agent loop as typed input and
   must not add a separate voice-specific router.
 - Tool choice belongs inside the bounded agent loop. Tool execution still
@@ -103,6 +146,8 @@ PM-08k is complete only when the documentation, tests and runtime agree that:
 - no runtime LLM route classifier is required before the agent loop;
 - deterministic request handling is restricted to control/safety/policy
   responsibilities;
+- live-state claims require relevant completed evidence when an allowed local
+  tool can observe that state;
 - unsupported or risky tool proposals fail through PolicyPort/ToolGatewayPort
   or clarification behavior, not hidden pre-routing guesses;
 - PM-09 voice uses the same request lifecycle and agent loop as text.

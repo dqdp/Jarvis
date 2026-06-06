@@ -82,6 +82,8 @@ Examples:
 ```text
 Config validation
 Policy decisions
+Live-state evidence planning
+Available-tools deterministic finalization from request metadata
 Context budget trimming
 Namespace selection
 Memory lifecycle transitions
@@ -185,6 +187,9 @@ Memory domain must not import API layer or AgentRuntime.
 ModelRouter must depend on PolicyPort.
 Only storage adapters may import ORM models.
 No raw prompt logging unless explicitly debug-enabled.
+Live-state evidence logic stays in explicit loop helper modules.
+Deterministic finalizers are allowlisted and source-backed.
+Available-tools answers use current request metadata, not RAG/global registry.
 ```
 
 Architecture tests may be import-graph checks, AST checks, or simple static grep checks where appropriate.
@@ -208,6 +213,11 @@ POST message
   -> model_invocation created
   -> ContextManifest references selected context
 ```
+
+Agent-loop E2E and unit coverage must use fake model providers for live-state
+and available-tools behavior. CI must not require real LLM calls, real network
+state or cloud fallback to prove that evidence gates, deterministic finalizers
+and unavailable recovery work.
 
 Canonical event chain:
 

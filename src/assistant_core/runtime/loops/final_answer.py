@@ -20,6 +20,9 @@ from assistant_core.domain.tools import ToolObservationStatus
 from assistant_core.ports.context_assembler import ContextAssemblerPort
 from assistant_core.ports.conversation_store import ConversationStorePort
 from assistant_core.ports.model_router import ModelRouterPort
+from assistant_core.runtime.loops.available_tools_finalizer import (
+    is_current_available_tools_request,
+)
 from assistant_core.runtime.loops.event_recorder import LoopEventRecorder
 from assistant_core.runtime.loops.tool_catalog import allowed_tool_catalog
 
@@ -62,6 +65,7 @@ class FinalAnswerStep:
             raise RuntimeError("max_model_calls_exceeded")
         output_contract = _final_answer_output_contract(
             output_contract,
+            user_input=request.user_input,
             request_plan=ToolRequestPlan.from_metadata(request.metadata),
             tool_observation_refs=tool_observation_refs,
         )
@@ -324,11 +328,12 @@ def _remaining_timeout(deadline: float, operation_timeout: float) -> float:
 def _final_answer_output_contract(
     output_contract: str | None,
     *,
+    user_input: str,
     request_plan: ToolRequestPlan,
     tool_observation_refs: list[ToolObservationRef],
 ) -> str | None:
     contract_parts = []
-    tool_surface_contract = _available_tool_surface_contract(request_plan)
+    tool_surface_contract = _available_tool_surface_contract(request_plan, user_input=user_input)
     completed_refs = [
         ref for ref in tool_observation_refs if ref.status == ToolObservationStatus.COMPLETED
     ]
@@ -349,10 +354,7 @@ def _final_answer_output_contract(
         "totals, percentages, or units from partial diagnostics output. If a "
         "requested value is missing, say it is unavailable rather than inventing it. "
         "Do not mention internal tool names, raw diagnostic identifiers, or tool "
-        "implementation details in the user-visible answer unless the user asks what "
-        "tools or capabilities are available. When the user asks what tools or "
-        "capabilities are available, it is okay to mention tool identifiers from the "
-        "allowed tool catalog."
+        "implementation details in the user-visible answer."
     )
     if any(
         ref.tool_name == "calculator.evaluate" and ref.status == ToolObservationStatus.COMPLETED
@@ -368,7 +370,11 @@ def _final_answer_output_contract(
     return " ".join(contract_parts)
 
 
-def _available_tool_surface_contract(request_plan: ToolRequestPlan) -> str | None:
+def _available_tool_surface_contract(
+    request_plan: ToolRequestPlan,
+    *,
+    user_input: str,
+) -> str | None:
     allowed = request_plan.allowed_tool_names or frozenset()
     if request_plan.policy not in {"available", "required"} or not allowed:
         return None
@@ -378,15 +384,23 @@ def _available_tool_surface_contract(request_plan: ToolRequestPlan) -> str | Non
     )
     if not catalog:
         catalog = [f"{tool_name}." for tool_name in sorted(allowed)]
-    return (
+    base_contract = (
         "You have access to the following allowed local tools for this request: "
         + " ".join(catalog)
-        + " If the user asks what tools or capabilities are available, answer from "
-        "this list. When the user asks what tools or capabilities are available, "
-        "it is okay to mention tool identifiers from the allowed tool catalog. "
-        "Do not claim that no tools are available, and do not claim browser, web "
+        + " Do not claim browser, web "
         "search, cloud API, file-system, or external-service access unless it is "
         "explicitly listed here."
+    )
+    if not is_current_available_tools_request(user_input):
+        return (
+            base_contract
+            + " Do not use this local tool list to answer architecture, documentation, "
+            "or external ecosystem questions."
+        )
+    return (
+        base_contract
+        + " The user is asking which local tools are available for this request; "
+        "answer from this list. It is okay to mention these tool identifiers."
     )
 
 def _wall_time_expired(deadline: float) -> bool:

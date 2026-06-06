@@ -216,7 +216,8 @@ The target PM-08k architecture is:
 user text or voice transcript
   -> API/CLI request lifecycle
   -> bounded agent loop
-      model may answer directly
+      model may answer ordinary chat directly
+      live-state claims require completed local evidence when observable
       model may propose a tool call from the supplied/allowed tools
   -> PolicyPort / ToolGatewayPort validate and execute tool calls
   -> tool observation returns to the same loop
@@ -264,6 +265,11 @@ agent loop.
 future optimization reintroduces direct answers for current time or explicit
 calculator expressions, it needs a separate ADR and must prove that it cannot
 truncate mixed natural-language expressions or bypass PolicyPort/ToolGateway.
+Narrow deterministic finalization inside the bounded loop is different: it may
+format completed typed evidence, or answer current available-tools questions
+from the current `ToolRequestPlan.allowed_tool_names` and matching safe
+summaries. It must not use RAG, a global registry, hidden/disabled tools or
+external tool catalogs as the source of current availability.
 
 5. Unsupported event/date questions must not be guessed by a pre-router. They
 enter the same agent loop. If a tool cannot resolve the event, the agent should

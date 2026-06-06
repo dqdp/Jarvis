@@ -2507,7 +2507,8 @@ Acceptance:
 API clients can omit loop_strategy and get auto routing;
 explicit chat/tools overrides still work;
 selected concrete loop and selected model profile are visible in request metadata;
-tools-disabled tool intent fails clearly rather than hallucinating live state;
+tools-disabled live-state hard failure is future unavailable/clarification work
+unless a relevant allowed local observation is available;
 tool-loop budget mismatch fails before request persistence or runtime execution;
 no real LLM, shell or diagnostics calls are required for API contract tests.
 ```
@@ -2725,8 +2726,8 @@ selector remains provider-agnostic and policy-authoritative;
 invalid model output cannot become a raw command/tool execution;
 tool-intent routing has a corpus of multilingual formulations with CI-safe
 baseline checks and opt-in local model evaluation;
-live-state requests still fail unavailable rather than hallucinating when tools
-are disabled or denied.
+denied or unavailable live-state observations fail or recover without
+hallucinating current state.
 ```
 
 ### PM-08f — Typed tool observations and direct-answer hardening
@@ -3840,7 +3841,8 @@ ordinary chat, project-docs questions and live project/system inspection enter
   the bounded agent loop by default;
 RAG remains ContextAssembler behavior and is not a separate route trigger;
 safe tool use happens only through bounded agent loop proposals and ToolGateway;
-tools-disabled tool intent does not silently hallucinate;
+tools-disabled live-state hard failure is not claimed until unavailable or
+clarification behavior is implemented;
 direct diagnostics answers use typed payloads and parse_status, not raw stdout
   parsing in the loop;
 CLI defaults to auto and exposes debug override;
@@ -3952,7 +3954,8 @@ runtime loop:
 
 auto/tools modes:
   auto mode must allow ordinary final answers without requiring a tool
-    observation
+    observation, but must not finalize live-state claims without relevant
+    completed tool evidence when an allowed local tool can observe that state
   explicit malformed tool_call proposals still fail closed
   tools mode must not silently fallback before a valid tool observation when a
     tool observation is required

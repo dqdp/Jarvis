@@ -6,6 +6,8 @@ from assistant_core.domain.loops import ToolRequestPlan
 from assistant_core.runtime.loops.tool_catalog import allowed_tool_catalog
 
 
+AVAILABLE_TOOLS_FINALIZER_SOURCE = "deterministic_available_tools"
+
 _AVAILABLE_TOOLS_PATTERNS: tuple[str, ...] = (
     r"\bwhat\s+(?:local\s+)?tools\s+are\s+(?:currently\s+)?(?:available|enabled|allowed)(?:\s+(?:now|right\s+now|currently|for\s+this\s+request|to\s+you(?:\s+(?:now|right\s+now|currently|for\s+this\s+request))?))?\s*[?.!]*$",
     r"\bwhich\s+(?:local\s+)?tools\s+are\s+(?:currently\s+)?(?:available|enabled|allowed)(?:\s+(?:now|right\s+now|currently|for\s+this\s+request|to\s+you(?:\s+(?:now|right\s+now|currently|for\s+this\s+request))?))?\s*[?.!]*$",
@@ -41,7 +43,7 @@ def deterministic_available_tools_response(
     user_input: str,
     request_plan: ToolRequestPlan,
 ) -> str | None:
-    if not _is_current_available_tools_request(user_input):
+    if not is_current_available_tools_request(user_input):
         return None
     allowed = request_plan.allowed_tool_names or frozenset()
     if request_plan.policy not in {"available", "required"} or not allowed:
@@ -57,7 +59,7 @@ def deterministic_available_tools_response(
     )
 
 
-def _is_current_available_tools_request(user_input: str) -> bool:
+def is_current_available_tools_request(user_input: str) -> bool:
     value = " ".join(user_input.split())
     if not value:
         return False
@@ -76,4 +78,8 @@ def _full_matches_any(patterns: tuple[str, ...], value: str) -> bool:
     return any(re.fullmatch(pattern, value, flags=re.IGNORECASE) for pattern in patterns)
 
 
-__all__ = ["deterministic_available_tools_response"]
+__all__ = [
+    "AVAILABLE_TOOLS_FINALIZER_SOURCE",
+    "deterministic_available_tools_response",
+    "is_current_available_tools_request",
+]

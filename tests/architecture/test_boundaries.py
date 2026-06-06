@@ -641,6 +641,7 @@ def test_tool_react_loop_delegates_approval_and_proposal_execution() -> None:
 def test_tool_react_loop_delegates_contracts_evidence_and_deterministic_answers() -> None:
     loop_source = (SRC_ROOT / "runtime" / "loops" / "tool_react.py").read_text(encoding="utf-8")
     expected_modules = [
+        SRC_ROOT / "runtime" / "loops" / "available_tools_finalizer.py",
         SRC_ROOT / "runtime" / "loops" / "tool_loop_contracts.py",
         SRC_ROOT / "runtime" / "loops" / "tool_loop_evidence.py",
         SRC_ROOT / "runtime" / "loops" / "tool_loop_deterministic.py",
@@ -654,6 +655,7 @@ def test_tool_react_loop_delegates_contracts_evidence_and_deterministic_answers(
         "def _request_needs_live_state_math_evidence",
         "def _deterministic_datetime_now_response",
         "def _current_time_question_language",
+        "_AVAILABLE_TOOLS_PATTERNS",
     }
 
     assert sorted(helper for helper in forbidden_helpers if helper in loop_source) == []
@@ -668,6 +670,36 @@ def test_deterministic_tool_answer_paths_are_explicitly_allowlisted() -> None:
     assert "calendar" not in source.lower()
     assert "christmas" not in source.lower()
     assert "рождеств" not in source.lower()
+
+
+def test_available_tools_finalizer_is_explicitly_allowlisted_and_request_plan_backed() -> None:
+    finalizer_path = SRC_ROOT / "runtime" / "loops" / "available_tools_finalizer.py"
+    source = finalizer_path.read_text(encoding="utf-8")
+
+    assert "AVAILABLE_TOOLS_FINALIZER_SOURCE" in source
+    assert '"deterministic_available_tools"' in source
+    assert "ToolRequestPlan" in source
+    assert "allowed_tool_names" in source
+    assert "allowed_tool_summaries" in source
+    assert "allowed_tool_catalog" in source
+    assert "registry" not in source.lower()
+    assert "rag" not in source.lower()
+    _assert_no_import_prefixes(
+        [finalizer_path],
+        {
+            "assistant_core.tools",
+            "assistant_core.runtime.routing",
+            "assistant_core.content_retrieval",
+            "assistant_core.storage",
+        },
+    )
+
+
+def test_tool_react_loop_uses_allowlisted_available_tools_source_constant() -> None:
+    loop_source = (SRC_ROOT / "runtime" / "loops" / "tool_react.py").read_text(encoding="utf-8")
+
+    assert "AVAILABLE_TOOLS_FINALIZER_SOURCE" in loop_source
+    assert 'source="deterministic_available_tools"' not in loop_source
 
 
 def test_tool_react_loop_delegates_finalization_and_stream_payload_helpers() -> None:
@@ -1040,6 +1072,20 @@ def test_known_facades_stay_below_god_module_size() -> None:
         SRC_ROOT / "tools" / "gateway.py": 850,
         SRC_ROOT / "runtime" / "loops" / "tool_react.py": 1200,
         SRC_ROOT / "context_assembly" / "deterministic.py": 780,
+    }
+    offenders = [
+        f"{path.relative_to(PROJECT_ROOT)} has {len(path.read_text(encoding='utf-8').splitlines())} lines"
+        for path, max_lines in max_lines_by_path.items()
+        if path.is_file() and len(path.read_text(encoding="utf-8").splitlines()) > max_lines
+    ]
+
+    assert offenders == []
+
+
+def test_loop_evidence_helpers_stay_below_size_budget() -> None:
+    max_lines_by_path = {
+        SRC_ROOT / "runtime" / "loops" / "tool_loop_evidence.py": 2100,
+        SRC_ROOT / "runtime" / "loops" / "available_tools_finalizer.py": 140,
     }
     offenders = [
         f"{path.relative_to(PROJECT_ROOT)} has {len(path.read_text(encoding='utf-8').splitlines())} lines"

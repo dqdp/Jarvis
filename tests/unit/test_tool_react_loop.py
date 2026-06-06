@@ -264,7 +264,7 @@ def test_tool_react_loop_records_waiting_approval_state() -> None:
             event_log=event_log,
             tool_gateway=ApprovalRequiredGateway(),
         )
-        with pytest.raises(RuntimeError, match="tool_observation_approval_required"):
+        with pytest.raises(RuntimeError, match="approval_required"):
             await loop.run_turn(_request(metadata=_tool_plan_metadata("datetime.now")))
         return event_log.events
 
@@ -464,10 +464,66 @@ def test_tool_react_loop_final_answer_context_includes_available_tool_catalog() 
         "calculator.evaluate: Evaluate deterministic mathematical expressions."
         in final_contract
     )
-    assert "Do not claim that no tools are available" in final_contract
     assert (
-        "When the user asks what tools or capabilities are available, it is okay "
-        "to mention tool identifiers from the allowed tool catalog."
+        "Do not claim browser, web search, cloud API, file-system, or "
+        "external-service access unless it is explicitly listed here."
+        in final_contract
+    )
+    assert "answer from this list" not in final_contract
+    assert "allowed tool catalog" not in final_contract
+    assert (
+        "Do not use this local tool list to answer architecture, documentation, "
+        "or external ecosystem questions."
+        in final_contract
+    )
+
+
+def test_tool_react_loop_final_answer_contract_does_not_hijack_external_tool_catalog_question() -> None:
+    class RecordingContextAssembler(FakeContextAssembler):
+        def __init__(self) -> None:
+            self.final_contract: str | None = None
+
+        async def assemble(self, request):
+            if request.purpose == "final_answer":
+                self.final_contract = request.output_contract
+            return await super().assemble(request)
+
+    async def scenario():
+        assembler = RecordingContextAssembler()
+        metadata = _tool_plan_metadata("datetime.now")
+        metadata["agent_allowed_tool_summaries"] = [
+            {
+                "tool_name": "datetime.now",
+                "description": "Read the current local date and time.",
+            },
+        ]
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=assembler,
+            model_router=FakeStructuredAndChatRouter(
+                [{"action": "final_answer"}],
+                chat_response="ordinary Python tooling answer",
+            ),
+            event_log=FakeEventLog(),
+            tool_gateway=object(),
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(metadata=metadata),
+                user_input="What tools are available in Python?",
+            )
+        )
+        return result, assembler.final_contract
+
+    result, final_contract = asyncio.run(scenario())
+
+    assert result.response_text == "ordinary Python tooling answer"
+    assert final_contract is not None
+    assert "answer from this list" not in final_contract
+    assert "allowed tool catalog" not in final_contract
+    assert (
+        "Do not use this local tool list to answer architecture, documentation, "
+        "or external ecosystem questions."
         in final_contract
     )
 
@@ -1205,7 +1261,7 @@ def test_tool_react_loop_recovers_to_final_answer_after_optional_failed_observat
     assert result.response_text == "answer without live tool"
     assert result.used_tool_calls == 1
     assert result.tool_observation_refs[0].status == ToolObservationStatus.FAILED
-    assert router.structured_calls == 2
+    assert router.structured_calls == 1
     assert router.chat_calls == 1
     assert assembler.calls[-1] == (
         "final_answer",
@@ -4499,7 +4555,7 @@ def test_tool_react_loop_does_not_rewrite_model_selected_diagnostics_tool() -> N
             [
                 {
                     "action": "tool_call",
-                    "tool_name": "tool.system.read.hardware",
+                    "tool_name": "tool.system.read.resources",
                     "arguments": {"metric": "cpu_and_memory"},
                 },
                 {"action": "final_answer"},
@@ -4516,8 +4572,8 @@ def test_tool_react_loop_does_not_rewrite_model_selected_diagnostics_tool() -> N
         request = replace(
             _request(
                 metadata=_tool_plan_metadata(
-                    "tool.system.read.hardware",
                     "tool.system.read.resources",
+                    "tool.system.read.hardware",
                     live_state_tool_names=(
                         "tool.system.read.hardware",
                         "tool.system.read.resources",
@@ -4532,7 +4588,7 @@ def test_tool_react_loop_does_not_rewrite_model_selected_diagnostics_tool() -> N
     result, gateway, router = asyncio.run(scenario())
 
     assert result.response_text == "CPU usage is 15%; physical memory used is 12G."
-    assert gateway.calls == [("tool.system.read.hardware", {"metric": "cpu_and_memory"})]
+    assert gateway.calls == [("tool.system.read.resources", {"metric": "cpu_and_memory"})]
     assert result.used_tool_calls == 1
     assert router.structured_calls == 2
     assert router.chat_calls == 1

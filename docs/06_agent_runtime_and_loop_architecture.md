@@ -114,6 +114,17 @@ ordinary chat or explanation
 project docs question
   -> bounded agent loop may use retrieval/context assembly
 
+live-state question such as current local time, daemon status or host diagnostics
+  -> bounded agent loop must collect relevant tool evidence before any answer
+     that asserts a current live fact, when an allowed local tool can observe
+     that state
+  -> ordinary final_answer without observation is not valid for that claim
+
+current available local tools question
+  -> bounded agent loop may answer deterministically from the current
+     ToolRequestPlan only
+  -> do not use RAG, a global registry or hidden/disabled tools as the source
+
 live project inspection
   -> bounded agent loop may propose a tool
   -> proposal is validated by schema, policy, approval and ToolGateway
@@ -122,9 +133,10 @@ live system diagnostics
   -> bounded agent loop may propose a diagnostics tool
   -> proposal is validated by schema, policy, approval and ToolGateway
 
-tools disabled for a live-state request
-  -> fail clearly, ask for permission or explain that live inspection is
-     unavailable; do not invent live facts
+tools disabled or no allowed local tool for a live-state request
+  -> current implementation does not provide a hard evidence gate
+  -> future unavailable/clarification behavior must be added before docs claim
+     this path is guarded
 ```
 
 Model-origin tool proposals are not execution authorization. Policy constraints
@@ -151,7 +163,69 @@ policy_outcome          policy/approval result
 ```
 
 Fallback behavior is part of the agent-loop contract. Unclear or unsupported
-live-state requests must not silently become hallucinated ordinary chat.
+live-state requests must not silently become hallucinated ordinary chat. A
+request may fail clearly, ask for permission or say that live evidence is
+unavailable, but it must not assert current state without a matching completed
+observation when an allowed local tool can observe that state.
+
+Live-state evidence guards and deterministic final answers are separate
+responsibilities. The guard is deliberately broad and safety-oriented; the
+deterministic finalizers are deliberately narrow and source-backed. The guard
+must not become a classifier, route resolver or direct natural-language tool
+execution path.
+
+The live-state evidence guard algorithm is:
+
+1. Build the candidate live-state tool set from explicit request metadata and
+   allowed local tools. Initial live-state tools include `datetime.now`,
+   `datetime.until`, `daemon.status` and `tool.system.read.*`.
+2. If a relevant local tool is allowed, do not silently downgrade the request
+   to hallucinated ordinary chat. The loop may collect evidence, answer that
+   live evidence is unavailable after a failed/denied/unavailable observation,
+   ask for permission/clarification or fail with a typed, user-actionable
+   reason.
+3. Lightly normalize user text for matching: lowercase, trim edge punctuation
+   and collapse whitespace. Do not use this step to infer a semantic route.
+4. Match broad live-state intent families, not exact deterministic-answer
+   phrases. Required families include:
+
+   - current time/date wording, including "what time is it", "current time",
+     "local time", `сколько времени`, `который час`,
+     `текущее время`, `в данный момент` and `сейчас`;
+   - current local machine or daemon state, including CPU/processor, memory/RAM,
+     load/usage, battery, network/VPN/IP, disk, hardware and daemon/status
+     wording;
+   - current live values combined with arithmetic, threshold or comparison
+     wording, such as requests that calculate from the current time or current
+     resource values.
+
+5. Return typed guard metadata, not only a boolean. The metadata should identify
+   the live-state family, whether completed evidence is required and the
+   candidate tool names that may satisfy the evidence requirement. This metadata
+   is a finalization guard only; it must not directly select, execute or
+   authorize a tool.
+6. When a positive live-state intent match has a relevant allowed local tool,
+   the loop must not accept a `final_answer` that asserts current live state
+   before a matching completed tool observation exists.
+7. After a completed observation exists, finalization follows the normal bounded
+   loop. A narrow deterministic finalizer may synthesize a short answer only
+   from completed typed evidence, for example formatting a completed
+   `datetime.now` observation as the current local time. More complex live-state
+   answers use the final-answer model with the observation in context.
+8. Location or scope wording must not disable the evidence guard. For example,
+   `сколько времени в данный момент?` still requires `datetime.now` evidence.
+   A request such as `сколько времени в Париже?` is still live-state, but it is
+   not eligible for the local-time deterministic finalizer unless an appropriate
+   timezone/world-clock observation is available.
+
+The available-tools deterministic finalizer is runtime metadata, not
+retrieval. It may answer only a single-intent question about tools available to
+this assistant for the current request. Its source of truth is
+`ToolRequestPlan.allowed_tool_names` plus the matching
+`allowed_tool_summaries`; disabled, hidden or globally registered tools must not
+be disclosed. Architecture, implementation and external catalog questions such
+as Python or AWS tools remain ordinary model/RAG-capable questions. Compound
+requests remain in the bounded loop so live-state evidence guards still apply.
 
 ## 6. Runtime State
 
@@ -245,12 +319,15 @@ Tests must verify:
 - `auto`, `chat` and `tools` enter the bounded agent loop as policy modes;
 - chat mode disables tool calls while keeping the same request lifecycle;
 - auto mode can answer ordinary chat and project-docs questions without a tool observation;
+- auto mode does not finalize live-state claims without relevant completed
+  tool evidence when an allowed local tool can supply that evidence;
 - tools mode requires a valid completed observation when tools are available and allowed;
 - max_model_calls = 1 in the original Phase 1 `memory_augmented_answer` loop;
 - original MVP loop does not make tool calls;
 - `tool_react_loop` uses ToolGatewayPort and explicit budgets;
 - RAG questions use ContextAssembler/content retrieval and do not require a tool observation by default;
-- live-state requests do not silently hallucinate when tools are disabled or unavailable;
+- failed, denied or unavailable live-state observations do not silently
+  hallucinate live facts;
 - no autonomous memory writes in Phase 1;
 - policy decision is recorded for model calls;
 - request-plan and loop events are recorded without raw full prompts;

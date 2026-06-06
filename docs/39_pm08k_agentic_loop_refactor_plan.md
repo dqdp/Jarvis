@@ -133,8 +133,11 @@ chat:
 
 auto:
   tools available when policy/budget allow
-  model may answer directly or propose a tool
-  tool use is not required
+  model may answer ordinary chat directly or propose a tool
+  tool use is not required for ordinary chat, project-docs answers or other
+    non-live-state claims
+  live-state claims require relevant completed tool evidence when an allowed
+    local tool can observe that state
 
 tools:
   tools available when policy/budget allow
@@ -146,6 +149,25 @@ tools:
 
 This keeps explicit `tools` useful for debugging and future voice/tool tests
 without turning it into a semantic router.
+
+The live-state evidence guard must be implemented and tested as the full
+algorithm from `docs/06_agent_runtime_and_loop_architecture.md`: derive
+candidate live-state tools from explicit metadata and allowed local tools,
+lightly normalize user text, match broad live-state intent families, return
+typed guard metadata, block unevidenced live-state `final_answer` when an
+allowed local tool can observe the state, and finalize only after matching
+completed evidence. PM-08k tests must cover current
+time/date wording, including `сколько времени`, `в данный момент` and `сейчас`;
+local machine or daemon state wording; current live values combined with
+arithmetic, threshold or comparison wording; unavailable-tool behavior; and
+location/scope wording that keeps the evidence guard active while preventing
+over-narrow deterministic finalization when evidence is insufficient.
+
+Available-tools questions are a separate runtime metadata finalizer. The source
+of truth is the current `ToolRequestPlan.allowed_tool_names` and matching
+`allowed_tool_summaries`, not RAG and not a global registry. The finalizer must
+be single-intent only: architecture/docs questions, external tool catalogs and
+compound requests stay on the ordinary bounded-loop path.
 
 ### Allowed Tool Surface
 
@@ -531,9 +553,12 @@ Remove direct execution from the default request path:
 - no direct diagnostics execution;
 - no direct plan metadata consumed by the loop.
 
-If an optimization such as exact current time or explicit symbolic calculator is
-kept, it must be isolated behind a separate follow-up ADR and must not interpret
-arbitrary natural language.
+Do not reintroduce a direct natural-language execution path for exact current
+time, explicit symbolic calculator or diagnostics. A broad safety guard may
+require evidence before the loop accepts a live-state `final_answer`, and a
+narrow deterministic finalizer may format a completed typed observation. Both
+must stay inside the bounded loop and must not interpret arbitrary natural
+language as a route or execute tools outside PolicyPort/ToolGatewayPort.
 
 ### PM-08k.7 — Quarantine or Delete Classifier-Era Code
 

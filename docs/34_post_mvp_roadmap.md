@@ -518,6 +518,8 @@ PM-08k:
   allowlists, schemas, redaction and non-TTY/plain behavior;
 - keep model-origin tool proposals behind PolicyPort, ToolGatewayPort,
   allowlists, schemas and typed observations;
+- require completed local evidence before the loop finalizes a live-state claim
+  when an allowed local tool can observe that state;
 - ensure unsupported/risky tool attempts fail closed or ask clarification
   through the agent loop rather than being guessed by a pre-router;
 - require invalid model output to abstain or fall back instead of inventing
@@ -528,7 +530,11 @@ Acceptance:
 - a plain CLI chat request can automatically use RAG or safe tools when needed;
 - users do not need to type `tool_react_loop`, route names or tool names for
   normal usage;
-- tools-disabled tool intent does not silently hallucinate live state;
+- tools-disabled live-state behavior is documented as future
+  unavailable/clarification work unless a relevant allowed local observation is
+  available;
+- current-time and other live-state requests do not silently finalize from
+  memory, RAG or model text when an allowed local observation is required;
 - RAG remains ContextAssembler behavior and does not become a tool-loop trigger;
 - approval-required tool flow is usable from the CLI;
 - cancel/interrupt does not break the interactive CLI session;

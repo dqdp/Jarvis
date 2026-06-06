@@ -59,8 +59,10 @@ The production request path must satisfy these rules:
 
 - `auto`, `chat` and `tools` are policy modes for the same bounded agent loop.
 - `chat` disables tool calls but still uses the same request lifecycle.
-- `auto` allows tools when policy and budget allow, but the model may answer
-  directly without a tool observation.
+- `auto` allows tools when policy and budget allow. Ordinary chat may answer
+  without a tool observation, but live-state claims must not finalize without
+  relevant completed tool evidence when an allowed local tool can observe that
+  state.
 - `tools` requires at least one valid tool observation before the final answer
   when tools are available and allowed.
 - Tool choice belongs inside the bounded agent loop. Tool execution belongs
@@ -77,6 +79,22 @@ The production request path must satisfy these rules:
   observations must fail closed or clarify.
 - Voice must submit transcripts through the same request lifecycle and loop. It
   must not add a voice-specific classifier, route resolver or tool bypass.
+
+Live-state intent detection is a broad evidence requirement, not a direct
+execution route. It must follow the full guard algorithm in
+`docs/06_agent_runtime_and_loop_architecture.md`: derive candidate live-state
+tools from explicit metadata and allowed local tools, lightly normalize user
+text, match broad live-state intent families, return typed guard metadata, block
+unevidenced live-state finalization, and finalize only after matching completed
+evidence. It must cover current time/date wording, local machine or daemon
+state wording, current live values combined with arithmetic, threshold or
+comparison wording, unavailable-tool behavior and location/scope wording.
+
+Current available-tools questions are answered from runtime request metadata,
+not retrieval or a global registry. The deterministic finalizer may expose only
+`ToolRequestPlan.allowed_tool_names` and matching safe summaries for the
+current request. It must reject architecture/docs questions, external tool
+catalogs and compound requests back to the ordinary bounded loop.
 
 ## Architecture Shape
 
@@ -174,7 +192,9 @@ chat:
 
 auto:
   tools may be used when allowed and budgeted
-  final answer may be produced without observations
+  ordinary final answers may be produced without observations
+  live-state claims require relevant completed tool evidence when an allowed
+    local tool can observe that state
   malformed non-tool proposal may fall back to final chat
   malformed explicit tool_call fails closed
   budget exhausted after useful completed observations may finalize
@@ -451,9 +471,16 @@ voice surface beyond the initial PM-09 foundation:
 - extract live-state math evidence policy, calculator expression matching and
   proposal-output contract rendering out of `ToolReactLoop` into explicit
   runtime services, keeping the public loop class as orchestration only;
-- replace lexical live-state intent guards with typed request-plan/evidence
-  metadata, including sensor/temperature wording and multi-expression threshold
-  coverage;
+- split `tool_loop_evidence.py` into narrower helpers for intent-family
+  detection, candidate evidence planning, observation matching, unavailable
+  recovery pruning and calculator/live-state math matching. Until then,
+  architecture tests enforce a size budget so the helper does not keep
+  accumulating unrelated responsibilities;
+- replace brittle lexical live-state finalization guards with typed
+  request-plan/evidence metadata where possible. Keep the pre-answer evidence
+  guard broad and safety-oriented, and keep deterministic finalizers narrow,
+  source-backed and post-observation only. Include current-time, sensor,
+  temperature and multi-expression threshold coverage;
 - add direct unit coverage for `InProcessDarwinResourceProvider`, including
   memory accounting and provider failure paths;
 - validate `system.resource_overview` snapshots before marking provider output

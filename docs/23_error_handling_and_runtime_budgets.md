@@ -70,7 +70,9 @@ chat:
 
 auto:
   tools may be used when allowed and budgeted
-  final answer may be produced without observations
+  ordinary final answers may be produced without observations
+  live-state claims require relevant completed tool evidence when an allowed
+    local tool can observe that state
   malformed non-tool proposal may fall back to final chat
   malformed explicit tool_call fails closed
   budget exhausted after useful completed observations may finalize
