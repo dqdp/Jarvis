@@ -157,6 +157,7 @@ def create_interactive_line_reader(
     sensitivity: str = DEFAULT_SENSITIVITY,
     plain: bool = False,
     status_provider: Callable[[], str] | None = None,
+    user_input_style: str | None = None,
 ) -> InteractiveLineReader | TerminalInteractiveLineReader:
     should_add_history = lambda line: _should_add_interactive_history(
         line,
@@ -171,6 +172,7 @@ def create_interactive_line_reader(
             should_add_history=should_add_history,
             command_registry=SlashCommandRegistry.from_commands(SLASH_COMMANDS),
             status_provider=status_provider,
+            user_input_style=user_input_style,
         )
     return InteractiveLineReader(
         stdin=stdin,

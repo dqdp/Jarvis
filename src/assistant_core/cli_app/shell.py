@@ -109,12 +109,14 @@ class PromptToolkitLineReader:
         should_add_history: Callable[[str], bool] | None = None,
         command_registry: SlashCommandRegistry,
         status_provider: Callable[[], str] | None = None,
+        user_input_style: str | None = None,
     ) -> None:
         self._stdin = stdin
         self._stdout = stdout
         self._should_add_history = should_add_history or (lambda _line: True)
         self._command_registry = command_registry
         self._status_provider = status_provider or (lambda: "")
+        self._user_input_style = user_input_style
         self._session = None
 
     def readline(self, prompt: str) -> str | None:
@@ -124,7 +126,7 @@ class PromptToolkitLineReader:
             return self._fallback_readline(prompt)
 
         try:
-            return session.prompt(prompt)
+            return session.prompt(_prompt_message(prompt, self._user_input_style))
         except EOFError:
             return None
         except KeyboardInterrupt:
@@ -137,7 +139,7 @@ class PromptToolkitLineReader:
             return self._fallback_readline(prompt)
 
         try:
-            return await session.prompt_async(prompt)
+            return await session.prompt_async(_prompt_message(prompt, self._user_input_style))
         except EOFError:
             return None
         except KeyboardInterrupt:
@@ -195,6 +197,7 @@ class PromptToolkitLineReader:
             bottom_toolbar=self._status_provider,
             history=FilteredHistory(),
             key_bindings=_slash_palette_key_bindings(KeyBindings),
+            **_prompt_toolkit_user_style_kwargs(self._user_input_style),
             **_prompt_toolkit_stdio_kwargs(self._stdin, self._stdout),
         )
         return self._session
@@ -385,6 +388,43 @@ def _prompt_toolkit_stdio_kwargs(stdin: TextIO, stdout: TextIO) -> dict[str, Any
     except Exception:
         kwargs.pop("output", None)
     return kwargs
+
+
+def _prompt_toolkit_user_style_kwargs(user_input_style: str | None) -> dict[str, Any]:
+    if not user_input_style:
+        return {}
+    try:
+        from prompt_toolkit.lexers import Lexer
+        from prompt_toolkit.styles import Style
+    except ImportError:
+        return {}
+
+    class JarvisUserInputLexer(Lexer):
+        def lex_document(self, document):
+            def get_line(line_number: int):
+                try:
+                    line = document.lines[line_number]
+                except IndexError:
+                    line = ""
+                return [("class:jarvis-user-input", line)]
+
+            return get_line
+
+    return {
+        "lexer": JarvisUserInputLexer(),
+        "style": Style.from_dict(
+            {
+                "jarvis-user-input": user_input_style,
+                "jarvis-user-prompt": user_input_style,
+            }
+        ),
+    }
+
+
+def _prompt_message(prompt: str, user_input_style: str | None) -> Any:
+    if not prompt or not user_input_style:
+        return prompt
+    return [("class:jarvis-user-prompt", prompt)]
 
 
 def _phase_for_event(event_type: str) -> str | None:

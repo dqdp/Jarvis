@@ -29,6 +29,11 @@ class TerminalColorScheme:
         code = "7;36" if self.enabled else "7"
         return f"\x1b[{code}m{text}\x1b[0m"
 
+    def prompt_toolkit_style(self, role: str) -> str | None:
+        if not self.enabled:
+            return None
+        return _PROMPT_TOOLKIT_ROLE_STYLES.get(role)
+
     @property
     def reset(self) -> str:
         return "\x1b[0m" if self.enabled else ""
@@ -45,15 +50,31 @@ _ANSI_ROLE_CODES = {
     "tool": "33",
     "status": "36",
     "prompt": "36",
+    "user": "34",
     "dim": "2",
+}
+
+_PROMPT_TOOLKIT_ROLE_STYLES = {
+    "assistant": "ansigreen",
+    "prompt": "ansicyan",
+    "status": "ansicyan",
+    "user": "ansiblue",
 }
 
 _SPINNER_FRAMES = ("-", "\\", "|", "/")
 _STATUS_RULE = "────────"
 
 
-def render_status_rule_line(text: str) -> str:
-    return f"{_STATUS_RULE} {text}"
+def render_status_rule_line(text: str, *, width: int | None = None) -> str:
+    line = f"{_STATUS_RULE} {text}"
+    if width is None:
+        return line
+    fitted = _fit_width(line, width)
+    if len(fitted) >= width:
+        return fitted
+    if len(fitted) == width - 1:
+        return f"{fitted}─"
+    return f"{fitted} {'─' * (width - len(fitted) - 1)}"
 
 
 def resolve_terminal_color_enabled(
@@ -106,9 +127,7 @@ class TerminalInlineStatusLine:
         return self._enabled
 
     def _uses_spinner_animation(self) -> bool:
-        return self._animation_style == "spinner" or (
-            self._animation_style == "shimmer" and not self._color_scheme.enabled
-        )
+        return self._animation_style == "spinner"
 
     def _uses_shimmer_animation(self) -> bool:
         return self._animation_style == "shimmer" and self._color_scheme.enabled
@@ -124,6 +143,7 @@ class TerminalInlineStatusLine:
             else None
         )
         self._active = True
+        self._stdout.write("\x1b[?25l")
         self.render()
 
     def tick(self) -> None:
@@ -139,7 +159,8 @@ class TerminalInlineStatusLine:
     def render(self) -> None:
         if not self._enabled or not self._active:
             return
-        line = render_status_rule_line(self._status_provider())
+        columns = max(20, _terminal_size().columns)
+        line = render_status_rule_line(self._status_provider(), width=columns)
         if self._spinner_frame is not None:
             line = f"{line} {self._spinner_frame}"
         if self._uses_shimmer_animation():
@@ -154,7 +175,7 @@ class TerminalInlineStatusLine:
     def finish_active_line(self) -> None:
         if not self._active:
             return
-        self._stdout.write("\r\x1b[2K\n")
+        self._stdout.write("\r\x1b[2K\x1b[?25h\n")
         self._stdout.flush()
         self._active = False
         self._spinner_frame = None

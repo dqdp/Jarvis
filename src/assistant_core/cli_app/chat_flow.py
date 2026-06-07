@@ -171,7 +171,9 @@ async def run_interactive_chat(
         if phase_changed:
             write_activity_indicator(stdout, activity_state, enabled=developer_mode)
 
-    if _should_load_toolbar_status(stdin=stdin, stdout=stdout, plain=plain):
+    tty_shell_enabled = _should_load_toolbar_status(stdin=stdin, stdout=stdout, plain=plain)
+
+    if tty_shell_enabled:
         try:
             payload = await client.runtime_status()
         except CliUserError:
@@ -190,7 +192,9 @@ async def run_interactive_chat(
         sensitivity=sensitivity,
         plain=plain,
         status_provider=status_provider,
+        user_input_style=color_scheme.prompt_toolkit_style("user") if tty_shell_enabled else None,
     )
+    user_prompt = "you> " if tty_shell_enabled else ""
 
     stdout.write("Jarvis CLI\n")
     stdout.write(f"Connected to {base_url}\n")
@@ -198,7 +202,7 @@ async def run_interactive_chat(
     stdout.write("Use Up/Down for in-session history; history is not saved to disk.\n\n")
 
     while True:
-        raw_line = await line_reader.read_line("")
+        raw_line = await line_reader.read_line(user_prompt)
         if raw_line is None:
             stdout.write("bye\n")
             return 0

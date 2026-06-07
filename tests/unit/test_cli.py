@@ -4,6 +4,7 @@ import asyncio
 from io import StringIO
 import os
 from pathlib import Path
+import re
 import sys
 import threading
 import types
@@ -536,6 +537,10 @@ class RecordingStringIO(StringIO):
         return super().write(value)
 
 
+def _strip_ansi(value: str) -> str:
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", value)
+
+
 class PipeTtyInput:
     def __init__(self, fd: int) -> None:
         self._file = os.fdopen(fd, "r", encoding="utf-8")
@@ -632,6 +637,77 @@ def test_prompt_toolkit_reader_binds_injected_stdio(monkeypatch) -> None:
     assert ("escape",) in key_bindings.bindings
     assert ("up",) in key_bindings.bindings
     assert ("down",) in key_bindings.bindings
+
+
+def test_prompt_toolkit_reader_styles_user_input_role(monkeypatch) -> None:
+    created_kwargs: dict[str, Any] = {}
+
+    class FakePromptSession:
+        def __init__(self, **kwargs):
+            created_kwargs.update(kwargs)
+
+    class FakeCompleter:
+        pass
+
+    class FakeCompletion:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class FakeHistory:
+        pass
+
+    class FakeKeyBindings:
+        def add(self, *keys: str):
+            def decorator(func):
+                return func
+
+            return decorator
+
+    class FakeLexer:
+        pass
+
+    class FakeStyle:
+        @classmethod
+        def from_dict(cls, rules):
+            return ("style", rules)
+
+    prompt_toolkit_module = types.ModuleType("prompt_toolkit")
+    prompt_toolkit_module.PromptSession = FakePromptSession
+    completion_module = types.ModuleType("prompt_toolkit.completion")
+    completion_module.Completer = FakeCompleter
+    completion_module.Completion = FakeCompletion
+    history_module = types.ModuleType("prompt_toolkit.history")
+    history_module.History = FakeHistory
+    key_binding_module = types.ModuleType("prompt_toolkit.key_binding")
+    key_binding_module.KeyBindings = FakeKeyBindings
+    styles_module = types.ModuleType("prompt_toolkit.styles")
+    styles_module.Style = FakeStyle
+    lexers_module = types.ModuleType("prompt_toolkit.lexers")
+    lexers_module.Lexer = FakeLexer
+
+    monkeypatch.setitem(sys.modules, "prompt_toolkit", prompt_toolkit_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.completion", completion_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.history", history_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.key_binding", key_binding_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.styles", styles_module)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.lexers", lexers_module)
+
+    reader = cli.PromptToolkitLineReader(
+        stdin=TtyStringIO(),
+        stdout=TtyStringIO(),
+        command_registry=cli.SlashCommandRegistry.from_commands(cli.SLASH_COMMANDS),
+        user_input_style="ansiblue",
+    )
+    reader._ensure_session()
+
+    assert created_kwargs["style"] == (
+        "style",
+        {
+            "jarvis-user-input": "ansiblue",
+            "jarvis-user-prompt": "ansiblue",
+        },
+    )
+    assert created_kwargs["lexer"].__class__.__name__ == "JarvisUserInputLexer"
 
 
 def test_prompt_toolkit_filtered_history_initializes_prompt_toolkit_base_state() -> None:
@@ -746,7 +822,7 @@ def test_prompt_toolkit_reader_uses_async_prompt_inside_interactive_cli(monkeypa
     )
 
     assert exit_code == 0
-    assert prompts == [""]
+    assert prompts == ["you> "]
     assert "bye" in stdout.getvalue()
 
 
@@ -1022,11 +1098,40 @@ def test_terminal_status_bar_truncates_to_terminal_width(monkeypatch) -> None:
     assert len(rendered) <= 20
 
 
+def test_terminal_inline_status_line_fills_width_and_hides_cursor(monkeypatch) -> None:
+    monkeypatch.setattr(
+        terminal_rendering_module.shutil,
+        "get_terminal_size",
+        lambda fallback: os.terminal_size((36, 5)),
+    )
+    stdout = TtyStringIO()
+    line = cli.TerminalInlineStatusLine(
+        stdout=stdout,
+        status_provider=lambda: "Worked for 0s",
+        enabled=True,
+        color_scheme=cli.TerminalColorScheme(enabled=False),
+    )
+
+    line.start()
+    line.finish_active_line()
+
+    output = stdout.getvalue()
+    rendered = output.split("\r\x1b[2K", 2)[1]
+    visible = _strip_ansi(rendered)
+    assert "\x1b[?25l" in output
+    assert "\x1b[?25h" in output
+    assert visible.startswith("──────── Worked for 0s ")
+    assert visible.endswith("─")
+    assert len(visible) == 36
+    assert "Worked for 0s -" not in visible
+
+
 def test_terminal_color_scheme_styles_known_roles_only_when_enabled() -> None:
     enabled = cli.TerminalColorScheme(enabled=True)
     disabled = cli.TerminalColorScheme(enabled=False)
 
     assert enabled.style("assistant", "OK") == "\x1b[32mOK\x1b[0m"
+    assert enabled.style("user", "you> hello") == "\x1b[34myou> hello\x1b[0m"
     assert enabled.style("summary", "summary: response_time=0s") == "\x1b[2;36msummary: response_time=0s\x1b[0m"
     assert enabled.style("error", "error> failed") == "\x1b[31merror> failed\x1b[0m"
     assert disabled.style("assistant", "OK") == "OK"
@@ -1869,7 +1974,7 @@ def test_tty_interactive_chat_renders_inline_timer_without_residual_before_answe
     assert "──────── turn" not in output
     assert "\x1b7" in output
     assert "submitting | turn 1" in output
-    assert output.split("OK", 1)[0].endswith("\r\x1b[2K\n")
+    assert output.split("OK", 1)[0].endswith("\r\x1b[2K\x1b[?25h\n")
     assert "OK\n──────── summary:" in output
 
 
