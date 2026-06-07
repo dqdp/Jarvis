@@ -116,8 +116,25 @@ def recover_malformed_safe_builtin_tool_proposal(
     return ToolProposal(action="tool_call", tool_name="datetime.now", arguments={})
 
 
+def canonicalize_safe_builtin_tool_proposal(proposal: ToolProposal) -> ToolProposal:
+    if (
+        proposal.action == "tool_call"
+        and proposal.tool_name in _ZERO_ARGUMENT_SAFE_BUILTIN_TOOL_NAMES
+        and proposal.arguments
+    ):
+        return ToolProposal(
+            action="tool_call",
+            tool_name=proposal.tool_name,
+            arguments={},
+        )
+    return proposal
+
+
 def is_current_time_question(value: str) -> bool:
     return current_time_question_language(value) is not None
+
+
+_ZERO_ARGUMENT_SAFE_BUILTIN_TOOL_NAMES = frozenset({"datetime.now"})
 
 
 def current_time_question_language(value: str) -> str | None:

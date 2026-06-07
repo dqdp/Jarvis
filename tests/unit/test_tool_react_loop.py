@@ -3974,6 +3974,75 @@ def test_tool_react_loop_location_scoped_time_requires_datetime_without_local_fi
     assert router.chat_calls == 1
 
 
+def test_tool_react_loop_canonicalizes_datetime_now_arguments_for_location_evidence() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            content = '{"iso": "2026-06-05T20:59:07+03:00"}'
+            return ToolObservation(
+                tool_call_id=f"tool-call-{request.tool_name}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.now",
+                    "arguments": {"timezone": "Europe/Paris"},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="I cannot derive Paris time from the local datetime observation alone.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        request = replace(
+            _request(
+                metadata=_tool_plan_metadata(
+                    "datetime.now",
+                    live_state_tool_names=("datetime.now",),
+                )
+            ),
+            user_input="сколько времени сейчас в Париже?",
+        )
+        result = await loop.run_turn(request)
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "I cannot derive Paris time from the local datetime observation alone."
+    assert gateway.calls == [("datetime.now", {})]
+    assert result.used_tool_calls == 1
+    assert router.structured_calls == 2
+    assert router.chat_calls == 1
+
+
 def test_tool_react_loop_current_date_requires_datetime_before_final_answer() -> None:
     result, gateway, router = _run_current_time_observation_scenario(
         "какая дата в данный момент?",

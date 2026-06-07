@@ -65,6 +65,7 @@ from assistant_core.runtime.loops.tool_loop_contracts import (
     unevidenced_tool_proposal_fallback_output_contract as _unevidenced_tool_proposal_fallback_output_contract,
 )
 from assistant_core.runtime.loops.tool_loop_deterministic import (
+    canonicalize_safe_builtin_tool_proposal as _canonicalize_safe_builtin_tool_proposal,
     deterministic_datetime_now_response as _deterministic_datetime_now_response,
     recover_malformed_safe_builtin_tool_proposal as _recover_malformed_safe_builtin_tool_proposal,
 )
@@ -481,6 +482,8 @@ class ToolReactLoop:
                                 if str(final_exc) == "max_model_calls_exceeded":
                                     raise RuntimeError("max_model_calls_exceeded") from exc
                                 raise
+                if proposal is not None:
+                    proposal = _canonicalize_safe_builtin_tool_proposal(proposal)
                 if proposal is None:
                     raise RuntimeError("malformed_tool_proposal")
                 if proposal.action == "final_answer":

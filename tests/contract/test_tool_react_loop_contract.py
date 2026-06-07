@@ -672,6 +672,43 @@ def test_tool_react_loop_executes_datetime_tool_then_final_answer() -> None:
     assert EventType.TOOL_OBSERVATION_RECORDED in [event.event_type for event in events]
 
 
+def test_tool_react_loop_canonicalizes_datetime_now_args_before_gateway_schema_validation() -> None:
+    async def scenario():
+        loop, _store, _assembler, event_log = _loop(
+            router=ScriptedRouter(
+                [
+                    {
+                        "action": "tool_call",
+                        "tool_name": "datetime.now",
+                        "arguments": {"timezone": "Europe/Paris"},
+                    },
+                    {"action": "final_answer"},
+                ],
+                chat_text="Paris time requires timezone conversion beyond the local observation.",
+            ),
+        )
+        result = await loop.run_turn(
+            _request(
+                user_input="сколько времени сейчас в Париже?",
+                sensitivity=Sensitivity.PUBLIC,
+                metadata={
+                    **_tool_plan_metadata("datetime.now"),
+                    "agent_live_state_tool_names": ["datetime.now"],
+                },
+            )
+        )
+        events = await event_log.query(EventFilter(request_id="request-tool-react"))
+        return result, events
+
+    result, events = asyncio.run(scenario())
+
+    event_types = [event.event_type for event in events]
+    assert result.response_text == "Paris time requires timezone conversion beyond the local observation."
+    assert EventType.TOOL_CALL_COMPLETED in event_types
+    assert EventType.TOOL_CALL_FAILED not in event_types
+    assert EventType.REQUEST_PROCESSING_FAILED not in event_types
+
+
 def test_tool_react_loop_requires_datetime_before_current_time_final_answer() -> None:
     async def scenario():
         router = ScriptedRouter(
