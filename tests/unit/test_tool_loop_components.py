@@ -7,12 +7,21 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from assistant_core.domain.approvals import ApprovalRequest, ApprovalScope, ApprovalStatus
-from assistant_core.domain.loops import LoopBudget, LoopExecutionRequest, LoopStrategyName, ToolProposal
+from assistant_core.domain.loops import (
+    LoopBudget,
+    LoopExecutionRequest,
+    LoopStrategyName,
+    ToolObservationRef,
+    ToolProposal,
+)
 from assistant_core.domain.policy import Capability, PermissionMode, RiskClass
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolObservation, ToolObservationStatus
+from assistant_core.domain.tools import ToolObservation, ToolObservationStatus, ToolParseStatus
 from assistant_core.runtime.loops.tool_approval import ApprovalWaiter
+from assistant_core.runtime.loops.tool_loop_deterministic import (
+    deterministic_datetime_now_response,
+)
 from assistant_core.runtime.loops.tool_proposal_executor import ToolProposalExecutor
 
 
@@ -96,7 +105,6 @@ class FakeApprovalStore:
         self.approval = replace(self.approval, status=ApprovalStatus.CANCELLED)
         return self.approval
 
-
 class FakeConversationStore:
     def __init__(self) -> None:
         self.statuses = []
@@ -129,6 +137,38 @@ class FakeGateway:
             started_at=now,
             completed_at=now,
         )
+
+
+def test_deterministic_datetime_now_response_requires_typed_observation_schema() -> None:
+    request = replace(_loop_request(), user_input="который час?")
+    raw_ref = ToolObservationRef(
+        tool_call_id="tool-call-datetime",
+        tool_name="datetime.now",
+        status=ToolObservationStatus.COMPLETED,
+        content='{"iso": "2026-06-05T20:59:07+03:00"}',
+        content_type="application/json",
+        sensitivity=Sensitivity.PROJECT,
+    )
+
+    assert deterministic_datetime_now_response(request, raw_ref) is None
+
+
+def test_deterministic_datetime_now_response_uses_typed_observation_schema() -> None:
+    request = replace(_loop_request(), user_input="который час?")
+    typed_ref = ToolObservationRef(
+        tool_call_id="tool-call-datetime",
+        tool_name="datetime.now",
+        status=ToolObservationStatus.COMPLETED,
+        content='{"iso": "2026-06-05T20:59:07+03:00"}',
+        content_type="application/json",
+        sensitivity=Sensitivity.PROJECT,
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-05T20:59:07+03:00"},
+        structured_schema_version=1,
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    assert deterministic_datetime_now_response(request, typed_ref) == "Сейчас 20:59."
 
 
 def test_approval_waiter_returns_after_granted_approval() -> None:

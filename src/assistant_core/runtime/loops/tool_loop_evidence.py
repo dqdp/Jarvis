@@ -2,19 +2,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import StrEnum
-import json
 import re
 
-from assistant_core.domain.loops import (
-    LoopBudget,
-    LoopExecutionRequest,
-    ToolObservationRef,
-    ToolRequestPlan,
+from assistant_core.domain.loops import LoopBudget, LoopExecutionRequest, ToolObservationRef, ToolRequestPlan
+from assistant_core.domain.tools import NON_RECOVERABLE_TOOL_OBSERVATION_ERROR_CODES, ToolObservationStatus, ToolParseStatus
+from assistant_core.runtime.loops.tool_loop_derived_values import (
+    calculator_expression_matches_derived_request,
+    request_requires_derived_live_value_calculation,
 )
-from assistant_core.domain.tools import (
-    NON_RECOVERABLE_TOOL_OBSERVATION_ERROR_CODES,
-    ToolObservationStatus,
-    ToolParseStatus,
+from assistant_core.runtime.loops.tool_loop_datetime_diff_evidence import (
+    completed_datetime_now_iso_values as _completed_datetime_now_iso_values,
+    datetime_diff_observations_match_request,
+    expected_time_delta_unit as _expected_datetime_until_unit,
+)
+from assistant_core.runtime.loops.tool_loop_live_state_tools import is_known_live_state_tool_name
+from assistant_core.runtime.loops.tool_loop_observation_evidence import (
+    daemon_status_observations_match_request,
+    datetime_now_observations_match_request,
 )
 from assistant_core.runtime.loops.tool_loop_process_evidence import (
     PROCESS_SHARED_SUFFIX_TOPIC_PATTERNS,
@@ -24,10 +28,15 @@ from assistant_core.runtime.loops.tool_loop_process_evidence import (
     matches_process_live_state_intent,
     process_observations_match_request,
 )
-
+from assistant_core.runtime.loops.tool_loop_raw_diagnostics import (
+    system_ref_argv as _system_ref_argv,
+    system_ref_argv_command as _system_ref_argv_command,
+    system_ref_has_usable_raw_diagnostics as _system_ref_has_usable_raw_diagnostics,
+    system_ref_is_unavailable as _system_ref_is_unavailable,
+)
+from assistant_core.runtime.loops.tool_loop_time_delta_units import GENERIC_TIME_DELTA_UNIT_PATTERN, TIME_DELTA_UNIT_PATTERN, is_self_contained_time_delta_interval
 
 TOOL_PROPOSAL_MAX_MODEL_CALL_SECONDS = 8.0
-
 
 class LiveStateEvidenceFamily(StrEnum):
     CURRENT_TIME = "current_time"
@@ -38,6 +47,7 @@ class LiveStateEvidenceFamily(StrEnum):
     SYSTEM_SENSORS = "system_sensors"
     SYSTEM_PROCESS = "system_process"
     DAEMON_STATUS = "daemon_status"
+    CALENDAR_INTERVAL = "calendar_interval"
     LIVE_STATE_MATH = "live_state_math"
 
 
@@ -50,7 +60,6 @@ class LiveStateEvidencePlan:
     families: frozenset[LiveStateEvidenceFamily] = frozenset()
     missing_families: frozenset[LiveStateEvidenceFamily] = frozenset()
     unavailable_reason: str | None = None
-
 
 @dataclass(frozen=True)
 class _LiveStateEvidenceDetection:
@@ -102,17 +111,32 @@ _LEGACY_LIVE_STATE_INTENT_PATTERN = re.compile(
     r")"
 )
 _LIVE_STATE_CONTEXT_EDGE_CHARS = " \t\r\n?!.:,;\"'`¿¡؟،。！？"
-_CURRENT_TIME_TOOL_NAMES = frozenset({"datetime.now"})
-_CURRENT_DATE_TOOL_NAMES = frozenset({"datetime.now"})
+_CURRENT_TIME_TOOL_NAMES = _CURRENT_DATE_TOOL_NAMES = frozenset({"datetime.now"})
 _DAEMON_STATUS_TOOL_NAMES = frozenset({"daemon.status"})
 _SYSTEM_RESOURCE_TOOL_NAMES = frozenset({"tool.system.read.resources"})
 _SYSTEM_NETWORK_TOOL_NAMES = frozenset({"tool.system.read.network"})
 _SYSTEM_HARDWARE_TOOL_NAMES = frozenset({"tool.system.read.hardware"})
 _SYSTEM_SENSOR_TOOL_NAMES = frozenset({"tool.system.read.sensors"})
 _SYSTEM_PROCESS_TOOL_NAMES = PROCESS_TOOL_NAMES
+_SYSTEM_RESOURCE_BROAD_SCHEMAS = frozenset(
+    {"system.cpu_overview", "system.disk_free", "system.memory_overview", "system.resource_overview"}
+)
+_SYSTEM_HARDWARE_BROAD_SCHEMAS = frozenset(
+    {"system.battery_charge", "system.cpu_overview", "system.memory_overview", "system.os_version"}
+)
+_SYSTEM_NETWORK_BROAD_SCHEMAS = frozenset(
+    {
+        "system.local_ip_address",
+        "system.network_connectivity",
+        "system.network_interfaces",
+        "system.public_ip_address",
+        "system.vpn_status",
+    }
+)
 _NON_RECOVERABLE_LIVE_STATE_ERROR_CODES = (
     NON_RECOVERABLE_TOOL_OBSERVATION_ERROR_CODES | frozenset({"invalid_arguments"})
 )
+_LIVE_STATE_MATH_BASE_FAMILIES = frozenset(family for family in LiveStateEvidenceFamily if family is not LiveStateEvidenceFamily.LIVE_STATE_MATH)
 
 _NON_LIVE_TIME_CONTEXT_PATTERNS: tuple[str, ...] = (
     r"сколько\s+врем(?:я|ени)\s+(?:занимает|занял|займет|нужно|требуется)",
@@ -120,16 +144,14 @@ _NON_LIVE_TIME_CONTEXT_PATTERNS: tuple[str, ...] = (
     r"что\s+значит.*который\s+час",
     r"datetime\.now|time\.time|python",
     r"пример\w*|examples?",
-    r"лог\w*|logs?|from\s+the\s+logs?",
+    r"\bлог(?!арифм)\w*\b|\blogs?\b|from\s+the\s+logs?",
     r"\bcron\b|таймер|напомни|\btimer\b|\bremind\s+me\b",
     r"\btime\s+complexity\b|\bexecution\s+time\b|\balgorithm\s+runtime\b",
     r"\bhow\s+(?:much\s+time|long\s+does)\b",
     r"\bwhat\s+does\b.*\bwhat\s+time\b.*\bmean\b",
 )
-_CURRENT_LOCAL_OBSERVATION_PATTERNS: tuple[str, ...] = (
-    r"сейчас|в\s+данн\w*\s+момент",
-    r"\b(?:right\s+now|now)\b",
-)
+_CURRENT_LOCAL_OBSERVATION_PATTERNS: tuple[str, ...] = (r"сейчас|в\s+данн\w*\s+момент", r"\b(?:right\s+now|now)\b")
+_TIME_DELTA_UNIT_OR_GENERIC_PATTERN = rf"(?:{TIME_DELTA_UNIT_PATTERN}|{GENERIC_TIME_DELTA_UNIT_PATTERN})"
 _LIVE_STATE_CLAUSE_SEPARATOR_PATTERN = re.compile(
     r"[\r\n]+|[!?]+|(?<!\d)\.(?!\d|app\b|py\b|js\b|ts\b|mjs\b|cjs\b|rb\b)|"
     r"(?<!\d),|,(?!\d)|[:;]+|"
@@ -208,6 +230,16 @@ _NON_LIVE_TASK_OR_EXAMPLE_CONTEXT_PATTERNS: tuple[str, ...] = (
     *_NON_LIVE_SCHEDULING_CONTEXT_PATTERNS,
 )
 
+_CURRENT_TIME_DELTA_PATTERNS: tuple[str, ...] = (
+    rf"через\s+сколько\s+(?:{TIME_DELTA_UNIT_PATTERN}|врем)",
+    rf"(?:сколько|посчитай|прошло\s+сколько|количеств\w*).*{_TIME_DELTA_UNIT_OR_GENERIC_PATTERN}.*(?:до\b|остал|остав|прошл|пройдет|между|с\s+)",
+    rf"(?:количеств\w*\s+)?{_TIME_DELTA_UNIT_OR_GENERIC_PATTERN}.*(?:прошед|прошл).*(?:\bс\b|\bсо\b)",
+    rf"\bhow\s+(?:long|many\s+{_TIME_DELTA_UNIT_OR_GENERIC_PATTERN})\s+until\b",
+    rf"\b{_TIME_DELTA_UNIT_OR_GENERIC_PATTERN}\b.*\buntil\b",
+    rf"\bhow\s+many\s+{_TIME_DELTA_UNIT_OR_GENERIC_PATTERN}.*\b(?:since|from|between)\b",
+    rf"\b{_TIME_DELTA_UNIT_OR_GENERIC_PATTERN}\b(?:\s+since|.*\b(?:elapsed|passed)\b.*\b(?:since|from)\b)",
+    rf"\bcalculate\s+{_TIME_DELTA_UNIT_OR_GENERIC_PATTERN}\s+(?:elapsed\s+)?since\b",
+)
 _CURRENT_TIME_PATTERNS: tuple[str, ...] = (
     r"сколько\s+врем(?:я|ени)",
     r"который\s+час",
@@ -223,9 +255,7 @@ _CURRENT_TIME_PATTERNS: tuple[str, ...] = (
     r"(?:назови|скажи|подскажи)\s+время",
     r"сколько\s+на\s+часах",
     r"что\s+там\s+по\s+врем(?:я|ени)",
-    r"через\s+сколько\s+врем",
-    r"через\s+сколько\s+(?:секунд|минут|часов|дней)",
-    r"(?:сколько|посчитай|прошло\s+сколько).*(?:секунд|минут|часов|дней).*(?:до\b|остал|прошл|пройдет|между|с\s+)",
+    *_CURRENT_TIME_DELTA_PATTERNS,
     r"\bwhat\s+time\s+is\s+it\b",
     r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?time(?:\s+(?:right\s+)?now)?\b",
     r"\bcurrent\s+(?:local\s+)?time\b",
@@ -238,10 +268,6 @@ _CURRENT_TIME_PATTERNS: tuple[str, ...] = (
     r"\bwhat\s+does\s+the\s+clock\s+say\b",
     r"\btime\s+now\b",
     r"\bwhat\s+does\s+(?:datetime\.now|time\.time)\s+return\b.*\b(?:right\s+now|now)\b",
-    r"\bhow\s+(?:long|many\s+(?:seconds?|minutes?|hours?|days?))\s+until\b",
-    r"\bhow\s+many\s+(?:seconds?|minutes?|hours?|days?).*\b(?:since|from|between)\b",
-    r"\b(?:seconds?|minutes?|hours?|days?)\s+since\b",
-    r"\bcalculate\s+(?:seconds?|minutes?|hours?|days?)\s+(?:elapsed\s+)?since\b",
     r"(?:qué|que)\s+hora\s+es",
     r"hora\s+actual",
     r"quelle\s+heure",
@@ -263,17 +289,15 @@ _CURRENT_TIME_PATTERNS: tuple[str, ...] = (
     r"现在几点",
     r"現在幾點",
 )
-_CURRENT_TIME_DELTA_PATTERNS: tuple[str, ...] = (
-    r"через\s+сколько\s+(?:секунд|минут|часов|дней|врем)",
-    r"(?:сколько|посчитай|прошло\s+сколько).*(?:секунд|минут|часов|дней).*(?:до\b|остал|прошл|пройдет|между|с\s+)",
-    r"\bhow\s+(?:long|many\s+(?:seconds?|minutes?|hours?|days?))\s+until\b",
-    r"\bhow\s+many\s+(?:seconds?|minutes?|hours?|days?).*\b(?:since|from|between)\b",
-    r"\b(?:seconds?|minutes?|hours?|days?)\s+since\b",
-    r"\bcalculate\s+(?:seconds?|minutes?|hours?|days?)\s+(?:elapsed\s+)?since\b",
-)
 _CURRENT_TIME_UNTIL_SUPPORTED_TARGET_PATTERNS: tuple[str, ...] = (
     r"нов\w*\s+год",
     r"\bnew\s+year\b",
+)
+_CURRENT_TIME_UNTIL_UNSUPPORTED_DIRECTION_PATTERNS: tuple[str, ...] = (
+    r"\b(?:since|from|between|elapsed|passed)\b",
+    r"\b(?:last|previous)\s+new\s+year\b",
+    r"прошл|прошед|между",
+    r"\bс\s+(?:послед|прошл)",
 )
 _CURRENT_DATE_PATTERNS: tuple[str, ...] = (
     r"какая\s+(?:сегодня\s+|сейчас\s+)?дата",
@@ -308,9 +332,10 @@ _SYSTEM_RESOURCE_PATTERNS: tuple[str, ...] = (
     r"\b(?:load|usage|utili[sz]ation)\b.*\b(?:cpu|processor|memory|ram)\b",
     r"\b(?:memory|ram)\b.*\b(?:usage|used|free|available|current|utili[sz]ation)\b",
     r"\bdisk\b.*\b(?:usage|used|free|available|status|space)\b",
+    r"\b(?:used|free|available)\s+disk\b",
     r"\bdisk\s+space\b.*\b(?:available|free|used)\b",
-    r"(?:свобод|занято|мест).*(?:диск|накопител)",
-    r"(?:диск|накопител).*(?:свобод|занято|мест|статус)",
+    r"(?:свобод|занят|процент|мест).*(?:диск|накопител|хранилищ)",
+    r"(?:диск|накопител|хранилищ).*(?:свобод|занят|процент|мест|статус)",
     r"\b(?:current|live)\s+(?:cpu|processor|memory|ram)\b",
     r"\b(?:cpu|processor|memory|ram)\b.*\b(?:over|above|under|below|greater|less|higher|lower)\b.*\d",
     r"\b(?:cpu|processor|memory|ram)\b.*\d+(?:[.,]\d+)?\s*(?:%|gb|mb|gib|mib)?\s*(?:\+|or\s+(?:higher|lower|less|more))",
@@ -321,8 +346,8 @@ _SYSTEM_RESOURCE_PATTERNS: tuple[str, ...] = (
     r"(?:процессор|цп|систем).*(?:нагрузк)",
     r"(?:загрузк|загруж).*(?:cpu|процессор|цп)",
     r"(?:cpu|процессор|цп).*(?:загрузк|загруж)",
-    r"(?:сейчас|текущ|сколько|занято|использ).*(?:процессор|цп|памят|оператив|ресурс)",
-    r"(?:процессор|цп|памят|оператив|ресурс).*(?:сейчас|текущ|занято|использ|нагрузк)",
+    r"(?:сейчас|текущ|сколько|занят|использ).*(?:процессор|цп|памят|оператив|ресурс)",
+    r"(?:процессор|цп|памят|оператив|ресурс).*(?:сейчас|текущ|занят|использ|нагрузк)",
 )
 _SYSTEM_NETWORK_PATTERNS: tuple[str, ...] = (
     r"\bvpn\b.*\b(?:connected|status|current|up|down)\b",
@@ -343,11 +368,12 @@ _SYSTEM_NETWORK_PATTERNS: tuple[str, ...] = (
     r"(?:подключ|статус|работ|включ).*(?:vpn|впн)",
     r"внешн\w*\s+(?:ip|айпи)|публичн\w*\s+(?:ip|айпи)",
     r"(?:интернет|wifi|wi-fi|вайфай).*(?:подключ|статус|работ|онлайн)",
-    r"(?:работ).*(?:vpn|впн|интернет|wifi|wi-fi|вайфай|сеть)",
+    r"(?:работ).*(?:vpn|впн|интернет|wifi|wi-fi|вайфай|сет\w*)",
     r"(?:подключ|статус|работ|онлайн).*(?:интернет|wifi|wi-fi|вайфай)",
     r"(?:слуша|listen).*(?:порт|port)",
     r"(?:порт|port).*(?:слуша|listen)",
-    r"(?:сеть|сетев).*(?:статус|подключ|сейчас|интерфейс|соедин)",
+    r"(?:сет\w*).*(?:статус|подключ|сейчас|интерфейс|соедин|активн|трафик|нагрузк|использ)",
+    r"(?:активн|трафик|нагрузк|использ).*(?:сет\w*)",
 )
 _SYSTEM_HARDWARE_PATTERNS: tuple[str, ...] = (
     r"\b(?:my|current|local)\s+(?:hardware|device)\b",
@@ -377,9 +403,10 @@ _SYSTEM_HARDWARE_PATTERNS: tuple[str, ...] = (
 )
 _SYSTEM_DISK_EVIDENCE_PATTERNS: tuple[str, ...] = (
     r"\bdisk\b.*\b(?:usage|used|free|available|status|space)\b",
+    r"\b(?:used|free|available)\s+disk\b",
     r"\bdisk\s+space\b.*\b(?:available|free|used)\b",
-    r"(?:свобод|занято|мест).*(?:диск|накопител)",
-    r"(?:диск|накопител).*(?:свобод|занято|мест|статус)",
+    r"(?:свобод|занят|процент|мест).*(?:диск|накопител|хранилищ)",
+    r"(?:диск|накопител|хранилищ).*(?:свобод|занят|процент|мест|статус)",
 )
 _SYSTEM_CPU_EVIDENCE_PATTERNS: tuple[str, ...] = (
     r"\b(?:cpu|processor)\b.*\b(?:load|usage|used|utili[sz]ation|percent|%)\b",
@@ -389,8 +416,8 @@ _SYSTEM_CPU_EVIDENCE_PATTERNS: tuple[str, ...] = (
     r"\b(?:cpu|processor)\b.*\d+(?:[.,]\d+)?\s*(?:%|gb|mb|gib|mib)?\s*(?:\+|or\s+(?:higher|lower|less|more))",
     r"(?:загрузк|загруж).*(?:cpu|процессор|цп)",
     r"(?:cpu|процессор|цп).*(?:загрузк|загруж)",
-    r"(?:сейчас|текущ|сколько|занято|использ).*(?:процессор|цп)",
-    r"(?:процессор|цп).*(?:сейчас|текущ|занято|использ|нагрузк)",
+    r"(?:сейчас|текущ|сколько|занят|использ).*(?:процессор|цп)",
+    r"(?:процессор|цп).*(?:сейчас|текущ|занят|использ|нагрузк)",
 )
 _SYSTEM_MEMORY_EVIDENCE_PATTERNS: tuple[str, ...] = (
     r"\b(?:memory|ram)\b.*\b(?:usage|used|free|available|current|utili[sz]ation)\b",
@@ -398,8 +425,8 @@ _SYSTEM_MEMORY_EVIDENCE_PATTERNS: tuple[str, ...] = (
     r"\b(?:current|live)\s+(?:memory|ram)\b",
     r"\b(?:memory|ram)\b.*\b(?:over|above|under|below|greater|less|higher|lower)\b.*\d",
     r"\b(?:memory|ram)\b.*\d+(?:[.,]\d+)?\s*(?:%|gb|mb|gib|mib)?\s*(?:\+|or\s+(?:higher|lower|less|more))",
-    r"(?:сейчас|текущ|сколько|занято|использ).*(?:памят|оператив)",
-    r"(?:памят|оператив).*(?:сейчас|текущ|занято|использ)",
+    r"(?:сейчас|текущ|сколько|занят|использ).*(?:памят|оператив)",
+    r"(?:памят|оператив).*(?:сейчас|текущ|занят|использ)",
 )
 _SYSTEM_LOAD_EVIDENCE_PATTERNS: tuple[str, ...] = (
     r"\b(?:cpu|processor)\b.*\b(?:load|usage|used|utili[sz]ation|percent|%)\b",
@@ -512,21 +539,18 @@ def live_state_evidence_plan(
 
     family = base_families[0]
     families = frozenset(base_families)
-    if (
+    live_state_math_base_detected = bool(families & _LIVE_STATE_MATH_BASE_FAMILIES)
+    live_state_math_required = (
         contains_arithmetic_expression(scoped_text)
         and _needs_calculator_for_live_state_math(scoped_text)
-        and families
-        & {
-            LiveStateEvidenceFamily.CURRENT_TIME,
-            LiveStateEvidenceFamily.CURRENT_DATE,
-            LiveStateEvidenceFamily.SYSTEM_RESOURCES,
-            LiveStateEvidenceFamily.SYSTEM_NETWORK,
-            LiveStateEvidenceFamily.SYSTEM_HARDWARE,
-            LiveStateEvidenceFamily.SYSTEM_SENSORS,
-            LiveStateEvidenceFamily.SYSTEM_PROCESS,
-            LiveStateEvidenceFamily.DAEMON_STATUS,
-        }
-    ):
+        and live_state_math_base_detected
+    ) or request_requires_derived_live_value_calculation(
+        scoped_text,
+        live_state_detected=live_state_math_base_detected,
+        live_time_delta_detected=LiveStateEvidenceFamily.CURRENT_TIME in families
+        and _matches_any(_CURRENT_TIME_DELTA_PATTERNS, scoped_text),
+    )
+    if live_state_math_required:
         family = LiveStateEvidenceFamily.LIVE_STATE_MATH
         families = frozenset({*families, LiveStateEvidenceFamily.LIVE_STATE_MATH})
 
@@ -553,6 +577,13 @@ def live_state_evidence_plan(
         not clause_candidates
         for clause_candidates_by_text in per_family_clause_candidates.values()
         for _clause_text, clause_candidates in clause_candidates_by_text
+    ) or any(
+        _expected_datetime_until_arguments(clause) is not None
+        and "datetime.until" not in clause_candidates
+        for clause, clause_candidates in per_family_clause_candidates.get(
+            LiveStateEvidenceFamily.CURRENT_TIME,
+            (),
+        )
     )
     if family is LiveStateEvidenceFamily.LIVE_STATE_MATH:
         allowed = request_plan.allowed_tool_names or frozenset()
@@ -616,7 +647,7 @@ def _per_family_clause_candidates(
 
 def normalize_live_state_text(value: str) -> str:
     lowered = value.lower().strip(_LIVE_STATE_CONTEXT_EDGE_CHARS)
-    lowered = re.sub(r"(?<!\d),|,(?!\d)|[:;]+", " ", lowered)
+    lowered = re.sub(r"(?<!\d),|,(?!\d)|(?<!\d):(?!\d)|;+", " ", lowered)
     return re.sub(r"\s+", " ", lowered).strip(_LIVE_STATE_CONTEXT_EDGE_CHARS)
 
 
@@ -642,6 +673,13 @@ def _detect_live_state_evidence(value: str) -> _LiveStateEvidenceDetection:
             evidence_text=normalized,
             evidence_text_by_family={},
             evidence_clauses_by_family={},
+        )
+    if is_self_contained_time_delta_interval(normalized):
+        return _LiveStateEvidenceDetection(
+            families=(LiveStateEvidenceFamily.CALENDAR_INTERVAL,),
+            evidence_text=normalized,
+            evidence_text_by_family={LiveStateEvidenceFamily.CALENDAR_INTERVAL: normalized},
+            evidence_clauses_by_family={LiveStateEvidenceFamily.CALENDAR_INTERVAL: (normalized,)},
         )
     if len(clauses) > 1 and clause_detection.families:
         return clause_detection
@@ -680,7 +718,11 @@ def _detect_live_state_families_from_text(
     excluded_time_context = _is_excluded_non_live_time_context(value)
     if _matches_any(_CURRENT_DATE_PATTERNS, value) and not excluded_time_context:
         families.append(LiveStateEvidenceFamily.CURRENT_DATE)
-    if _matches_any(_CURRENT_TIME_PATTERNS, value) and not excluded_time_context:
+    if (
+        _matches_any(_CURRENT_TIME_PATTERNS, value)
+        and not excluded_time_context
+        and not is_self_contained_time_delta_interval(value)
+    ):
         families.append(LiveStateEvidenceFamily.CURRENT_TIME)
     return tuple(dict.fromkeys(families))
 
@@ -906,9 +948,20 @@ def _candidate_tool_names_for_family(
         _CURRENT_TIME_DELTA_PATTERNS,
         request_text,
     ):
+        allowed = request_plan.allowed_tool_names or frozenset(); expected_unit = _expected_datetime_until_unit(request_text)
         delta_required = frozenset({"datetime.now"})
-        if _matches_any(_CURRENT_TIME_UNTIL_SUPPORTED_TARGET_PATTERNS, request_text):
+        if _expected_datetime_until_arguments(request_text) is not None:
             delta_required = frozenset({"datetime.now", "datetime.until"})
+        elif "calendar.diff" in allowed and expected_unit is not None:
+            delta_required = frozenset({"datetime.now", "calendar.diff"})
+        elif (
+            expected_unit is not None
+            and expected_unit not in {"months", "quarters", "decades"}
+            and "datetime.diff" in allowed
+        ):
+            delta_required = frozenset({"datetime.now", "datetime.diff"})
+        elif expected_unit is not None:
+            return frozenset()
         delta_candidates = _allowed_live_tool_names(delta_required, request_plan)
         if delta_candidates:
             return delta_candidates
@@ -941,30 +994,62 @@ def _missing_tool_names_for_family_candidates(
     missing: set[str] = set()
     for family, clause_candidates_by_text in per_family_clause_candidates.items():
         for request_text, family_candidates in clause_candidates_by_text:
+            if family is LiveStateEvidenceFamily.CURRENT_TIME and _matches_any(_CURRENT_TIME_DELTA_PATTERNS, request_text) and family_candidates & {"calendar.diff", "datetime.diff"}:
+                diff_tool_name = "calendar.diff" if "calendar.diff" in family_candidates else "datetime.diff"
+                if _has_matching_completed_observation_for_delta(
+                    diff_tool_name,
+                    request,
+                    tool_observation_refs,
+                    request_text=request_text,
+                    require_observed_datetime_source=True,
+                ):
+                    continue
+                missing.update(
+                    {diff_tool_name}
+                    if _has_matching_completed_observation_for_delta(
+                        "datetime.now",
+                        request,
+                        tool_observation_refs,
+                        request_text=request_text,
+                        require_observed_datetime_source=True,
+                    )
+                    else family_candidates
+                )
+                continue
             if (
                 family is LiveStateEvidenceFamily.CURRENT_TIME
                 and _matches_any(_CURRENT_TIME_DELTA_PATTERNS, request_text)
-                and _matches_any(_CURRENT_TIME_UNTIL_SUPPORTED_TARGET_PATTERNS, request_text)
+                and _expected_datetime_until_arguments(request_text) is not None
                 and len(family_candidates) > 1
                 and not _current_time_delta_has_unsupported_target(request_text)
             ):
-                has_any_delta_observation = (
-                    not _has_conflicting_datetime_until_observation(
-                        request_text,
+                has_conflicting_until = _has_conflicting_datetime_until_observation(
+                    request_text,
+                    tool_observation_refs,
+                )
+                has_matching_until = (
+                    not has_conflicting_until
+                    and "datetime.until" in family_candidates
+                    and _has_matching_completed_observation_for_delta(
+                        "datetime.until",
+                        request,
                         tool_observation_refs,
-                    )
-                    and any(
-                        _has_matching_completed_observation_for_delta(
-                            tool_name,
-                            request,
-                            tool_observation_refs,
-                            request_text=request_text,
-                            require_observed_datetime_source=True,
-                        )
-                        for tool_name in family_candidates
+                        request_text=request_text,
+                        require_observed_datetime_source=True,
                     )
                 )
-                if not has_any_delta_observation:
+                if has_matching_until:
+                    continue
+                has_matching_now = _has_matching_completed_observation_for_delta(
+                    "datetime.now",
+                    request,
+                    tool_observation_refs,
+                    request_text=request_text,
+                    require_observed_datetime_source=True,
+                )
+                if has_matching_now and not has_conflicting_until:
+                    missing.add("datetime.until")
+                else:
                     missing.update(family_candidates)
                 continue
             missing.update(
@@ -1043,6 +1128,13 @@ def _has_matching_completed_observation_for_delta(
             )
             for ref in tool_observation_refs
         )
+    if tool_name in {"calendar.diff", "datetime.diff"}:
+        return datetime_diff_observations_match_request(
+            request_text or request.user_input,
+            tool_observation_refs,
+            full_request_text=request.user_input,
+            expected_tool_name=tool_name,
+        )
     return _has_matching_completed_observation(
         tool_name,
         request,
@@ -1068,9 +1160,12 @@ def _datetime_until_observation_matches_request(
         return False
     from_iso_values = _datetime_until_from_iso_values(ref)
     if not from_iso_values:
+        return False
+    source_argument = ref.arguments.get("from_iso")
+    if not isinstance(source_argument, str) or not source_argument.strip():
         return True
-    if not require_observed_datetime_source:
-        return True
+    if source_argument not in from_iso_values:
+        return False
     observed_sources = _completed_datetime_now_iso_values(tool_observation_refs)
     return bool(observed_sources) and from_iso_values <= observed_sources
 
@@ -1093,53 +1188,45 @@ def _has_conflicting_datetime_until_observation(
         ):
             continue
         from_iso_values = _datetime_until_from_iso_values(ref)
-        if from_iso_values and (not observed_sources or not from_iso_values <= observed_sources):
+        source_argument = ref.arguments.get("from_iso")
+        if not isinstance(source_argument, str) or not source_argument.strip():
+            continue
+        if (
+            not from_iso_values
+            or source_argument not in from_iso_values
+            or not observed_sources
+            or not from_iso_values <= observed_sources
+        ):
             return True
     return False
 
 
 def _datetime_until_observed_arguments(ref: ToolObservationRef) -> dict[str, str]:
     payload = _datetime_until_payload(ref)
-    target = _first_string(ref.arguments.get("target"), payload.get("target"))
-    unit = _first_string(ref.arguments.get("unit"), payload.get("unit"))
+    target = _first_string(payload.get("target"))
+    unit = _first_string(payload.get("unit"))
     if target is None or unit is None:
         return {}
     observed = {"target": target, "unit": unit}
-    from_iso = _first_string(payload.get("from_iso"), ref.arguments.get("from_iso"))
+    from_iso = _first_string(payload.get("from_iso"))
     if from_iso is not None:
         observed["from_iso"] = from_iso
     return observed
 
 
 def _datetime_until_payload(ref: ToolObservationRef) -> dict:
-    payload = ref.structured_content
-    if not isinstance(payload, dict) and ref.content_type == "application/json":
-        try:
-            parsed = json.loads(ref.content)
-        except (TypeError, ValueError):
-            parsed = None
-        if isinstance(parsed, dict):
-            payload = parsed
-    return payload if isinstance(payload, dict) else {}
-
-
-def _datetime_until_content_payload(ref: ToolObservationRef) -> dict:
-    if ref.content_type != "application/json":
+    if ref.structured_schema != "datetime.until":
         return {}
-    try:
-        parsed = json.loads(ref.content)
-    except (TypeError, ValueError):
+    if ref.parse_status not in {ToolParseStatus.PARSED, ToolParseStatus.PARTIAL}:
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return ref.structured_content if isinstance(ref.structured_content, dict) else {}
 
 
 def _datetime_until_from_iso_values(ref: ToolObservationRef) -> frozenset[str]:
     values = {
         value
         for value in (
-            ref.arguments.get("from_iso"),
             _datetime_until_payload(ref).get("from_iso"),
-            _datetime_until_content_payload(ref).get("from_iso"),
         )
         if isinstance(value, str) and value.strip()
     }
@@ -1150,53 +1237,16 @@ def _first_string(*values: object) -> str | None:
     return next((value for value in values if isinstance(value, str)), None)
 
 
-def _completed_datetime_now_iso_values(
-    tool_observation_refs: tuple[ToolObservationRef, ...],
-) -> frozenset[str]:
-    values: set[str] = set()
-    for ref in tool_observation_refs:
-        if not is_completed_observation(ref) or ref.tool_name != "datetime.now":
-            continue
-        structured = ref.structured_content
-        if isinstance(structured, dict):
-            iso_value = structured.get("iso")
-            if isinstance(iso_value, str) and iso_value.strip():
-                values.add(iso_value)
-                continue
-        if ref.content_type != "application/json":
-            continue
-        try:
-            parsed = json.loads(ref.content)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(parsed, dict):
-            continue
-        iso_value = parsed.get("iso")
-        if isinstance(iso_value, str) and iso_value.strip():
-            values.add(iso_value)
-    return frozenset(values)
-
-
 def _expected_datetime_until_arguments(value: str) -> dict[str, str] | None:
     normalized = normalize_live_state_text(value)
     if not _matches_any(_CURRENT_TIME_UNTIL_SUPPORTED_TARGET_PATTERNS, normalized):
+        return None
+    if _matches_any(_CURRENT_TIME_UNTIL_UNSUPPORTED_DIRECTION_PATTERNS, normalized):
         return None
     unit = _expected_datetime_until_unit(normalized)
     if unit is None:
         return None
     return {"target": "next_new_year", "unit": unit}
-
-
-def _expected_datetime_until_unit(value: str) -> str | None:
-    if re.search(r"секунд|seconds?", value, flags=re.IGNORECASE):
-        return "seconds"
-    if re.search(r"минут|minutes?", value, flags=re.IGNORECASE):
-        return "minutes"
-    if re.search(r"часов|hours?", value, flags=re.IGNORECASE):
-        return "hours"
-    if re.search(r"дней|дня|days?", value, flags=re.IGNORECASE):
-        return "days"
-    return None
 
 
 def _required_tool_names_for_family(family: LiveStateEvidenceFamily) -> frozenset[str]:
@@ -1216,6 +1266,8 @@ def _required_tool_names_for_family(family: LiveStateEvidenceFamily) -> frozense
         return _SYSTEM_PROCESS_TOOL_NAMES
     if family is LiveStateEvidenceFamily.DAEMON_STATUS:
         return _DAEMON_STATUS_TOOL_NAMES
+    if family is LiveStateEvidenceFamily.CALENDAR_INTERVAL:
+        return frozenset({"calendar.diff"})
     return frozenset()
 
 
@@ -1231,6 +1283,10 @@ def _has_matching_completed_observation(
             request_text or request.user_input,
             tool_observation_refs,
         )
+    if tool_name == "datetime.now":
+        return datetime_now_observations_match_request(tool_observation_refs)
+    if tool_name == "daemon.status":
+        return daemon_status_observations_match_request(tool_observation_refs)
     if tool_name == "tool.system.read.resources":
         return _resource_observations_match_request(
             request_text or request.user_input,
@@ -1251,18 +1307,12 @@ def _has_matching_completed_observation(
             request_text or request.user_input,
             tool_observation_refs,
         )
-    if tool_name.startswith("tool.system.read."):
-        return any(
-            is_completed_observation(ref)
-            and ref.tool_name == tool_name
-            and not _system_ref_is_unavailable(ref)
-            for ref in tool_observation_refs
-        )
+    if tool_name == "tool.system.read.sensors":
+        return _sensor_observations_match_request(tool_observation_refs)
     return any(
         is_completed_observation(ref) and ref.tool_name == tool_name
         for ref in tool_observation_refs
     )
-
 
 def _resource_observations_match_request(
     request_text: str,
@@ -1277,26 +1327,44 @@ def _resource_observations_match_request(
         return False
     if is_process_scoped_resource_request(request_text):
         return False
-    requires_disk = _matches_any(_SYSTEM_DISK_EVIDENCE_PATTERNS, request_text)
-    requires_cpu = _matches_any(_SYSTEM_CPU_EVIDENCE_PATTERNS, request_text)
-    requires_memory = _matches_any(_SYSTEM_MEMORY_EVIDENCE_PATTERNS, request_text)
-    requires_load_average = _matches_any(_SYSTEM_LOAD_AVERAGE_EVIDENCE_PATTERNS, request_text)
-    requires_load = (
-        _matches_any(_SYSTEM_LOAD_EVIDENCE_PATTERNS, request_text) and not requires_load_average
-    )
-    if not any((requires_disk, requires_cpu, requires_memory, requires_load, requires_load_average)):
-        return any(_system_ref_can_satisfy_broad_family(ref) for ref in refs)
-    if requires_disk and not any(_resource_ref_matches_disk(ref) for ref in refs):
+    required = required_resource_evidence_subtypes(request_text)
+    if not required:
+        return any(
+            _system_ref_can_satisfy_broad_family(
+                ref,
+                allowed_schemas=_SYSTEM_RESOURCE_BROAD_SCHEMAS,
+            )
+            for ref in refs
+        )
+    if "disk" in required and not any(_resource_ref_matches_disk(ref) for ref in refs):
         return False
-    if requires_cpu and not any(_resource_ref_matches_cpu(ref) for ref in refs):
+    if "cpu" in required and not any(_resource_ref_matches_cpu(ref) for ref in refs):
         return False
-    if requires_memory and not any(_resource_ref_matches_memory(ref) for ref in refs):
+    if "memory" in required and not any(_resource_ref_matches_memory(ref) for ref in refs):
         return False
-    if requires_load and not any(_resource_ref_matches_load(ref) for ref in refs):
+    if "load" in required and not any(_resource_ref_matches_load(ref) for ref in refs):
         return False
-    if requires_load_average and not any(_resource_ref_matches_load_average(ref) for ref in refs):
+    if "load_average" in required and not any(
+        _resource_ref_matches_load_average(ref) for ref in refs
+    ):
         return False
     return True
+
+
+def required_resource_evidence_subtypes(request_text: str) -> frozenset[str]:
+    requires_load_average = _matches_any(_SYSTEM_LOAD_AVERAGE_EVIDENCE_PATTERNS, request_text)
+    subtypes: set[str] = set()
+    if _matches_any(_SYSTEM_DISK_EVIDENCE_PATTERNS, request_text):
+        subtypes.add("disk")
+    if _matches_any(_SYSTEM_CPU_EVIDENCE_PATTERNS, request_text):
+        subtypes.add("cpu")
+    if _matches_any(_SYSTEM_MEMORY_EVIDENCE_PATTERNS, request_text):
+        subtypes.add("memory")
+    if requires_load_average:
+        subtypes.add("load_average")
+    elif _matches_any(_SYSTEM_LOAD_EVIDENCE_PATTERNS, request_text):
+        subtypes.add("load")
+    return frozenset(subtypes)
 
 
 def _resource_ref_matches_disk(ref: ToolObservationRef) -> bool:
@@ -1373,13 +1441,18 @@ def _resource_ref_matches_load_average(ref: ToolObservationRef) -> bool:
 def _resource_ref_is_generic_cpu_memory_snapshot(ref: ToolObservationRef) -> bool:
     if _system_ref_schema(ref) is not None:
         return False
-    if not _system_ref_has_usable_raw_diagnostics(ref):
-        return False
     argv = _system_ref_argv(ref)
-    if argv and argv[0] not in {"top", "free", "vm_stat"}:
-        return False
+    if argv:
+        if not _system_ref_has_usable_raw_diagnostics(ref):
+            return False
+        if argv[0] not in {"top", "free", "vm_stat"}:
+            return False
     metric = ref.arguments.get("metric")
-    return not argv or metric in {"resources", "cpu_and_memory"}
+    if metric not in {None, "resources", "cpu_and_memory"}:
+        return False
+    if argv:
+        return True
+    return False
 
 
 def _hardware_observations_match_request(
@@ -1407,7 +1480,13 @@ def _hardware_observations_match_request(
             requires_cpu_brand,
         )
     ):
-        return any(_system_ref_can_satisfy_broad_family(ref) for ref in refs)
+        return any(
+            _system_ref_can_satisfy_broad_family(
+                ref,
+                allowed_schemas=_SYSTEM_HARDWARE_BROAD_SCHEMAS,
+            )
+            for ref in refs
+        )
     if requires_battery and not any(_hardware_ref_matches_battery(ref) for ref in refs):
         return False
     if requires_os and not any(_hardware_ref_matches_os(ref) for ref in refs):
@@ -1493,7 +1572,24 @@ def _network_observations_match_request(
         return any(_network_ref_matches_local_ip(ref) for ref in refs)
     if _matches_any(_SYSTEM_CONNECTIVITY_EVIDENCE_PATTERNS, request_text):
         return any(_network_ref_matches_connectivity(ref) for ref in refs)
-    return any(_system_ref_can_satisfy_broad_family(ref) for ref in refs)
+    return any(
+        _system_ref_can_satisfy_broad_family(
+            ref,
+            allowed_schemas=_SYSTEM_NETWORK_BROAD_SCHEMAS,
+        )
+        for ref in refs
+    )
+
+
+def _sensor_observations_match_request(
+    tool_observation_refs: tuple[ToolObservationRef, ...],
+) -> bool:
+    return any(
+        is_completed_observation(ref)
+        and ref.tool_name == "tool.system.read.sensors"
+        and _system_ref_has_schema(ref, "system.sensor_snapshot")
+        for ref in tool_observation_refs
+    )
 
 
 def _network_ref_matches_vpn(ref: ToolObservationRef) -> bool:
@@ -1537,56 +1633,19 @@ def _network_ref_matches_connectivity(ref: ToolObservationRef) -> bool:
     }
 
 
-def _system_ref_argv(ref: ToolObservationRef) -> tuple[str, ...]:
-    argv = ref.arguments.get("argv")
-    if not isinstance(argv, (list, tuple)):
-        return ()
-    if not all(isinstance(arg, str) for arg in argv):
-        return ()
-    return tuple(argv)
-
-
-def _system_ref_argv_command(ref: ToolObservationRef) -> str | None:
-    argv = _system_ref_argv(ref)
-    return argv[0] if argv else None
-
-
-def _system_ref_has_usable_raw_diagnostics(ref: ToolObservationRef) -> bool:
-    if _system_ref_is_unavailable(ref):
-        return False
-    exit_code = ref.metadata.get("exit_code")
-    if isinstance(exit_code, int):
-        return exit_code == 0
-    content_exit_code = _system_ref_content_exit_code(ref)
-    if content_exit_code is not None:
-        return content_exit_code == 0
-    return not _system_ref_argv(ref)
-
-
-def _system_ref_content_exit_code(ref: ToolObservationRef) -> int | None:
-    if ref.content_type != "application/json":
-        return None
-    try:
-        content = json.loads(ref.content)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(content, dict):
-        return None
-    exit_code = content.get("exit_code")
-    return exit_code if isinstance(exit_code, int) else None
-
-
-def _system_ref_is_unavailable(ref: ToolObservationRef) -> bool:
-    return ref.metadata.get("unavailable") is True
-
-
-def _system_ref_can_satisfy_broad_family(ref: ToolObservationRef) -> bool:
+def _system_ref_can_satisfy_broad_family(
+    ref: ToolObservationRef,
+    *,
+    allowed_schemas: frozenset[str],
+) -> bool:
     if _system_ref_is_unavailable(ref):
         return False
     if _system_ref_schema(ref) is not None:
+        if _system_ref_schema(ref) not in allowed_schemas:
+            return False
         if not isinstance(ref.structured_content, dict):
             return False
-        return ref.parse_status in {None, ToolParseStatus.PARSED, ToolParseStatus.PARTIAL}
+        return ref.parse_status in {ToolParseStatus.PARSED, ToolParseStatus.PARTIAL}
     return _system_ref_has_usable_raw_diagnostics(ref)
 
 
@@ -1597,8 +1656,6 @@ def _system_ref_has_schema(ref: ToolObservationRef, schema: str) -> bool:
         return False
     if not isinstance(ref.structured_content, dict):
         return False
-    if ref.parse_status is None:
-        return True
     return ref.parse_status in {ToolParseStatus.PARSED, ToolParseStatus.PARTIAL}
 
 
@@ -1611,10 +1668,6 @@ def _structured_has_any_key(ref: ToolObservationRef, keys: set[str]) -> bool:
 def _system_ref_schema(ref: ToolObservationRef) -> str | None:
     if isinstance(ref.structured_schema, str) and ref.structured_schema:
         return ref.structured_schema
-    if isinstance(ref.structured_content, dict):
-        schema = ref.structured_content.get("schema")
-        if isinstance(schema, str) and schema:
-            return schema
     return None
 
 
@@ -1622,20 +1675,32 @@ def _has_all_matching_calculator_observations(
     request_text: str,
     tool_observation_refs: tuple[ToolObservationRef, ...],
 ) -> bool:
+    detection = _detect_live_state_evidence(request_text)
+    families = frozenset(detection.families)
+    if request_requires_derived_live_value_calculation(
+        request_text,
+        live_state_detected=bool(families & _LIVE_STATE_MATH_BASE_FAMILIES),
+        live_time_delta_detected=LiveStateEvidenceFamily.CURRENT_TIME in families
+        and _matches_any(_CURRENT_TIME_DELTA_PATTERNS, request_text),
+    ):
+        return any(
+            calculator_expression_matches_derived_request(request_text, ref, tool_observation_refs)
+            for ref in tool_observation_refs
+        )
     expected_expressions = arithmetic_expression_candidates(request_text)
-    if not expected_expressions:
-        return False
-    completed_expressions = {
-        normalize_calculator_expression(ref.arguments["expression"])
-        for ref in tool_observation_refs
-        if is_completed_observation(ref)
-        and ref.tool_name == "calculator.evaluate"
-        and isinstance(ref.arguments.get("expression"), str)
-    }
-    return all(
-        normalize_calculator_expression(expected) in completed_expressions
-        for expected in expected_expressions
-    )
+    if expected_expressions:
+        completed_expressions = {
+            normalize_calculator_expression(ref.arguments["expression"])
+            for ref in tool_observation_refs
+            if is_completed_observation(ref)
+            and ref.tool_name == "calculator.evaluate"
+            and isinstance(ref.arguments.get("expression"), str)
+        }
+        return all(
+            normalize_calculator_expression(expected) in completed_expressions
+            for expected in expected_expressions
+        )
+    return False
 
 
 def tool_proposal_model_call_timeout(
@@ -1690,9 +1755,11 @@ def final_answer_missing_evidence_plan(
     )
     if not plan.evidence_required:
         return None
-    if not plan.candidate_tool_names:
+    if not plan.candidate_tool_names and plan.unavailable_reason is None:
         return None
     if not plan.missing_tool_names:
+        if plan.unavailable_reason is not None:
+            return plan
         return None
     if not (plan.missing_tool_names & plan.candidate_tool_names):
         raise RuntimeError("required_tool_evidence_missing")
@@ -1710,13 +1777,13 @@ def failed_observation_exhausts_missing_evidence(
         request_plan,
         tool_observation_refs=tool_observation_refs,
     )
-    if not plan.evidence_required:
-        return False
     if not is_live_state_tool_name(observation_ref.tool_name):
         return False
-    if observation_ref.tool_name not in plan.missing_tool_names:
-        return False
     if not _is_terminal_unavailable_observation(observation_ref):
+        return False
+    if not plan.evidence_required:
+        return observation_ref.tool_name in request_plan.live_state_tool_names
+    if observation_ref.tool_name not in plan.missing_tool_names:
         return False
     non_math_families = plan.families - frozenset({LiveStateEvidenceFamily.LIVE_STATE_MATH})
     if len(non_math_families) > 1:
@@ -1798,6 +1865,7 @@ def _without_terminal_unavailable_observations(
 
 
 def _is_terminal_unavailable_observation(ref: ToolObservationRef) -> bool:
+    if ref.status == ToolObservationStatus.COMPLETED: return _system_ref_is_unavailable(ref)
     if ref.status == ToolObservationStatus.DENIED:
         return ref.error_code in {None, "tool_error", "tool_failed"}
     if ref.status not in {ToolObservationStatus.FAILED, ToolObservationStatus.TIMEOUT}:
@@ -1821,6 +1889,10 @@ def _missing_families_for_tool_names(
         }
         families.update(datetime_families or {LiveStateEvidenceFamily.CURRENT_TIME})
     if "datetime.until" in missing_tool_names:
+        families.add(LiveStateEvidenceFamily.CURRENT_TIME)
+    if "calendar.diff" in missing_tool_names:
+        families.add(LiveStateEvidenceFamily.CALENDAR_INTERVAL)
+    if "datetime.diff" in missing_tool_names:
         families.add(LiveStateEvidenceFamily.CURRENT_TIME)
     tool_family_by_name = {
         "tool.system.read.resources": LiveStateEvidenceFamily.SYSTEM_RESOURCES,
@@ -1888,8 +1960,6 @@ def request_needs_live_state_math_evidence(
 ) -> bool:
     if "calculator.evaluate" not in (request_plan.allowed_tool_names or frozenset()):
         return False
-    if not contains_arithmetic_expression(request.user_input):
-        return False
     evidence_plan = live_state_evidence_plan(
         request,
         request_plan,
@@ -1956,6 +2026,8 @@ def arithmetic_expression_candidates(value: str) -> list[str]:
 
 
 def is_arithmetic_expression_candidate(value: str) -> bool:
+    if _ARITHMETIC_EXPRESSION_PATTERN.search(value) is None:
+        return False
     if not re.search(r"(?:\*\*|[+\-*/^×÷])", value):
         return False
     balance = 0
@@ -1981,7 +2053,7 @@ def normalize_calculator_expression(value: str) -> str:
 
 
 def contains_arithmetic_expression(value: str) -> bool:
-    return _ARITHMETIC_EXPRESSION_PATTERN.search(value) is not None
+    return _ARITHMETIC_EXPRESSION_PATTERN.search(re.sub(r"\b\d{4}-\d{2}-\d{2}(?:[tT\s]\d{2}(?::|\s+)\d{2}(?:(?::|\s+)\d{2}(?:\.\d+)?)?(?:[zZ]|[+-]\d{2}(?::|\s+)\d{2})?)?\b", " ", value)) is not None
 
 
 def contains_live_state_intent(value: str) -> bool:
@@ -1994,7 +2066,4 @@ def is_completed_observation(ref: ToolObservationRef) -> bool:
 
 
 def is_live_state_tool_name(tool_name: str) -> bool:
-    return (
-        tool_name in {"datetime.now", "datetime.until", "daemon.status"}
-        or tool_name.startswith("tool.system.read.")
-    )
+    return is_known_live_state_tool_name(tool_name)

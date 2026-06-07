@@ -1,2 +1,6 @@
 app:
   environment: test
+
+runtime_budgets:
+  tool_react_loop:
+    max_tool_calls: 2

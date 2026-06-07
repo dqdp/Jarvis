@@ -19,13 +19,13 @@ _PROCESS_NAME_SEARCH_SCHEMA = "system.process_name_search"
 PROCESS_SHARED_SUFFIX_TOPIC_PATTERNS: tuple[str, ...] = (
     r"^(?:process(?:es)?|service(?:s)?|pid|pids|pgrep|ps)$",
     r"^(?:ollama|postgres(?:ql)?|redis|python|node|java|docker|nginx|uvicorn|gunicorn|jarvis)$",
-    r"^(?:процесс(?:ы)?|служб\w*|пид|pid)$",
+    r"^(?:процесс(?!ор)\w*|служб\w*|пид|pid)$",
 )
 
 PROCESS_TASK_CONTINUATION_CLAUSE_PATTERNS: tuple[str, ...] = (
     r"^(?:is|are|does|do|check|show)\s+(?:the\s+|my\s+)?[\w.-]{2,}(?:\s+process)?\s+(?:running|active|up)\??$",
     r"^(?:is|are|does|do|check|show)\s+(?:the\s+)?(?:process(?:es)?|service(?:s)?)\s+(?:running|active|up)\??$",
-    r"^(?:запущ|работ|проверь|покажи).*(?:процесс|служб|ollama|postgres|redis|python|node|java|docker|nginx|uvicorn|gunicorn|jarvis)$",
+    r"^(?:запущ|работ|проверь|покажи).*(?:процесс(?!ор)|служб|ollama|postgres|redis|python|node|java|docker|nginx|uvicorn|gunicorn|jarvis)$",
 )
 
 _PROCESS_STATUS_PATTERNS: tuple[str, ...] = (
@@ -35,9 +35,9 @@ _PROCESS_STATUS_PATTERNS: tuple[str, ...] = (
     r"\b(?:is|are)\s+(?:the\s+)?(?:ollama|postgres(?:ql)?|redis|python|node|java|docker|nginx|uvicorn|gunicorn|jarvis)\b.*\b(?:running|active|up)\b",
     r"\b(?:is|are)\s+(?:the\s+)?(?!(?:the|my|wi[- ]?fi|wifi|internet|network|vpn)\b)[\w.-]{2,}\s+(?:process\s+)?(?:running|active|up)\b",
     r"\b(?:is|are)\s+(?:the\s+|my\s+)?(?!(?:the|my|wi[- ]?fi|wifi|internet|network|vpn)\b)[\w.-]{2,}(?:\s+[\w.-]{2,}){1,3}\s+(?:running|active|up)\b",
-    r"\b(?:процесс(?:ы)?|пид|pid|pgrep|ps)\b",
-    r"(?:статус|состояни).*(?:процесс|служб)",
-    r"(?:процесс|служб).*(?:запущ|работ|актив|статус|состояни)",
+    r"\b(?:процесс(?!ор)\w*|пид|pid|pgrep|ps)\b",
+    r"(?:статус|состояни).*(?:процесс(?!ор)|служб)",
+    r"(?:процесс(?!ор)|служб).*(?:запущ|работ|актив|статус|состояни)",
     r"(?:запущ|работ).*(?:ollama|postgres(?:ql)?|redis|python|node|java|docker|nginx|uvicorn|gunicorn|jarvis)",
 )
 
@@ -61,7 +61,10 @@ _PROCESS_NAME_STOPWORDS = frozenset({
     "usage", "utilisation", "utilization",
 })
 
-_PROCESS_SCOPED_RESOURCE_PATTERNS: tuple[str, ...] = (r"\b(?:process|service|pid)\b", r"\b(?:процесс|служб|пид)\b")
+_PROCESS_SCOPED_RESOURCE_PATTERNS: tuple[str, ...] = (
+    r"\b(?:process|service|pid)\b",
+    r"\b(?:процесс(?!ор)\w*|служб\w*|пид)\b",
+)
 def matches_process_live_state_intent(value: str) -> bool:
     return _matches_any(_PROCESS_STATUS_PATTERNS, value)
 

@@ -107,11 +107,12 @@ def tool_proposal_output_contract(
             lines.append(missing_evidence_output_contract(missing_evidence_plan))
         elif calculator_evidence_required:
             lines.append(
-                "final_answer is not valid yet. The request asks to compare live-state data "
-                "with an arithmetic expression, so both a relevant live-state observation and "
-                "a matching calculator.evaluate observation are required. Return the missing "
-                "relevant tool_call next; if calculator.evaluate is missing, evaluate only the "
-                "arithmetic expression from the user request."
+                "final_answer is not valid yet. The request asks for live-state data with "
+                "a numeric derivation, so both a relevant live-state observation and a "
+                "matching calculator.evaluate observation are required. Return the missing "
+                "relevant tool_call next; if calculator.evaluate is missing, use either the "
+                "explicit arithmetic expression from the user request or a bounded expression "
+                "grounded in completed typed live-state numeric values."
             )
     else:
         lines.append("No tools are allowed for this request; use final_answer only.")
@@ -120,8 +121,24 @@ def tool_proposal_output_contract(
     if allowed and {"datetime.now", "datetime.until"}.issubset(set(allowed)):
         lines.append(
             "For countdown or time-until questions that depend on the current moment, "
-            "use datetime.now and then datetime.until; do not calculate live time "
-            "intervals in final_answer."
+            "use datetime.until; omit from_iso to let the tool use its own current "
+            "local source timestamp, or pass a completed datetime.now iso value as "
+            "from_iso when that observation is already needed. Do not calculate live "
+            "time intervals in final_answer."
+        )
+    if allowed and {"datetime.now", "calendar.diff"}.issubset(set(allowed)):
+        lines.append(
+            "For elapsed or timestamp-based calendar/time-difference questions that "
+            "depend on the current moment, use datetime.now and then calendar.diff "
+            "with explicit timezone-aware ISO timestamp arguments. If one endpoint is "
+            "the current moment, use the completed datetime.now iso value as that "
+            "endpoint. calendar.diff does not resolve event names or holidays."
+        )
+    elif allowed and {"datetime.now", "datetime.diff"}.issubset(set(allowed)):
+        lines.append(
+            "For elapsed or timestamp-based time-difference questions that depend on "
+            "the current moment, use datetime.now and then datetime.diff with explicit "
+            "ISO timestamp arguments."
         )
     return " ".join(lines)
 
@@ -154,8 +171,9 @@ def missing_evidence_output_contract(plan: LiveStateEvidencePlan) -> str:
         lines.append("A relevant live-state observation is required before final_answer.")
     if "calculator.evaluate" in plan.missing_tool_names:
         lines.append(
-            "If calculator.evaluate is missing, evaluate only the arithmetic expression "
-            "from the user request."
+            "If calculator.evaluate is missing, use either the explicit arithmetic expression "
+            "from the user request or a bounded expression grounded in completed typed "
+            "live-state numeric values."
         )
     return " ".join(lines)
 

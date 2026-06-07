@@ -69,9 +69,10 @@ from assistant_core.runtime.loops.tool_loop_deterministic import (
     deterministic_datetime_now_response as _deterministic_datetime_now_response,
     recover_malformed_safe_builtin_tool_proposal as _recover_malformed_safe_builtin_tool_proposal,
 )
+from assistant_core.runtime.loops.tool_loop_evidence_deferral import (
+    defer_final_answer_if_missing_evidence as _defer_final_answer_if_missing_evidence,
+)
 from assistant_core.runtime.loops.tool_loop_evidence import (
-    LiveStateEvidencePlan,
-    final_answer_deferred_missing_evidence_plan as _final_answer_deferred_missing_evidence_plan,
     final_answer_missing_evidence_plan as _final_answer_missing_evidence_plan,
     failed_observation_exhausts_missing_evidence as _failed_observation_exhausts_missing_evidence,
     is_live_state_tool_name as _is_live_state_tool_name,
@@ -250,7 +251,7 @@ class ToolReactLoop:
                     completed_observations=completed_tool_observations,
                     budget=request.budget,
                 ):
-                    if await self._defer_final_answer_if_missing_evidence(
+                    if await _defer_final_answer_if_missing_evidence(self._append_event,
                         request,
                         request_plan,
                         step_started=step_started,
@@ -361,7 +362,7 @@ class ToolReactLoop:
                         request_plan,
                         completed_observations=completed_tool_observations,
                     ):
-                        if await self._defer_final_answer_if_missing_evidence(
+                        if await _defer_final_answer_if_missing_evidence(self._append_event,
                             request,
                             request_plan,
                             step_started=step_started,
@@ -396,7 +397,7 @@ class ToolReactLoop:
                         request_plan,
                         completed_observations=completed_tool_observations,
                     ):
-                        if await self._defer_final_answer_if_missing_evidence(
+                        if await _defer_final_answer_if_missing_evidence(self._append_event,
                             request,
                             request_plan,
                             step_started=step_started,
@@ -451,7 +452,7 @@ class ToolReactLoop:
                                 completed_observations=completed_tool_observations,
                             ):
                                 raise
-                            if await self._defer_final_answer_if_missing_evidence(
+                            if await _defer_final_answer_if_missing_evidence(self._append_event,
                                 request,
                                 request_plan,
                                 step_started=step_started,
@@ -487,7 +488,7 @@ class ToolReactLoop:
                 if proposal is None:
                     raise RuntimeError("malformed_tool_proposal")
                 if proposal.action == "final_answer":
-                    if await self._defer_final_answer_if_missing_evidence(
+                    if await _defer_final_answer_if_missing_evidence(self._append_event,
                         request,
                         request_plan,
                         step_started=step_started,
@@ -513,7 +514,7 @@ class ToolReactLoop:
                     )
 
                 if _tool_call_signature(proposal) in completed_tool_call_signatures:
-                    if await self._defer_final_answer_if_missing_evidence(
+                    if await _defer_final_answer_if_missing_evidence(self._append_event,
                         request,
                         request_plan,
                         step_started=step_started,
@@ -605,7 +606,7 @@ class ToolReactLoop:
                                 tool_observation_refs=tool_observation_refs,
                                 source_step_id=step_id,
                             )
-                        if await self._defer_final_answer_if_missing_evidence(
+                        if await _defer_final_answer_if_missing_evidence(self._append_event,
                             request,
                             request_plan,
                             step_started=final_step_started,
@@ -673,7 +674,7 @@ class ToolReactLoop:
                     completed_observations=completed_tool_observations,
                     budget=request.budget,
                 ):
-                    if await self._defer_final_answer_if_missing_evidence(
+                    if await _defer_final_answer_if_missing_evidence(self._append_event,
                         request,
                         request_plan,
                         step_started=step_started,
@@ -970,79 +971,6 @@ class ToolReactLoop:
             causation_id=causation_id,
             state=AgentLoopState.FINALIZING,
             step=AgentLoopStep.FINAL,
-        )
-
-    async def _defer_final_answer_if_missing_evidence(
-        self,
-        request: LoopExecutionRequest,
-        request_plan: ToolRequestPlan,
-        *,
-        step_started: EventEnvelope,
-        step_id: str,
-        step_index: int,
-        sensitivity: Sensitivity,
-        tool_observation_refs: list[ToolObservationRef],
-        used_tool_calls: int,
-        event_state: AgentLoopState = AgentLoopState.PROPOSING,
-        event_step: AgentLoopStep = AgentLoopStep.PROPOSAL,
-    ) -> bool:
-        evidence_plan = _final_answer_deferred_missing_evidence_plan(
-            request,
-            request_plan,
-            tool_observation_refs=tool_observation_refs,
-            used_tool_calls=used_tool_calls,
-        )
-        if evidence_plan is None:
-            return False
-        await self._append_deferred_final_answer_step(
-            request,
-            step_started=step_started,
-            step_id=step_id,
-            step_index=step_index,
-            sensitivity=sensitivity,
-            evidence_plan=evidence_plan,
-            event_state=event_state,
-            event_step=event_step,
-        )
-        return True
-
-    async def _append_deferred_final_answer_step(
-        self,
-        request: LoopExecutionRequest,
-        *,
-        step_started: EventEnvelope,
-        step_id: str,
-        step_index: int,
-        sensitivity: Sensitivity,
-        evidence_plan: LiveStateEvidencePlan,
-        event_state: AgentLoopState,
-        event_step: AgentLoopStep,
-    ) -> EventEnvelope:
-        missing_families = sorted(family.value for family in evidence_plan.missing_families)
-        family = (
-            missing_families[0]
-            if missing_families
-            else evidence_plan.family.value
-            if evidence_plan.family is not None
-            else None
-        )
-        return await self._append_event(
-            EventType.AGENT_STEP_COMPLETED,
-            request,
-            payload={
-                "strategy_name": request.strategy_name.value,
-                "step_id": step_id,
-                "step_index": step_index,
-                "action": "final_answer_deferred_missing_evidence",
-                "missing_evidence_family": family,
-                "missing_evidence_families": missing_families,
-                "candidate_tool_names": sorted(evidence_plan.candidate_tool_names),
-                "missing_tool_names": sorted(evidence_plan.missing_tool_names),
-            },
-            causation_id=step_started.event_id,
-            sensitivity=sensitivity,
-            state=event_state,
-            step=event_step,
         )
 
     async def _fail(

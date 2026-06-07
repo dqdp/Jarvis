@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime
 from typing import Any
@@ -11,6 +10,7 @@ from assistant_core.domain.loops import (
     ToolProposal,
     ToolRequestPlan,
 )
+from assistant_core.domain.tools import ToolParseStatus
 from assistant_core.runtime.loops.tool_loop_evidence import is_completed_observation
 
 
@@ -43,19 +43,14 @@ def deterministic_datetime_now_response(
 def datetime_from_datetime_now_observation(
     observation_ref: ToolObservationRef,
 ) -> datetime | None:
-    iso_value: str | None = None
-    if isinstance(observation_ref.structured_content, dict):
-        raw_iso = observation_ref.structured_content.get("iso")
-        if isinstance(raw_iso, str):
-            iso_value = raw_iso
-    if iso_value is None and observation_ref.content.strip():
-        try:
-            payload = json.loads(observation_ref.content)
-        except json.JSONDecodeError:
-            payload = None
-        if isinstance(payload, dict) and isinstance(payload.get("iso"), str):
-            iso_value = payload["iso"]
-    if iso_value is None:
+    if observation_ref.structured_schema != "datetime.now":
+        return None
+    if observation_ref.parse_status not in {ToolParseStatus.PARSED, ToolParseStatus.PARTIAL}:
+        return None
+    if not isinstance(observation_ref.structured_content, dict):
+        return None
+    iso_value = observation_ref.structured_content.get("iso")
+    if not isinstance(iso_value, str):
         return None
     try:
         return datetime.fromisoformat(iso_value.replace("Z", "+00:00"))

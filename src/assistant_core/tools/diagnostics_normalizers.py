@@ -219,19 +219,29 @@ def _normalize_df(stdout: str) -> DiagnosticsStructuredPayload:
     for row in rows[1:]:
         if len(row) < 6:
             continue
-        filesystems.append(
-            {
-                "filesystem": row[0],
-                "mount": row[-1],
-                "size": row[1],
-                "used": row[2],
-                "available": row[3],
-                "used_percent": row[4],
-            }
-        )
+        filesystem = {
+            "filesystem": row[0],
+            "mount": row[-1],
+            "size": row[1],
+            "used": row[2],
+            "available": row[3],
+            "used_percent": row[4],
+        }
+        used_percent = _percent_value(row[4])
+        if used_percent is not None:
+            filesystem["used_percent_value"] = used_percent
+            filesystem["available_percent"] = round(max(0.0, 100.0 - used_percent), 1)
+        filesystems.append(filesystem)
     if not filesystems:
         return _unparsed("system.disk_free")
     return _parsed("system.disk_free", {"filesystems": filesystems, "source": "df"})
+
+
+def _percent_value(value: str) -> float | None:
+    match = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)%\s*", value)
+    if match is None:
+        return None
+    return float(match.group(1))
 
 
 def _normalize_free(stdout: str) -> DiagnosticsStructuredPayload:
@@ -481,12 +491,14 @@ def _normalize_top_cpu(stdout: str) -> DiagnosticsStructuredPayload:
         stdout,
     )
     if macos:
+        idle_percent = float(macos.group(3))
         return _partial(
             "system.cpu_overview",
             {
                 "user_percent": float(macos.group(1)),
                 "system_percent": float(macos.group(2)),
-                "idle_percent": float(macos.group(3)),
+                "idle_percent": idle_percent,
+                "used_percent": round(max(0.0, 100.0 - idle_percent), 1),
                 "source": "top",
             },
             "core_count_unavailable",
@@ -496,12 +508,14 @@ def _normalize_top_cpu(stdout: str) -> DiagnosticsStructuredPayload:
         stdout,
     )
     if linux:
+        idle_percent = float(linux.group(3))
         return _partial(
             "system.cpu_overview",
             {
                 "user_percent": float(linux.group(1)),
                 "system_percent": float(linux.group(2)),
-                "idle_percent": float(linux.group(3)),
+                "idle_percent": idle_percent,
+                "used_percent": round(max(0.0, 100.0 - idle_percent), 1),
                 "source": "top",
             },
             "core_count_unavailable",

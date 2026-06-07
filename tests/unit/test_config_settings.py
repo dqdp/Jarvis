@@ -121,6 +121,18 @@ def test_runtime_budget_memory_augmented_answer_limits() -> None:
     assert budget.allow_autonomous_memory_write is False
 
 
+def test_runtime_budget_tool_react_loop_covers_multi_evidence_diagnostics() -> None:
+    settings = load_settings("default")
+    budget = settings.runtime_budgets["tool_react_loop"]
+
+    assert budget.max_steps >= 6
+    assert budget.max_model_calls >= 6
+    assert budget.max_tool_calls >= 3
+    assert budget.allow_cloud is False
+    assert budget.allow_tools is True
+    assert budget.allow_autonomous_memory_write is False
+
+
 def test_runtime_budget_tool_react_loop_required_for_default_agent_path(monkeypatch) -> None:
     monkeypatch.setenv("JARVIS_RUNTIME_BUDGETS__TOOL_REACT_LOOP__ALLOW_TOOLS", "false")
 

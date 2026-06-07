@@ -128,9 +128,9 @@ runtime_budgets:
     allow_tools: false
     allow_autonomous_memory_write: false
   tool_react_loop:
-    max_steps: 4
-    max_model_calls: 4
-    max_tool_calls: 2
+    max_steps: 6
+    max_model_calls: 6
+    max_tool_calls: 4
     max_wall_time_seconds: 60
     max_context_assembly_seconds: 10
     max_memory_retrieval_seconds: 5

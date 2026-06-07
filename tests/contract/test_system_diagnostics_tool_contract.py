@@ -531,6 +531,8 @@ def test_system_diagnostics_tool_returns_typed_disk_payload(tmp_path: Path) -> N
             "used": "15G",
             "available": "120G",
             "used_percent": "12%",
+            "used_percent_value": 12.0,
+            "available_percent": 88.0,
         },
     ]
 
@@ -603,6 +605,9 @@ def test_system_diagnostics_resources_defaults_to_safe_snapshot_when_arguments_a
     assert executor.calls[0]["cwd"] == tmp_path
     assert policy.requests[0].capability == Capability.TOOL_SYSTEM_READ_RESOURCES
     assert _json_content(observation)["stdout"].startswith("CPU usage:")
+    assert observation.structured_schema == "system.cpu_overview"
+    assert observation.parse_status is ToolParseStatus.PARTIAL
+    assert observation.structured_content["used_percent"] == 20.0
 
 
 def test_system_diagnostics_resources_ignores_model_hint_arguments_for_default_snapshot(

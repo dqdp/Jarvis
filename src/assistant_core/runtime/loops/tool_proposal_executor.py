@@ -8,6 +8,7 @@ from assistant_core.domain.loops import LoopExecutionRequest, ToolObservationRef
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.tools import ToolCallRequest, ToolObservationStatus
 from assistant_core.privacy.redaction import redact_content
+from assistant_core.runtime.loops.tool_loop_time_delta_units import CALENDAR_DIFF_UNITS, DATETIME_DIFF_UNITS
 
 
 class ToolProposalExecutor:
@@ -207,6 +208,10 @@ def _safe_observation_arguments(proposal: ToolProposal) -> dict[str, object]:
         return _safe_calculator_arguments(proposal)
     if proposal.tool_name == "datetime.until":
         return _safe_datetime_until_arguments(proposal)
+    if proposal.tool_name == "datetime.diff":
+        return _safe_datetime_diff_arguments(proposal)
+    if proposal.tool_name == "calendar.diff":
+        return _safe_calendar_diff_arguments(proposal)
     if proposal.tool_name in _SYSTEM_DIAGNOSTICS_TOOL_NAMES:
         return _safe_system_diagnostics_arguments(proposal)
     return {}
@@ -287,12 +292,7 @@ def _safe_calculator_arguments(proposal: ToolProposal) -> dict[str, object]:
 def _safe_datetime_until_arguments(proposal: ToolProposal) -> dict[str, object]:
     target = _safe_short_string_argument(proposal, "target", max_length=100)
     unit = _safe_short_string_argument(proposal, "unit", max_length=20)
-    if target != "next_new_year" or unit not in {
-        "seconds",
-        "minutes",
-        "hours",
-        "days",
-    }:
+    if target != "next_new_year" or unit not in DATETIME_DIFF_UNITS:
         return {}
     safe_arguments: dict[str, object] = {"target": target, "unit": unit}
     if "from_iso" in proposal.arguments:
@@ -300,6 +300,44 @@ def _safe_datetime_until_arguments(proposal: ToolProposal) -> dict[str, object]:
         if from_iso is None:
             return {}
         safe_arguments["from_iso"] = from_iso
+    return safe_arguments
+
+
+def _safe_datetime_diff_arguments(proposal: ToolProposal) -> dict[str, object]:
+    unit = _safe_short_string_argument(proposal, "unit", max_length=20)
+    if unit not in DATETIME_DIFF_UNITS:
+        return {}
+    from_iso = _safe_iso_datetime_argument(proposal, "from_iso", max_length=80)
+    to_iso = _safe_iso_datetime_argument(proposal, "to_iso", max_length=80)
+    if from_iso is None or to_iso is None:
+        return {}
+    safe_arguments: dict[str, object] = {
+        "from_iso": from_iso,
+        "to_iso": to_iso,
+        "unit": unit,
+    }
+    absolute = proposal.arguments.get("absolute")
+    if isinstance(absolute, bool):
+        safe_arguments["absolute"] = absolute
+    return safe_arguments
+
+
+def _safe_calendar_diff_arguments(proposal: ToolProposal) -> dict[str, object]:
+    unit = _safe_short_string_argument(proposal, "unit", max_length=20)
+    if unit not in CALENDAR_DIFF_UNITS:
+        return {}
+    from_iso = _safe_iso_datetime_argument(proposal, "from_iso", max_length=80)
+    to_iso = _safe_iso_datetime_argument(proposal, "to_iso", max_length=80)
+    if from_iso is None or to_iso is None:
+        return {}
+    safe_arguments: dict[str, object] = {
+        "from_iso": from_iso,
+        "to_iso": to_iso,
+        "unit": unit,
+    }
+    absolute = proposal.arguments.get("absolute")
+    if isinstance(absolute, bool):
+        safe_arguments["absolute"] = absolute
     return safe_arguments
 
 
@@ -317,8 +355,10 @@ def _safe_iso_datetime_argument(
     if value is None:
         return None
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
     return value
 

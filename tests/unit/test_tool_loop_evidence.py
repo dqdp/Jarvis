@@ -18,6 +18,7 @@ from assistant_core.runtime.loops.tool_loop_evidence import (
     detect_live_state_family,
     failed_observation_exhausts_missing_evidence,
     final_answer_missing_evidence_plan,
+    is_live_state_tool_name,
     live_state_evidence_plan,
     request_requires_initial_tool_evidence,
     request_needs_live_state_math_evidence,
@@ -92,6 +93,19 @@ def _completed_ref(
         parse_status=parse_status,
         metadata=metadata or {},
         arguments=arguments or {},
+    )
+
+
+def _completed_resource_ref() -> ToolObservationRef:
+    return _completed_ref(
+        "tool.system.read.resources",
+        structured_schema="system.resource_overview",
+        structured_content={
+            "cpu": {"used_percent": 10.2},
+            "memory": {"used_percent": 42.0},
+            "load_average": [1.0, 1.2, 1.4],
+        },
+        parse_status=ToolParseStatus.PARSED,
     )
 
 
@@ -174,6 +188,69 @@ def test_live_state_evidence_plan_requires_datetime_for_current_date() -> None:
 
 
 def test_live_state_evidence_plan_accepts_completed_datetime_until_for_countdown() -> None:
+    payload = {
+        "from_iso": "2026-06-05T20:59:07+03:00",
+        "target": "next_new_year",
+        "unit": "seconds",
+        "value": 18337521,
+    }
+    plan = live_state_evidence_plan(
+        _request("сколько секунд до нового года?"),
+        _plan(
+            "datetime.now",
+            "datetime.until",
+            live_state_tool_names=("datetime.now", "datetime.until"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.until",
+                structured_schema="datetime.until",
+                structured_content=payload,
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset({"datetime.now", "datetime.until"})
+    assert plan.missing_tool_names == frozenset()
+    assert plan.unavailable_reason is None
+
+
+def test_live_state_evidence_plan_keeps_unsupported_countdown_target_unavailable_after_datetime_now() -> None:
+    request = _request("how many seconds until Christmas?")
+    request_plan = _plan(
+        "datetime.now",
+        "datetime.until",
+        live_state_tool_names=("datetime.now", "datetime.until"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-07T15:13:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref,),
+    )
+    final_answer_plan = final_answer_missing_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref,),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset()
+    assert plan.missing_tool_names == frozenset()
+    assert plan.unavailable_reason == "live_state_tool_unavailable"
+    assert final_answer_plan is not None
+    assert final_answer_plan.unavailable_reason == "live_state_tool_unavailable"
+
+
+def test_live_state_evidence_plan_rejects_datetime_until_arguments_without_typed_payload() -> None:
     plan = live_state_evidence_plan(
         _request("сколько секунд до нового года?"),
         _plan(
@@ -191,8 +268,28 @@ def test_live_state_evidence_plan_accepts_completed_datetime_until_for_countdown
 
     assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
     assert plan.candidate_tool_names == frozenset({"datetime.now", "datetime.until"})
-    assert plan.missing_tool_names == frozenset()
-    assert plan.unavailable_reason is None
+    assert plan.missing_tool_names == plan.candidate_tool_names
+
+
+def test_live_state_evidence_plan_rejects_datetime_until_raw_json_payload() -> None:
+    plan = live_state_evidence_plan(
+        _request("сколько секунд до нового года?"),
+        _plan(
+            "datetime.now",
+            "datetime.until",
+            live_state_tool_names=("datetime.now", "datetime.until"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.until",
+                content='{"target": "next_new_year", "unit": "seconds", "value": 18337521}',
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset({"datetime.now", "datetime.until"})
+    assert plan.missing_tool_names == plan.candidate_tool_names
 
 
 @pytest.mark.parametrize(
@@ -312,8 +409,9 @@ def test_live_state_evidence_plan_rejects_datetime_until_unmatched_argument_from
         tool_observation_refs=(
             _completed_ref(
                 "datetime.now",
-                content=f'{{"iso": "{now_iso}"}}',
+                structured_schema="datetime.now",
                 structured_content={"iso": now_iso},
+                parse_status=ToolParseStatus.PARSED,
             ),
             _completed_ref(
                 "datetime.until",
@@ -322,6 +420,13 @@ def test_live_state_evidence_plan_rejects_datetime_until_unmatched_argument_from
                     "unit": "seconds",
                     "from_iso": "2000-01-01T00:00:00+00:00",
                 },
+                structured_schema="datetime.until",
+                structured_content={
+                    "target": "next_new_year",
+                    "unit": "seconds",
+                    "from_iso": "2000-01-01T00:00:00+00:00",
+                },
+                parse_status=ToolParseStatus.PARSED,
                 content=(
                     '{"target": "next_new_year", '
                     '"unit": "seconds", '
@@ -336,7 +441,7 @@ def test_live_state_evidence_plan_rejects_datetime_until_unmatched_argument_from
     assert plan.missing_tool_names == plan.candidate_tool_names
 
 
-def test_live_state_evidence_plan_rejects_datetime_until_unmatched_content_from_iso_even_when_structured_matches() -> None:
+def test_live_state_evidence_plan_accepts_datetime_until_structured_source_when_raw_content_disagrees() -> None:
     now_iso = "2026-06-05T20:59:07+03:00"
     plan = live_state_evidence_plan(
         _request("сколько секунд до нового года?"),
@@ -348,16 +453,24 @@ def test_live_state_evidence_plan_rejects_datetime_until_unmatched_content_from_
         tool_observation_refs=(
             _completed_ref(
                 "datetime.now",
-                content=f'{{"iso": "{now_iso}"}}',
+                structured_schema="datetime.now",
                 structured_content={"iso": now_iso},
+                parse_status=ToolParseStatus.PARSED,
             ),
             _completed_ref(
                 "datetime.until",
+                arguments={
+                    "target": "next_new_year",
+                    "unit": "seconds",
+                    "from_iso": now_iso,
+                },
+                structured_schema="datetime.until",
                 structured_content={
                     "target": "next_new_year",
                     "unit": "seconds",
                     "from_iso": now_iso,
                 },
+                parse_status=ToolParseStatus.PARSED,
                 content=(
                     '{"target": "next_new_year", '
                     '"unit": "seconds", '
@@ -369,7 +482,7 @@ def test_live_state_evidence_plan_rejects_datetime_until_unmatched_content_from_
 
     assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
     assert plan.candidate_tool_names == frozenset({"datetime.now", "datetime.until"})
-    assert plan.missing_tool_names == plan.candidate_tool_names
+    assert plan.missing_tool_names == frozenset()
 
 
 def test_live_state_evidence_plan_accepts_datetime_until_with_matching_datetime_now_source() -> None:
@@ -384,7 +497,9 @@ def test_live_state_evidence_plan_accepts_datetime_until_with_matching_datetime_
         tool_observation_refs=(
             _completed_ref(
                 "datetime.now",
+                structured_schema="datetime.now",
                 structured_content={"iso": now_iso},
+                parse_status=ToolParseStatus.PARSED,
             ),
             _completed_ref(
                 "datetime.until",
@@ -393,6 +508,13 @@ def test_live_state_evidence_plan_accepts_datetime_until_with_matching_datetime_
                     "unit": "seconds",
                     "from_iso": now_iso,
                 },
+                structured_schema="datetime.until",
+                structured_content={
+                    "target": "next_new_year",
+                    "unit": "seconds",
+                    "from_iso": now_iso,
+                },
+                parse_status=ToolParseStatus.PARSED,
             ),
         ),
     )
@@ -402,7 +524,7 @@ def test_live_state_evidence_plan_accepts_datetime_until_with_matching_datetime_
     assert plan.missing_tool_names == frozenset()
 
 
-def test_live_state_evidence_plan_accepts_datetime_until_with_matching_datetime_now_content_source() -> None:
+def test_live_state_evidence_plan_rejects_datetime_until_with_raw_datetime_now_content_source() -> None:
     now_iso = "2026-06-05T20:59:07+03:00"
     plan = live_state_evidence_plan(
         _request("сколько секунд до нового года?"),
@@ -423,16 +545,83 @@ def test_live_state_evidence_plan_accepts_datetime_until_with_matching_datetime_
                     "unit": "seconds",
                     "from_iso": now_iso,
                 },
+                structured_schema="datetime.until",
+                structured_content={
+                    "target": "next_new_year",
+                    "unit": "seconds",
+                    "from_iso": now_iso,
+                },
+                parse_status=ToolParseStatus.PARSED,
             ),
         ),
     )
 
     assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
     assert plan.candidate_tool_names == frozenset({"datetime.now", "datetime.until"})
+    assert plan.missing_tool_names == plan.candidate_tool_names
+
+
+def test_live_state_evidence_plan_requires_datetime_until_after_datetime_now_for_supported_countdown() -> None:
+    plan = live_state_evidence_plan(
+        _request("сколько секунд до нового года?"),
+        _plan(
+            "datetime.now",
+            "datetime.until",
+            live_state_tool_names=("datetime.now", "datetime.until"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.now",
+                structured_schema="datetime.now",
+                structured_content={"iso": "2026-06-07T15:13:00+03:00"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset({"datetime.now", "datetime.until"})
+    assert plan.missing_tool_names == frozenset({"datetime.until"})
+
+
+def test_live_state_evidence_plan_supported_countdown_stays_unavailable_when_datetime_until_is_not_allowed_after_now() -> None:
+    request = _request("сколько секунд до нового года?")
+    request_plan = _plan("datetime.now", live_state_tool_names=("datetime.now",))
+
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.now",
+                structured_schema="datetime.now",
+                structured_content={"iso": "2026-06-07T15:13:00+03:00"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+    final_answer_plan = final_answer_missing_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.now",
+                structured_schema="datetime.now",
+                structured_content={"iso": "2026-06-07T15:13:00+03:00"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset({"datetime.now"})
     assert plan.missing_tool_names == frozenset()
+    assert plan.unavailable_reason == "live_state_tool_unavailable"
+    assert final_answer_plan is not None
+    assert final_answer_plan.unavailable_reason == "live_state_tool_unavailable"
 
 
-def test_live_state_evidence_plan_accepts_completed_datetime_now_for_countdown() -> None:
+def test_live_state_evidence_plan_does_not_clear_unsupported_countdown_with_datetime_now() -> None:
     plan = live_state_evidence_plan(
         _request("how many seconds until Christmas?"),
         _plan(
@@ -440,13 +629,88 @@ def test_live_state_evidence_plan_accepts_completed_datetime_now_for_countdown()
             "datetime.until",
             live_state_tool_names=("datetime.now", "datetime.until"),
         ),
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.now",
+                structured_schema="datetime.now",
+                structured_content={"iso": "2026-06-07T15:13:00+03:00"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset()
+    assert plan.missing_tool_names == frozenset()
+    assert plan.unavailable_reason == "live_state_tool_unavailable"
+
+
+def test_live_state_evidence_plan_rejects_untyped_datetime_now_observation() -> None:
+    plan = live_state_evidence_plan(
+        _request("what time is it now?"),
+        _plan("datetime.now", live_state_tool_names=("datetime.now",)),
         tool_observation_refs=(_completed_ref("datetime.now"),),
     )
 
     assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
     assert plan.candidate_tool_names == frozenset({"datetime.now"})
-    assert plan.missing_tool_names == frozenset()
-    assert plan.unavailable_reason is None
+    assert plan.missing_tool_names == frozenset({"datetime.now"})
+
+
+def test_live_state_evidence_plan_rejects_schema_less_datetime_now_payload() -> None:
+    plan = live_state_evidence_plan(
+        _request("what time is it now?"),
+        _plan("datetime.now", live_state_tool_names=("datetime.now",)),
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.now",
+                structured_content={"iso": "2026-06-07T15:13:00+03:00"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset({"datetime.now"})
+    assert plan.missing_tool_names == frozenset({"datetime.now"})
+
+
+def test_live_state_evidence_plan_rejects_content_embedded_datetime_schema() -> None:
+    plan = live_state_evidence_plan(
+        _request("what time is it now?"),
+        _plan("datetime.now", live_state_tool_names=("datetime.now",)),
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.now",
+                structured_content={
+                    "schema": "datetime.now",
+                    "iso": "2026-06-07T15:13:00+03:00",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset({"datetime.now"})
+    assert plan.missing_tool_names == frozenset({"datetime.now"})
+
+
+def test_live_state_evidence_plan_rejects_raw_json_datetime_now_payload() -> None:
+    plan = live_state_evidence_plan(
+        _request("what time is it now?"),
+        _plan("datetime.now", live_state_tool_names=("datetime.now",)),
+        tool_observation_refs=(
+            _completed_ref(
+                "datetime.now",
+                content='{"iso": "2026-06-07T15:13:00+03:00"}',
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert plan.candidate_tool_names == frozenset({"datetime.now"})
+    assert plan.missing_tool_names == frozenset({"datetime.now"})
 
 
 def test_live_state_evidence_plan_does_not_accept_datetime_until_for_unsupported_countdown_target() -> None:
@@ -461,8 +725,9 @@ def test_live_state_evidence_plan_does_not_accept_datetime_until_for_unsupported
     )
 
     assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
-    assert plan.candidate_tool_names == frozenset({"datetime.now"})
-    assert plan.missing_tool_names == frozenset({"datetime.now"})
+    assert plan.candidate_tool_names == frozenset()
+    assert plan.missing_tool_names == frozenset()
+    assert plan.unavailable_reason == "live_state_tool_unavailable"
 
 
 @pytest.mark.parametrize(
@@ -542,7 +807,11 @@ def test_live_state_evidence_plan_accepts_now_modifier_with_time_or_date_noun(
     )
 
     assert plan.family is expected_family
-    assert plan.candidate_tool_names == frozenset({"datetime.now"})
+    if "рождеств" in user_input.lower() or "christmas" in user_input.lower():
+        assert plan.candidate_tool_names == frozenset()
+        assert plan.unavailable_reason == "live_state_tool_unavailable"
+    else:
+        assert plan.candidate_tool_names == frozenset({"datetime.now"})
 
 
 @pytest.mark.parametrize("user_input", ["сейчас?", "в данный момент?", "right now?"])
@@ -591,6 +860,7 @@ def test_direct_live_state_family_detection_normalizes_like_plan_helper() -> Non
         "show code to get CPU and memory usage",
         "show code for what time is it right now",
         "give me code for what time is it right now",
+        "write Python code to calculate hours between 2025-09-01T00:00:00+03:00 and 2026-06-07T20:17:00+03:00",
         "give me a Python snippet to show current CPU usage",
         "show me a snippet to get current CPU usage",
         "give me a shell script to show current CPU usage",
@@ -1362,7 +1632,7 @@ def test_live_state_evidence_plan_keeps_missing_tools_for_unobserved_family() ->
             "tool.system.read.resources",
             live_state_tool_names=("datetime.now", "tool.system.read.resources"),
         ),
-        tool_observation_refs=(_completed_ref("tool.system.read.resources"),),
+        tool_observation_refs=(_completed_resource_ref(),),
     )
 
     assert plan.families == frozenset(
@@ -1603,7 +1873,7 @@ def test_live_state_evidence_plan_accepts_decimal_calculator_observation() -> No
             live_state_tool_names=("tool.system.read.resources",),
         ),
         tool_observation_refs=(
-            _completed_ref("tool.system.read.resources"),
+            _completed_resource_ref(),
             _completed_ref("calculator.evaluate", arguments={"expression": "1.5*e"}),
         ),
     )
@@ -1621,7 +1891,7 @@ def test_live_state_evidence_plan_accepts_decimal_comma_calculator_observation()
             live_state_tool_names=("tool.system.read.resources",),
         ),
         tool_observation_refs=(
-            _completed_ref("tool.system.read.resources"),
+            _completed_resource_ref(),
             _completed_ref("calculator.evaluate", arguments={"expression": "1,5*e"}),
         ),
     )
@@ -1643,8 +1913,9 @@ def test_live_state_evidence_plan_does_not_leak_new_year_target_from_near_miss_c
 
     assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
     assert plan.families == frozenset({LiveStateEvidenceFamily.CURRENT_TIME})
-    assert plan.candidate_tool_names == frozenset({"datetime.now"})
-    assert plan.missing_tool_names == frozenset({"datetime.now"})
+    assert plan.candidate_tool_names == frozenset()
+    assert plan.missing_tool_names == frozenset()
+    assert plan.unavailable_reason == "live_state_tool_unavailable"
 
 
 def test_live_state_evidence_plan_scopes_countdown_candidates_per_live_family_clause() -> None:
@@ -1674,9 +1945,10 @@ def test_live_state_evidence_plan_scopes_countdown_candidates_per_live_family_cl
         }
     )
     assert plan.candidate_tool_names == frozenset(
-        {"tool.system.read.network", "datetime.now"}
+        {"tool.system.read.network"}
     )
     assert plan.missing_tool_names == plan.candidate_tool_names
+    assert plan.unavailable_reason == "live_state_tool_unavailable"
 
 
 def test_live_state_evidence_plan_does_not_accept_until_for_different_countdown_clause() -> None:
@@ -1690,14 +1962,22 @@ def test_live_state_evidence_plan_does_not_accept_until_for_different_countdown_
         tool_observation_refs=(
             _completed_ref(
                 "datetime.until",
-                arguments={"target": "next_new_year", "unit": "seconds"},
+                structured_schema="datetime.until",
+                structured_content={
+                    "from_iso": "2026-06-05T20:59:07+03:00",
+                    "target": "next_new_year",
+                    "unit": "seconds",
+                    "value": 18337521,
+                },
+                parse_status=ToolParseStatus.PARSED,
             ),
         ),
     )
 
     assert plan.family is LiveStateEvidenceFamily.CURRENT_TIME
     assert plan.candidate_tool_names == frozenset({"datetime.now", "datetime.until"})
-    assert plan.missing_tool_names == frozenset({"datetime.now"})
+    assert plan.missing_tool_names == frozenset()
+    assert plan.unavailable_reason == "live_state_tool_unavailable"
 
 
 def test_live_state_evidence_plan_does_not_accept_until_from_unrelated_live_clause() -> None:
@@ -1726,9 +2006,10 @@ def test_live_state_evidence_plan_does_not_accept_until_from_unrelated_live_clau
 
     assert plan.family is LiveStateEvidenceFamily.SYSTEM_NETWORK
     assert plan.candidate_tool_names == frozenset(
-        {"tool.system.read.network", "datetime.now"}
+        {"tool.system.read.network"}
     )
     assert plan.missing_tool_names == plan.candidate_tool_names
+    assert plan.unavailable_reason == "live_state_tool_unavailable"
 
 
 def test_live_state_evidence_plan_keeps_russian_but_live_clause_in_mixed_near_miss_request() -> None:
@@ -1776,8 +2057,9 @@ def test_live_state_evidence_plan_detects_countdown_and_elapsed_time_requests(
         assert plan.candidate_tool_names == frozenset({"datetime.now", "datetime.until"})
         assert plan.missing_tool_names == plan.candidate_tool_names
     else:
-        assert plan.candidate_tool_names == frozenset({"datetime.now"})
-        assert plan.missing_tool_names == frozenset({"datetime.now"})
+        assert plan.candidate_tool_names == frozenset()
+        assert plan.missing_tool_names == frozenset()
+        assert plan.unavailable_reason == "live_state_tool_unavailable"
 
 
 def test_live_state_evidence_plan_tracks_cpu_overview_hardware_and_resources() -> None:
@@ -1943,7 +2225,7 @@ def test_live_state_evidence_plan_clears_threshold_comparison_with_live_observat
             live_state_tool_names=("tool.system.read.resources",),
         ),
         tool_observation_refs=(
-            _completed_ref("tool.system.read.resources"),
+            _completed_resource_ref(),
             _completed_ref("calculator.evaluate", arguments={"expression": "72 > 80"}),
         ),
     )
@@ -1961,7 +2243,7 @@ def test_live_state_evidence_plan_ignores_threshold_calculator_mismatch_after_li
             live_state_tool_names=("tool.system.read.resources",),
         ),
         tool_observation_refs=(
-            _completed_ref("tool.system.read.resources"),
+            _completed_resource_ref(),
             _completed_ref("calculator.evaluate", arguments={"expression": "72 > 70"}),
         ),
     )
@@ -1982,7 +2264,7 @@ def test_live_state_evidence_plan_ignores_threshold_calculator_non_comparison_af
             live_state_tool_names=("tool.system.read.resources",),
         ),
         tool_observation_refs=(
-            _completed_ref("tool.system.read.resources"),
+            _completed_resource_ref(),
             _completed_ref("calculator.evaluate", arguments={"expression": expression}),
         ),
     )
@@ -2046,7 +2328,7 @@ def test_live_state_evidence_plan_clears_missing_tools_after_matching_observatio
         request,
         request_plan,
         tool_observation_refs=(
-            _completed_ref("tool.system.read.resources"),
+            _completed_resource_ref(),
             _completed_ref("calculator.evaluate", arguments={"expression": "10*e"}),
         ),
     )
@@ -2067,7 +2349,9 @@ def test_live_state_evidence_plan_disk_request_requires_disk_resource_observatio
             _completed_ref(
                 "tool.system.read.resources",
                 arguments={"metric": "cpu_and_memory"},
+                structured_schema="system.resource_overview",
                 structured_content={"cpu": {"used_percent": 10.2}},
+                parse_status=ToolParseStatus.PARSED,
             ),
         ),
     )
@@ -2081,7 +2365,9 @@ def test_live_state_evidence_plan_disk_request_requires_disk_resource_observatio
             _completed_ref(
                 "tool.system.read.resources",
                 arguments={"argv": ["df", "-h"]},
+                structured_schema="system.disk_free",
                 structured_content={"filesystems": []},
+                parse_status=ToolParseStatus.PARSED,
             ),
         ),
     )
@@ -2101,7 +2387,9 @@ def test_live_state_evidence_plan_cpu_and_disk_request_requires_relevant_resourc
             _completed_ref(
                 "tool.system.read.resources",
                 arguments={"argv": ["df", "-h"]},
+                structured_schema="system.disk_free",
                 structured_content={"filesystems": []},
+                parse_status=ToolParseStatus.PARSED,
             ),
         ),
     )
@@ -2115,17 +2403,107 @@ def test_live_state_evidence_plan_cpu_and_disk_request_requires_relevant_resourc
             _completed_ref(
                 "tool.system.read.resources",
                 arguments={"metric": "cpu_and_memory"},
+                structured_schema="system.resource_overview",
                 structured_content={"cpu": {"used_percent": 10.2}},
+                parse_status=ToolParseStatus.PARSED,
             ),
             _completed_ref(
                 "tool.system.read.resources",
                 arguments={"argv": ["df", "-h"]},
+                structured_schema="system.disk_free",
                 structured_content={"filesystems": []},
+                parse_status=ToolParseStatus.PARSED,
             ),
         ),
     )
 
     assert disk_only_plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+    assert complete_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_ru_system_summary_requires_storage_and_network_evidence() -> None:
+    request = _request(
+        "Предоставь сводку данных о текущем состоянии системы, включая нагрузку "
+        "процессора, занятую память, активность сети и процент свободного хранилища."
+    )
+    request_plan = _plan(
+        "tool.system.read.resources",
+        "tool.system.read.network",
+        live_state_tool_names=(
+            "tool.system.read.resources",
+            "tool.system.read.network",
+        ),
+    )
+    initial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    partial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"metric": "cpu_and_memory"},
+                structured_schema="system.resource_overview",
+                structured_content={
+                    "cpu": {"used_percent": 10.2},
+                    "memory": {"used_percent": 62.5},
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["ifconfig"]},
+                structured_schema="system.network_interfaces",
+                structured_content={"interfaces": []},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+    complete_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"metric": "cpu_and_memory"},
+                structured_schema="system.resource_overview",
+                structured_content={
+                    "cpu": {"used_percent": 10.2},
+                    "memory": {"used_percent": 62.5},
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["df", "-h"]},
+                structured_schema="system.disk_free",
+                structured_content={"filesystems": []},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["ifconfig"]},
+                structured_schema="system.network_interfaces",
+                structured_content={"interfaces": []},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert initial_plan.families == frozenset(
+        {
+            LiveStateEvidenceFamily.SYSTEM_RESOURCES,
+            LiveStateEvidenceFamily.SYSTEM_NETWORK,
+        }
+    )
+    assert initial_plan.candidate_tool_names == frozenset(
+        {"tool.system.read.resources", "tool.system.read.network"}
+    )
+    assert partial_plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+    assert partial_plan.missing_families == frozenset({LiveStateEvidenceFamily.SYSTEM_RESOURCES})
     assert complete_plan.missing_tool_names == frozenset()
 
 
@@ -3213,6 +3591,169 @@ def test_live_state_evidence_plan_raw_diagnostics_requires_usable_observation_me
     assert nonzero_plan.missing_tool_names == frozenset({"tool.system.read.network"})
 
 
+@pytest.mark.parametrize(
+    ("user_input", "tool_name"),
+    [
+        ("покажи текущие ресурсы", "tool.system.read.resources"),
+        ("network diagnostics", "tool.system.read.network"),
+        ("hardware metadata", "tool.system.read.hardware"),
+    ],
+)
+def test_live_state_evidence_plan_rejects_raw_success_without_retained_argv(
+    user_input: str,
+    tool_name: str,
+) -> None:
+    plan = live_state_evidence_plan(
+        _request(user_input),
+        _plan(tool_name, live_state_tool_names=(tool_name,)),
+        tool_observation_refs=(
+            _completed_ref(
+                tool_name,
+                content='{"exit_code": 0, "stdout": "ok", "stderr": ""}',
+                metadata={"exit_code": 0},
+            ),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset({tool_name})
+
+
+@pytest.mark.parametrize(
+    ("user_input", "tool_name", "arguments"),
+    [
+        (
+            "покажи текущие ресурсы",
+            "tool.system.read.resources",
+            {"argv": ["top", "-l", "1", "-n", "0"]},
+        ),
+        ("network diagnostics", "tool.system.read.network", {"argv": ["ifconfig"]}),
+        ("hardware metadata", "tool.system.read.hardware", {"argv": ["sw_vers"]}),
+    ],
+)
+def test_live_state_evidence_plan_rejects_raw_success_without_diagnostic_payload(
+    user_input: str,
+    tool_name: str,
+    arguments: dict,
+) -> None:
+    plan = live_state_evidence_plan(
+        _request(user_input),
+        _plan(tool_name, live_state_tool_names=(tool_name,)),
+        tool_observation_refs=(
+            _completed_ref(
+                tool_name,
+                arguments=arguments,
+                content='{"exit_code": 0, "stdout": "", "stderr": ""}',
+                metadata={"exit_code": 0},
+            ),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset({tool_name})
+
+
+def test_live_state_evidence_plan_rejects_raw_success_with_only_diagnostics_envelope_metadata() -> None:
+    plan = live_state_evidence_plan(
+        _request("network diagnostics"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["ifconfig"]},
+                content=(
+                    '{"exit_code": 0, '
+                    '"stdout": "", '
+                    '"stderr": "", '
+                    '"truncated": {"stdout": false, "stderr": false}}'
+                ),
+                metadata={"exit_code": 0},
+            ),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset({"tool.system.read.network"})
+
+
+@pytest.mark.parametrize(
+    "ref_kwargs",
+    [
+        {"structured_content": {"foo": "bar"}},
+        {"content": '{"exit_code": 0, "foo": "bar"}'},
+    ],
+)
+def test_live_state_evidence_plan_rejects_raw_success_with_arbitrary_payload(
+    ref_kwargs: dict,
+) -> None:
+    plan = live_state_evidence_plan(
+        _request("network diagnostics"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["ifconfig"]},
+                metadata={"exit_code": 0},
+                **ref_kwargs,
+            ),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset({"tool.system.read.network"})
+
+
+def test_live_state_evidence_plan_rejects_raw_success_with_structured_stdout_payload() -> None:
+    plan = live_state_evidence_plan(
+        _request("network diagnostics"),
+        _plan(
+            "tool.system.read.network",
+            live_state_tool_names=("tool.system.read.network",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.network",
+                arguments={"argv": ["ifconfig"]},
+                structured_content={"stdout": "en0: status: active"},
+                metadata={"exit_code": 0},
+            ),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset({"tool.system.read.network"})
+
+
+@pytest.mark.parametrize(
+    ("user_input", "tool_name", "wrong_schema"),
+    [
+        ("покажи текущие ресурсы", "tool.system.read.resources", "system.network_interfaces"),
+        ("network diagnostics", "tool.system.read.network", "system.resource_overview"),
+        ("hardware metadata", "tool.system.read.hardware", "system.resource_overview"),
+    ],
+)
+def test_live_state_evidence_plan_broad_system_family_rejects_wrong_typed_schema(
+    user_input: str,
+    tool_name: str,
+    wrong_schema: str,
+) -> None:
+    plan = live_state_evidence_plan(
+        _request(user_input),
+        _plan(tool_name, live_state_tool_names=(tool_name,)),
+        tool_observation_refs=(
+            _completed_ref(
+                tool_name,
+                structured_schema=wrong_schema,
+                structured_content={"status": "ok"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset({tool_name})
+
+
 def test_live_state_evidence_plan_unavailable_sensor_snapshot_does_not_clear_evidence() -> None:
     plan = live_state_evidence_plan(
         _request("what is the CPU temperature?"),
@@ -3232,6 +3773,46 @@ def test_live_state_evidence_plan_unavailable_sensor_snapshot_does_not_clear_evi
     )
 
     assert plan.missing_tool_names == frozenset({"tool.system.read.sensors"})
+
+
+def test_live_state_evidence_plan_generic_sensor_completion_does_not_clear_evidence() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is the CPU temperature?"),
+        _plan(
+            "tool.system.read.sensors",
+            live_state_tool_names=("tool.system.read.sensors",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.sensors",
+                structured_schema=None,
+                structured_content={"stdout": "CPU temperature unavailable"},
+                metadata={"exit_code": 0},
+            ),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset({"tool.system.read.sensors"})
+
+
+def test_live_state_evidence_plan_schema_observation_requires_parse_status() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is current CPU usage?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                structured_schema="system.cpu_overview",
+                structured_content={"used_percent": 20.0},
+                parse_status=None,
+            ),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset({"tool.system.read.resources"})
 
 
 @pytest.mark.parametrize(
@@ -3300,7 +3881,7 @@ def test_live_state_evidence_plan_ip_addr_schema_can_satisfy_local_network_evide
             _completed_ref(
                 "tool.system.read.network",
                 arguments={"argv": ["ip", "addr"]},
-                structured_schema="system.vpn_status",
+                structured_schema="system.network_interfaces",
                 structured_content={"interfaces": []},
                 parse_status=ToolParseStatus.PARSED,
                 metadata={"exit_code": 0},
@@ -3372,7 +3953,9 @@ def test_live_state_evidence_plan_battery_request_requires_battery_hardware_obse
             _completed_ref(
                 "tool.system.read.hardware",
                 arguments={"argv": ["pmset", "-g", "batt"]},
+                structured_schema="system.battery_charge",
                 structured_content={"percentage": 77},
+                parse_status=ToolParseStatus.PARSED,
             ),
         ),
     )
@@ -3406,7 +3989,9 @@ def test_live_state_evidence_plan_hardware_request_requires_ram_observation() ->
             _completed_ref(
                 "tool.system.read.hardware",
                 arguments={"argv": ["sysctl", "-n", "hw.memsize"]},
+                structured_schema="system.memory_overview",
                 structured_content={"bytes": 25_769_803_776},
+                parse_status=ToolParseStatus.PARSED,
             ),
         ),
     )
@@ -3456,7 +4041,9 @@ def test_live_state_evidence_plan_hardware_request_requires_cpu_brand_observatio
             _completed_ref(
                 "tool.system.read.hardware",
                 arguments={"argv": ["sysctl", "-n", "machdep.cpu.brand_string"]},
+                structured_schema="system.cpu_overview",
                 structured_content={"brand": "Apple M4"},
+                parse_status=ToolParseStatus.PARSED,
             ),
         ),
     )
@@ -3536,7 +4123,9 @@ def test_live_state_evidence_plan_os_request_requires_os_hardware_observation() 
             _completed_ref(
                 "tool.system.read.hardware",
                 arguments={"argv": ["sw_vers"]},
+                structured_schema="system.os_version",
                 structured_content={"product_name": "macOS"},
+                parse_status=ToolParseStatus.PARSED,
             ),
         ),
     )
@@ -3623,7 +4212,11 @@ def test_live_state_evidence_plan_ip_request_requires_ip_network_observation() -
             _completed_ref(
                 "tool.system.read.network",
                 arguments={"argv": ["ifconfig"]},
-                structured_content={"stdout": "en0: inet 192.168.1.10 netmask 0xffffff00"},
+                content=(
+                    '{"exit_code": 0, '
+                    '"stdout": "en0: inet 192.168.1.10 netmask 0xffffff00", '
+                    '"stderr": ""}'
+                ),
             ),
         ),
     )
@@ -3672,7 +4265,7 @@ def test_live_state_evidence_plan_internet_status_requires_connectivity_network_
             _completed_ref(
                 "tool.system.read.network",
                 arguments={"argv": ["ifconfig"]},
-                structured_content={"stdout": "en0: status: active"},
+                content='{"exit_code": 0, "stdout": "en0: status: active", "stderr": ""}',
             ),
         ),
     )
@@ -3710,7 +4303,7 @@ def test_live_state_evidence_plan_load_average_requires_load_average_observation
             _completed_ref(
                 "tool.system.read.resources",
                 arguments={"argv": ["uptime"]},
-                structured_content={"stdout": "load averages: 1.20 1.10 1.00"},
+                content='{"exit_code": 0, "stdout": "load averages: 1.20 1.10 1.00", "stderr": ""}',
             ),
         ),
     )
@@ -3732,7 +4325,7 @@ def test_live_state_evidence_plan_clears_parenthesized_calculator_expression() -
         request,
         request_plan,
         tool_observation_refs=(
-            _completed_ref("tool.system.read.resources"),
+            _completed_resource_ref(),
             _completed_ref("calculator.evaluate", arguments={"expression": "10*(e+1)"}),
         ),
     )
@@ -3752,7 +4345,7 @@ def test_live_state_evidence_plan_requires_every_calculator_expression_for_live_
         request,
         request_plan,
         tool_observation_refs=(
-            _completed_ref("tool.system.read.resources"),
+                _completed_resource_ref(),
             _completed_ref("calculator.evaluate", arguments={"expression": "10*e"}),
         ),
     )
@@ -3760,7 +4353,7 @@ def test_live_state_evidence_plan_requires_every_calculator_expression_for_live_
         request,
         request_plan,
         tool_observation_refs=(
-            _completed_ref("tool.system.read.resources"),
+                _completed_resource_ref(),
             _completed_ref("calculator.evaluate", arguments={"expression": "10*e"}),
             _completed_ref("calculator.evaluate", arguments={"expression": "2*pi"}),
         ),
@@ -3771,10 +4364,1836 @@ def test_live_state_evidence_plan_requires_every_calculator_expression_for_live_
     assert complete_plan.missing_tool_names == frozenset()
 
 
-def test_live_state_evidence_plan_reports_unavailable_when_relevant_tool_is_not_allowed() -> None:
+def test_live_state_evidence_plan_requires_calculator_for_derived_countdown_value() -> None:
+    request = _request(
+        "посчитай с точностью до 4 знаков после запятой натуральный логарифм "
+        "количества секунд, оставшихся до Нового года"
+    )
+    request_plan = _plan(
+        "calculator.evaluate",
+        "datetime.now",
+        "datetime.until",
+        live_state_tool_names=("datetime.now", "datetime.until"),
+    )
+    initial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    countdown_ref = _completed_ref(
+        "datetime.until",
+        structured_schema="datetime.until",
+        structured_content={
+            "from_iso": "2026-06-05T20:59:07+03:00",
+            "target": "next_new_year",
+            "unit": "seconds",
+            "seconds": 18337521,
+            "value": 18337521,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    after_countdown_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(countdown_ref,),
+    )
+    wrong_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            countdown_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "ln(123)"}),
+        ),
+    )
+    bare_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            countdown_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "18337521"}),
+        ),
+    )
+    ungrounded_constant_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            countdown_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "ln(18337521 + 999)"}),
+        ),
+    )
+    wrong_operation_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            countdown_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "sqrt(18337521)"}),
+        ),
+    )
+    calculator_before_live_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            _completed_ref(
+                "calculator.evaluate",
+                arguments={"expression": "round(ln(18337521), 4)"},
+            ),
+            countdown_ref,
+        ),
+    )
+    missing_round_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            countdown_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "ln(18337521)"}),
+        ),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            countdown_ref,
+            _completed_ref(
+                "calculator.evaluate",
+                arguments={"expression": "round(ln(18337521), 4)"},
+            ),
+        ),
+    )
+
+    assert initial_plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert initial_plan.families == frozenset(
+        {
+            LiveStateEvidenceFamily.CURRENT_TIME,
+            LiveStateEvidenceFamily.LIVE_STATE_MATH,
+        }
+    )
+    assert initial_plan.candidate_tool_names == frozenset(
+        {"datetime.now", "datetime.until", "calculator.evaluate"}
+    )
+    assert initial_plan.missing_tool_names == initial_plan.candidate_tool_names
+    assert after_countdown_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert wrong_calculator_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert bare_calculator_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert ungrounded_constant_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert wrong_operation_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert calculator_before_live_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert missing_round_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_rejects_model_resolved_event_for_derived_elapsed_duration_value() -> None:
+    request = _request(
+        "корень кубический из количества минут, прошедших с дня благодарения последнего."
+    )
+    request_plan = _plan(
+        "calculator.evaluate",
+        "datetime.diff",
+        "datetime.now",
+        "datetime.until",
+        live_state_tool_names=("datetime.diff", "datetime.now", "datetime.until"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-07T20:17:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    diff_ref = _completed_ref(
+        "datetime.diff",
+        structured_schema="datetime.diff",
+        structured_content={
+            "from_iso": "2025-11-27T00:00:00-05:00",
+            "to_iso": "2026-06-07T20:17:00+03:00",
+            "seconds": 16910220,
+            "minutes": 281837,
+            "hours": 4697.283333333334,
+            "days": 195.7201388888889,
+            "unit": "minutes",
+            "value": 281837,
+            "absolute": False,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    initial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    after_now_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref,),
+    )
+    after_diff_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, diff_ref),
+    )
+    ungrounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            now_ref,
+            diff_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "cbrt(282720)"}),
+        ),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            now_ref,
+            diff_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "cbrt(281837)"}),
+        ),
+    )
+
+    assert initial_plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert LiveStateEvidenceFamily.CURRENT_TIME in initial_plan.families
+    assert initial_plan.candidate_tool_names == frozenset(
+        {"datetime.now", "datetime.diff", "calculator.evaluate"}
+    )
+    assert initial_plan.missing_tool_names == frozenset(
+        {"datetime.now", "datetime.diff", "calculator.evaluate"}
+    )
+    assert after_now_plan.missing_tool_names == frozenset(
+        {"datetime.diff", "calculator.evaluate"}
+    )
+    assert after_diff_plan.missing_tool_names == frozenset(
+        {"datetime.diff", "calculator.evaluate"}
+    )
+    assert ungrounded_calculator_plan.missing_tool_names == frozenset(
+        {"datetime.diff", "calculator.evaluate"}
+    )
+    assert grounded_calculator_plan.missing_tool_names == frozenset(
+        {"datetime.diff", "calculator.evaluate"}
+    )
+
+
+@pytest.mark.parametrize(
+    ("prompt", "from_iso", "unit", "unit_value", "matching_expression", "wrong_base_expression"),
+    [
+        (
+            "Десятичный логарифм количества часов, прошедших с 1 сентября прошлого года.",
+            "2025-09-01T00:00:00+03:00",
+            "hours",
+            6716.283333333334,
+            "log10(6716.283333333334)",
+            "log2(6716.283333333334)",
+        ),
+        (
+            "Десятичный логарифм количества часов, прошедших с "
+            "2025-09-01T00:00:00+03:00.",
+            "2025-09-01T00:00:00+03:00",
+            "hours",
+            6716.283333333334,
+            "log10(6716.283333333334)",
+            "log2(6716.283333333334)",
+        ),
+        (
+            "двоичный логарифм количества часов, прошедших с 11 сентября прошлого года.",
+            "2025-09-11T00:00:00+03:00",
+            "hours",
+            6476.283333333334,
+            "log2(6476.283333333334)",
+            "log10(6476.283333333334)",
+        ),
+        (
+            "Натуральный логарифм количества миллисекунд, прошедших с 1 сентября прошлого года.",
+            "2025-09-01T00:00:00+03:00",
+            "milliseconds",
+            24178620000.0,
+            "ln(24178620000)",
+            "log10(24178620000)",
+        ),
+        (
+            "двоичный логарифм количества недель, прошедших с чемпионата мира по футболу в России 2018 года.",
+            "2018-06-14T18:00:00+03:00",
+            "weeks",
+            416.4421626984127,
+            "log2(416.4421626984127)",
+            "log10(416.4421626984127)",
+        ),
+        (
+            "Десятичный логарифм количества секунд, прошедших со дня рождения Билла Клинтона.",
+            "1946-08-19T00:00:00-05:00",
+            "seconds",
+            2519999820.0,
+            "log10(2519999820)",
+            "log2(2519999820)",
+        ),
+        (
+            "Натуральный логарифм количества дней, прошедших со дня смерти королевы Виктории.",
+            "1901-01-22T00:00:00+00:00",
+            "days",
+            45794.84513888889,
+            "ln(45794.84513888889)",
+            "log10(45794.84513888889)",
+        ),
+        (
+            "Двоичный логарифм количества недель, прошедших со дня отмены крепостного права в России.",
+            "1861-03-03T00:00:00+03:00",
+            "weeks",
+            8626.120833333334,
+            "log2(8626.120833333334)",
+            "log10(8626.120833333334)",
+        ),
+    ],
+)
+def test_live_state_evidence_plan_requires_exact_log_base_for_elapsed_delta_value(
+    prompt: str,
+    from_iso: str,
+    unit: str,
+    unit_value: float,
+    matching_expression: str,
+    wrong_base_expression: str,
+) -> None:
+    request = _request(prompt)
+    request_plan = _plan(
+        "calculator.evaluate",
+        "datetime.diff",
+        "datetime.now",
+        live_state_tool_names=("datetime.diff", "datetime.now"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-07T20:17:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    diff_ref = _completed_ref(
+        "datetime.diff",
+        structured_schema="datetime.diff",
+        structured_content={
+            "from_iso": from_iso,
+            "to_iso": "2026-06-07T20:17:00+03:00",
+            "seconds": 24178620,
+            "milliseconds": 24178620000.0,
+            "minutes": 402977.0,
+            "hours": unit_value if unit == "hours" else 6716.283333333334,
+            "days": 279.84513888888887,
+            "weeks": unit_value if unit == "weeks" else 39.97787698412698,
+            "unit": unit,
+            "value": unit_value,
+            "absolute": False,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    initial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    after_now_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref,),
+    )
+    after_diff_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, diff_ref),
+    )
+    wrong_base_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            now_ref,
+            diff_ref,
+            _completed_ref(
+                "calculator.evaluate",
+                arguments={"expression": wrong_base_expression},
+            ),
+        ),
+    )
+    matching_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            now_ref,
+            diff_ref,
+            _completed_ref(
+                "calculator.evaluate",
+                arguments={"expression": matching_expression},
+            ),
+        ),
+    )
+
+    assert initial_plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert initial_plan.candidate_tool_names == frozenset(
+        {"datetime.now", "datetime.diff", "calculator.evaluate"}
+    )
+    assert initial_plan.missing_tool_names == frozenset(
+        {"datetime.now", "datetime.diff", "calculator.evaluate"}
+    )
+    assert after_now_plan.missing_tool_names == frozenset(
+        {"datetime.diff", "calculator.evaluate"}
+    )
+    if from_iso in prompt:
+        assert after_diff_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+        assert wrong_base_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+        assert matching_plan.missing_tool_names == frozenset()
+    else:
+        unresolved_missing = frozenset({"datetime.diff", "calculator.evaluate"})
+        assert after_diff_plan.missing_tool_names == unresolved_missing
+        assert wrong_base_plan.missing_tool_names == unresolved_missing
+        assert matching_plan.missing_tool_names == unresolved_missing
+
+
+def test_live_state_evidence_plan_rejects_datetime_diff_with_wrong_explicit_elapsed_endpoint() -> None:
+    request = _request(
+        "Десятичный логарифм количества часов, прошедших с "
+        "2025-09-01T00:00:00+03:00."
+    )
+    request_plan = _plan(
+        "calculator.evaluate",
+        "datetime.diff",
+        "datetime.now",
+        live_state_tool_names=("datetime.diff", "datetime.now"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-07T20:17:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    wrong_diff_ref = _completed_ref(
+        "datetime.diff",
+        structured_schema="datetime.diff",
+        structured_content={
+            "from_iso": "2001-01-01T00:00:00+03:00",
+            "to_iso": "2026-06-07T20:17:00+03:00",
+            "hours": 222925.28333333333,
+            "unit": "hours",
+            "value": 222925.28333333333,
+            "absolute": False,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    matching_calculator_ref = _completed_ref(
+        "calculator.evaluate",
+        arguments={"expression": "log10(222925.28333333333)"},
+    )
+
     plan = live_state_evidence_plan(
-        _request("what is current CPU usage?"),
-        _plan("datetime.now", live_state_tool_names=("datetime.now",)),
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, wrong_diff_ref, matching_calculator_ref),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert plan.missing_tool_names == frozenset(
+        {"datetime.diff", "calculator.evaluate"}
+    )
+
+
+def test_live_state_evidence_plan_rejects_calendar_diff_for_datetime_diff_requirement() -> None:
+    request = _request(
+        "Десятичный логарифм количества часов, прошедших с "
+        "2025-09-01T00:00:00+03:00."
+    )
+    request_plan = _plan(
+        "calculator.evaluate",
+        "datetime.diff",
+        "datetime.now",
+        live_state_tool_names=("datetime.diff", "datetime.now"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-07T20:17:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    calendar_diff_ref = _completed_ref(
+        "calendar.diff",
+        structured_schema="calendar.diff",
+        structured_content={
+            "from_iso": "2025-09-01T00:00:00+03:00",
+            "to_iso": "2026-06-07T20:17:00+03:00",
+            "hours": 6716.283333333334,
+            "unit": "hours",
+            "value": 6716.283333333334,
+            "absolute": False,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    calculator_ref = _completed_ref(
+        "calculator.evaluate",
+        arguments={"expression": "log10(6716.283333333334)"},
+    )
+
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, calendar_diff_ref, calculator_ref),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert plan.missing_tool_names == frozenset({"datetime.diff"})
+
+
+@pytest.mark.parametrize(
+    ("prompt", "unit", "unit_value", "matching_payload"),
+    [
+        (
+            "Количество микросекунд между последним днём Благодарения и Пасхой.",
+            "microseconds",
+            11145600000000,
+            {
+                "from_iso": "2025-11-27T00:00:00+00:00",
+                "to_iso": "2026-04-05T00:00:00+00:00",
+                "microseconds": 11145600000000,
+                "milliseconds": 11145600000.0,
+                "seconds": 11145600,
+                "minutes": 185760.0,
+                "hours": 3096.0,
+                "days": 129.0,
+                "weeks": 18.428571428571427,
+                "months": 4,
+                "quarters": 1,
+                "decades": 0,
+                "unit": "microseconds",
+                "value": 11145600000000,
+                "absolute": False,
+            },
+        ),
+        (
+            "Количество месяцев между последним днём Благодарения и Пасхой.",
+            "months",
+            4,
+            {
+                "from_iso": "2025-11-27T00:00:00+00:00",
+                "to_iso": "2026-04-05T00:00:00+00:00",
+                "microseconds": 11145600000000,
+                "milliseconds": 11145600000.0,
+                "seconds": 11145600,
+                "minutes": 185760.0,
+                "hours": 3096.0,
+                "days": 129.0,
+                "weeks": 18.428571428571427,
+                "months": 4,
+                "quarters": 1,
+                "decades": 0,
+                "unit": "months",
+                "value": 4,
+                "absolute": False,
+            },
+        ),
+        (
+            "Количество недель между последним днём Благодарения и Пасхой.",
+            "weeks",
+            18.428571428571427,
+            {
+                "from_iso": "2025-11-27T00:00:00+00:00",
+                "to_iso": "2026-04-05T00:00:00+00:00",
+                "microseconds": 11145600000000,
+                "milliseconds": 11145600000.0,
+                "seconds": 11145600,
+                "minutes": 185760.0,
+                "hours": 3096.0,
+                "days": 129.0,
+                "weeks": 18.428571428571427,
+                "months": 4,
+                "quarters": 1,
+                "decades": 0,
+                "unit": "weeks",
+                "value": 18.428571428571427,
+                "absolute": False,
+            },
+        ),
+        (
+            "Количество дней между последним днём Благодарения и Пасхой.",
+            "days",
+            129.0,
+            {
+                "from_iso": "2025-11-27T00:00:00+00:00",
+                "to_iso": "2026-04-05T00:00:00+00:00",
+                "microseconds": 11145600000000,
+                "milliseconds": 11145600000.0,
+                "seconds": 11145600,
+                "minutes": 185760.0,
+                "hours": 3096.0,
+                "days": 129.0,
+                "weeks": 18.428571428571427,
+                "months": 4,
+                "quarters": 1,
+                "decades": 0,
+                "unit": "days",
+                "value": 129.0,
+                "absolute": False,
+            },
+        ),
+        (
+            "Количество часов между последним днём Благодарения и Пасхой.",
+            "hours",
+            3096.0,
+            {
+                "from_iso": "2025-11-27T00:00:00+00:00",
+                "to_iso": "2026-04-05T00:00:00+00:00",
+                "microseconds": 11145600000000,
+                "milliseconds": 11145600000.0,
+                "seconds": 11145600,
+                "minutes": 185760.0,
+                "hours": 3096.0,
+                "days": 129.0,
+                "weeks": 18.428571428571427,
+                "months": 4,
+                "quarters": 1,
+                "decades": 0,
+                "unit": "hours",
+                "value": 3096.0,
+                "absolute": False,
+            },
+        ),
+        (
+            "Количество минут между последним днём Благодарения и Пасхой.",
+            "minutes",
+            185760.0,
+            {
+                "from_iso": "2025-11-27T00:00:00+00:00",
+                "to_iso": "2026-04-05T00:00:00+00:00",
+                "microseconds": 11145600000000,
+                "milliseconds": 11145600000.0,
+                "seconds": 11145600,
+                "minutes": 185760.0,
+                "hours": 3096.0,
+                "days": 129.0,
+                "weeks": 18.428571428571427,
+                "months": 4,
+                "quarters": 1,
+                "decades": 0,
+                "unit": "minutes",
+                "value": 185760.0,
+                "absolute": False,
+            },
+        ),
+        (
+            "Количество кварталов между последним днём Благодарения и Пасхой.",
+            "quarters",
+            1,
+            {
+                "from_iso": "2025-11-27T00:00:00+00:00",
+                "to_iso": "2026-04-05T00:00:00+00:00",
+                "microseconds": 11145600000000,
+                "milliseconds": 11145600000.0,
+                "seconds": 11145600,
+                "minutes": 185760.0,
+                "hours": 3096.0,
+                "days": 129.0,
+                "weeks": 18.428571428571427,
+                "months": 4,
+                "quarters": 1,
+                "decades": 0,
+                "unit": "quarters",
+                "value": 1,
+                "absolute": False,
+            },
+        ),
+        (
+            "Количество декад между последним днём Благодарения и Пасхой.",
+            "decades",
+            0,
+            {
+                "from_iso": "2025-11-27T00:00:00+00:00",
+                "to_iso": "2026-04-05T00:00:00+00:00",
+                "microseconds": 11145600000000,
+                "milliseconds": 11145600000.0,
+                "seconds": 11145600,
+                "minutes": 185760.0,
+                "hours": 3096.0,
+                "days": 129.0,
+                "weeks": 18.428571428571427,
+                "months": 4,
+                "quarters": 1,
+                "decades": 0,
+                "unit": "decades",
+                "value": 0,
+                "absolute": False,
+            },
+        ),
+    ],
+)
+def test_live_state_evidence_plan_rejects_calendar_diff_for_unresolved_relative_calendar_interval(
+    prompt: str,
+    unit: str,
+    unit_value: int | float,
+    matching_payload: dict,
+) -> None:
+    request = _request(prompt)
+    request_plan = _plan(
+        "calendar.diff",
+        "datetime.now",
+        live_state_tool_names=("calendar.diff", "datetime.now"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-07T20:17:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    wrong_diff_ref = _completed_ref(
+        "calendar.diff",
+        structured_schema="calendar.diff",
+        structured_content={**matching_payload, "unit": "seconds", "value": 11145600},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    matching_diff_ref = _completed_ref(
+        "calendar.diff",
+        structured_schema="calendar.diff",
+        structured_content={
+            **matching_payload,
+            "source_iso": "2026-06-07T20:17:00+03:00",
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    initial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    after_now_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref,),
+    )
+    wrong_unit_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, wrong_diff_ref),
+    )
+    matching_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, matching_diff_ref),
+    )
+
+    assert unit_value == matching_payload["value"]
+    assert unit == matching_payload["unit"]
+    assert initial_plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert initial_plan.candidate_tool_names == frozenset(
+        {"calendar.diff", "datetime.now"}
+    )
+    assert initial_plan.missing_tool_names == frozenset(
+        {"calendar.diff", "datetime.now"}
+    )
+    assert after_now_plan.missing_tool_names == frozenset({"calendar.diff"})
+    assert wrong_unit_plan.missing_tool_names == frozenset({"calendar.diff"})
+    assert matching_plan.missing_tool_names == frozenset({"calendar.diff"})
+
+
+def test_live_state_evidence_plan_does_not_require_now_for_explicit_calendar_interval_endpoints() -> None:
+    request = _request(
+        "Количество микросекунд между последним днём Благодарения "
+        "(2025-11-27T00:00:00+00:00) и Пасхой "
+        "(2026-04-05T00:00:00+00:00)."
+    )
+    request_plan = _plan(
+        "calendar.diff",
+        "datetime.now",
+        live_state_tool_names=("calendar.diff", "datetime.now"),
+    )
+    diff_ref = _completed_ref(
+        "calendar.diff",
+        structured_schema="calendar.diff",
+        structured_content={
+            "from_iso": "2025-11-27T00:00:00+00:00",
+            "to_iso": "2026-04-05T00:00:00+00:00",
+            "unit": "microseconds",
+            "value": 11145600000000,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    initial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    after_diff_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(diff_ref,),
+    )
+
+    assert initial_plan.family is LiveStateEvidenceFamily.CALENDAR_INTERVAL
+    assert initial_plan.evidence_required is True
+    assert initial_plan.candidate_tool_names == frozenset({"calendar.diff"})
+    assert initial_plan.missing_tool_names == frozenset({"calendar.diff"})
+    assert after_diff_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_rejects_calendar_diff_with_wrong_explicit_interval_endpoints() -> None:
+    request = _request(
+        "Количество микросекунд между последним днём Благодарения "
+        "(2025-11-27T00:00:00+00:00) и Пасхой "
+        "(2026-04-05T00:00:00+00:00)."
+    )
+    request_plan = _plan(
+        "calendar.diff",
+        "datetime.now",
+        live_state_tool_names=("calendar.diff", "datetime.now"),
+    )
+    wrong_diff_ref = _completed_ref(
+        "calendar.diff",
+        structured_schema="calendar.diff",
+        structured_content={
+            "from_iso": "2001-01-01T00:00:00+00:00",
+            "to_iso": "2026-04-05T00:00:00+00:00",
+            "unit": "microseconds",
+            "value": 796953600000000,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(wrong_diff_ref,),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CALENDAR_INTERVAL
+    assert plan.candidate_tool_names == frozenset({"calendar.diff"})
+    assert plan.missing_tool_names == frozenset({"calendar.diff"})
+
+
+def test_live_state_evidence_plan_rejects_bare_date_calendar_interval_endpoints() -> None:
+    request = _request("Количество дней между 2025-11-27 и 2026-04-05.")
+    request_plan = _plan(
+        "calendar.diff",
+        live_state_tool_names=("calendar.diff",),
+    )
+    diff_ref = _completed_ref(
+        "calendar.diff",
+        structured_schema="calendar.diff",
+        structured_content={
+            "from_iso": "2025-11-27T00:00:00+00:00",
+            "to_iso": "2026-04-05T00:00:00+00:00",
+            "unit": "days",
+            "value": 129.0,
+            "absolute": False,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(diff_ref,),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.CALENDAR_INTERVAL
+    assert plan.candidate_tool_names == frozenset({"calendar.diff"})
+    assert plan.missing_tool_names == frozenset({"calendar.diff"})
+
+
+def test_live_state_evidence_plan_rejects_model_resolved_relative_event_calendar_interval() -> None:
+    request = _request("Количество микросекунд между последним днём Благодарения и Пасхой.")
+    request_plan = _plan(
+        "calendar.diff",
+        "datetime.now",
+        live_state_tool_names=("calendar.diff", "datetime.now"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-07T20:17:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    diff_without_source_ref = _completed_ref(
+        "calendar.diff",
+        structured_schema="calendar.diff",
+        structured_content={
+            "from_iso": "2025-11-27T00:00:00+00:00",
+            "to_iso": "2026-04-05T00:00:00+00:00",
+            "unit": "microseconds",
+            "value": 11145600000000,
+            "absolute": False,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    diff_wrong_source_ref = _completed_ref(
+        "calendar.diff",
+        structured_schema="calendar.diff",
+        structured_content={
+            "from_iso": "2025-11-27T00:00:00+00:00",
+            "to_iso": "2026-04-05T00:00:00+00:00",
+            "source_iso": "2000-01-01T00:00:00+00:00",
+            "unit": "microseconds",
+            "value": 11145600000000,
+            "absolute": False,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    diff_matching_source_ref = _completed_ref(
+        "calendar.diff",
+        structured_schema="calendar.diff",
+        structured_content={
+            "from_iso": "2025-11-27T00:00:00+00:00",
+            "to_iso": "2026-04-05T00:00:00+00:00",
+            "source_iso": "2026-06-07T20:17:00+03:00",
+            "unit": "microseconds",
+            "value": 11145600000000,
+            "absolute": False,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    after_now_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref,),
+    )
+    without_source_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, diff_without_source_ref),
+    )
+    wrong_source_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, diff_wrong_source_ref),
+    )
+    matching_source_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, diff_matching_source_ref),
+    )
+
+    assert after_now_plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert after_now_plan.candidate_tool_names == frozenset({"calendar.diff", "datetime.now"})
+    assert after_now_plan.missing_tool_names == frozenset({"calendar.diff"})
+    assert without_source_plan.missing_tool_names == frozenset({"calendar.diff"})
+    assert wrong_source_plan.missing_tool_names == frozenset({"calendar.diff"})
+    assert matching_source_plan.missing_tool_names == frozenset({"calendar.diff"})
+
+
+def test_live_state_evidence_plan_requires_calculator_for_derived_calendar_interval() -> None:
+    request = _request(
+        "Десятичный логарифм количества месяцев между последним днём Благодарения и Пасхой."
+    )
+    request_plan = _plan(
+        "calendar.diff",
+        "calculator.evaluate",
+        "datetime.now",
+        live_state_tool_names=("calendar.diff", "datetime.now"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-07T20:17:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    diff_ref = _completed_ref(
+        "calendar.diff",
+        structured_schema="calendar.diff",
+        structured_content={
+            "from_iso": "2025-11-27T00:00:00+00:00",
+            "to_iso": "2026-04-05T00:00:00+00:00",
+            "source_iso": "2026-06-07T20:17:00+03:00",
+            "months": 4,
+            "unit": "months",
+            "value": 4,
+            "absolute": False,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    after_diff_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, diff_ref),
+    )
+    wrong_operation_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            now_ref,
+            diff_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "sqrt(4)"}),
+        ),
+    )
+    matching_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            now_ref,
+            diff_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "log10(4)"}),
+        ),
+    )
+
+    assert after_diff_plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert "calendar.diff" in after_diff_plan.missing_tool_names
+    assert "calendar.diff" in wrong_operation_plan.missing_tool_names
+    assert "calendar.diff" in matching_plan.missing_tool_names
+
+
+def test_live_state_evidence_plan_does_not_clear_invented_elapsed_time_unit() -> None:
+    request = _request(
+        "логарифм количества выдуманных единиц времени, прошедших с 1 сентября прошлого года."
+    )
+    request_plan = _plan(
+        "calculator.evaluate",
+        "datetime.diff",
+        "datetime.now",
+        live_state_tool_names=("datetime.diff", "datetime.now"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-07T20:17:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    seconds_diff_ref = _completed_ref(
+        "datetime.diff",
+        structured_schema="datetime.diff",
+        structured_content={
+            "from_iso": "2025-09-01T00:00:00+03:00",
+            "to_iso": "2026-06-07T20:17:00+03:00",
+            "seconds": 24178620,
+            "unit": "seconds",
+            "value": 24178620,
+            "absolute": False,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    calculator_ref = _completed_ref(
+        "calculator.evaluate",
+        arguments={"expression": "log10(24178620)"},
+    )
+
+    initial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    after_seconds_diff_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, seconds_diff_ref, calculator_ref),
+    )
+
+    assert initial_plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert initial_plan.candidate_tool_names == frozenset(
+        {"datetime.now", "calculator.evaluate"}
+    )
+    assert after_seconds_diff_plan.missing_tool_names == frozenset(
+        {"calculator.evaluate"}
+    )
+
+
+def test_live_state_evidence_plan_rejects_schema_less_datetime_until_for_derived_countdown_value() -> None:
+    request = _request(
+        "посчитай с точностью до 4 знаков после запятой натуральный логарифм "
+        "количества секунд, оставшихся до Нового года"
+    )
+    request_plan = _plan(
+        "calculator.evaluate",
+        "datetime.now",
+        "datetime.until",
+        live_state_tool_names=("datetime.now", "datetime.until"),
+    )
+    datetime_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-05T20:59:07+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    schema_less_countdown_ref = _completed_ref(
+        "datetime.until",
+        structured_content={
+            "from_iso": "2026-06-05T20:59:07+03:00",
+            "target": "next_new_year",
+            "unit": "seconds",
+            "seconds": 18337521,
+            "value": 18337521,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            datetime_ref,
+            schema_less_countdown_ref,
+            _completed_ref(
+                "calculator.evaluate",
+                arguments={"expression": "round(ln(18337521), 4)"},
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert plan.missing_tool_names == frozenset(
+        {"datetime.until", "calculator.evaluate"}
+    )
+
+
+def test_live_state_evidence_plan_requires_calculator_for_prose_arithmetic_transform() -> None:
+    request = _request("current CPU usage plus 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        arguments={"metric": "cpu_and_memory"},
+        structured_schema="system.resource_overview",
+        structured_content={
+            "cpu": {"used_percent": 10.2},
+            "memory": {"used_percent": 62.5},
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    initial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    after_resource_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(resource_ref,),
+    )
+    wrong_operation_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 - 10"}),
+        ),
+    )
+    wrong_live_field_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "62.5 + 10"}),
+        ),
+    )
+    extra_operation_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 10 * 10"}),
+        ),
+    )
+    compensating_operation_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 10 - 10"}),
+        ),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 10"}),
+        ),
+    )
+
+    assert initial_plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert initial_plan.candidate_tool_names == frozenset(
+        {"tool.system.read.resources", "calculator.evaluate"}
+    )
+    assert initial_plan.missing_tool_names == initial_plan.candidate_tool_names
+    assert after_resource_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert wrong_operation_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert wrong_live_field_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert extra_operation_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert compensating_operation_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_rejects_explicit_arithmetic_that_omits_live_value() -> None:
+    request = _request("calculate current CPU usage plus 2+2")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        structured_schema="system.resource_overview",
+        structured_content={"cpu": {"used_percent": 10.2}},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    self_contained_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "2+2"}),
+        ),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2+2+2"}),
+        ),
+    )
+
+    assert self_contained_calculator_plan.missing_tool_names == frozenset(
+        {"calculator.evaluate"}
+    )
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "is the sum of current CPU usage and 10 greater than 20",
+        "is 10 + current CPU usage > 20",
+    ],
+)
+def test_live_state_evidence_plan_requires_calculator_for_transformed_threshold(
+    user_input: str,
+) -> None:
+    request = _request(user_input)
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        structured_schema="system.resource_overview",
+        structured_content={"cpu": {"used_percent": 10.2}},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    after_resource_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(resource_ref,),
+    )
+    wrong_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10 > 20"}),
+        ),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 10"}),
+        ),
+    )
+
+    assert after_resource_plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert after_resource_plan.families == frozenset(
+        {
+            LiveStateEvidenceFamily.SYSTEM_RESOURCES,
+            LiveStateEvidenceFamily.LIVE_STATE_MATH,
+        }
+    )
+    assert after_resource_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert wrong_calculator_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_requires_calculator_for_rhs_transformed_threshold() -> None:
+    request = _request("is 20 less than current CPU usage plus 10?")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        structured_schema="system.resource_overview",
+        structured_content={"cpu": {"used_percent": 10.2}},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    after_resource_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(resource_ref,),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 10"}),
+        ),
+    )
+
+    assert after_resource_plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert after_resource_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_rejects_threshold_constant_as_transform_operand() -> None:
+    request = _request("is current CPU usage plus 10 greater than 20?")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        structured_schema="system.resource_overview",
+        structured_content={"cpu": {"used_percent": 10.2}},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    wrong_threshold_operand_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 20"}),
+        ),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 10"}),
+        ),
+    )
+
+    assert wrong_threshold_operand_plan.missing_tool_names == frozenset(
+        {"calculator.evaluate"}
+    )
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_rejects_process_snapshot_for_global_ru_processor_transform() -> None:
+    request = _request("нагрузка процессора плюс 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        "tool.system.read.process",
+        live_state_tool_names=("tool.system.read.resources", "tool.system.read.process"),
+    )
+    process_ref = _completed_ref(
+        "tool.system.read.process",
+        structured_schema="system.process_resource_snapshot",
+        structured_content={"processes": [{"name": "Chrome", "cpu_percent": 4.2}]},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            process_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "4.2 + 10"}),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert plan.families == frozenset(
+        {
+            LiveStateEvidenceFamily.SYSTEM_RESOURCES,
+            LiveStateEvidenceFamily.LIVE_STATE_MATH,
+        }
+    )
+    assert plan.missing_tool_names == frozenset(
+        {"tool.system.read.resources", "calculator.evaluate"}
+    )
+
+
+def test_live_state_evidence_plan_rejects_future_system_tool_numeric_provenance() -> None:
+    request = _request("current CPU usage plus 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        "tool.system.read.future",
+        live_state_tool_names=("tool.system.read.resources", "tool.system.read.future"),
+    )
+    future_ref = _completed_ref(
+        "tool.system.read.future",
+        structured_schema="system.cpu_overview",
+        structured_content={"used_percent": 10.2},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            future_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 10"}),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset(
+        {"tool.system.read.resources", "calculator.evaluate"}
+    )
+
+
+def test_live_state_evidence_plan_requires_each_requested_live_numeric_operand() -> None:
+    request = _request("add current CPU usage and current memory usage")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        arguments={"metric": "cpu_and_memory"},
+        structured_schema="system.resource_overview",
+        structured_content={
+            "cpu": {"used_percent": 10.2},
+            "memory": {"used_percent": 62.5},
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    duplicated_cpu_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 10.2"}),
+        ),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 62.5"}),
+        ),
+    )
+
+    assert duplicated_cpu_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_rejects_wrong_same_scope_live_numeric_field() -> None:
+    request = _request("current CPU usage plus 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        arguments={"argv": ["top", "-l", "1", "-n", "0"]},
+        structured_schema="system.cpu_overview",
+        structured_content={
+            "idle_percent": 89.8,
+            "used_percent": 10.2,
+            "user_percent": 6.1,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    wrong_field_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "89.8 + 10"}),
+        ),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 10"}),
+        ),
+    )
+
+    assert wrong_field_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_accepts_cpu_load_transform_from_usage_payload() -> None:
+    request = _request("current CPU load plus 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        structured_schema="system.cpu_overview",
+        structured_content={"used_percent": 10.2},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 10"}),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_rejects_wrong_memory_numeric_field() -> None:
+    request = _request("current memory usage plus 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        structured_schema="system.memory_overview",
+        structured_content={
+            "available_percent": 37.5,
+            "used_percent": 62.5,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    wrong_field_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "37.5 + 10"}),
+        ),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "62.5 + 10"}),
+        ),
+    )
+
+    assert wrong_field_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_rejects_unparsed_live_numeric_payload_for_calculator() -> None:
+    request = _request("current memory usage plus 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        structured_schema="system.memory_overview",
+        structured_content={"used_percent": 62.5},
+        parse_status=ToolParseStatus.UNPARSED,
+    )
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "62.5 + 10"}),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset({"tool.system.read.resources", "calculator.evaluate"})
+
+
+def test_live_state_evidence_plan_rejects_wrong_disk_numeric_field() -> None:
+    request = _request("available disk percent plus 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        structured_schema="system.disk_free",
+        structured_content={
+            "filesystems": [
+                {"mount": "/", "available_percent": 88.0, "used_percent_value": 12.0}
+            ],
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    wrong_field_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "12 + 10"}),
+        ),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "88 + 10"}),
+        ),
+    )
+
+    assert wrong_field_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_rejects_process_memory_for_process_cpu_transform() -> None:
+    request = _request("Chrome CPU usage plus 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.process",
+        live_state_tool_names=("tool.system.read.process",),
+    )
+    process_ref = _completed_ref(
+        "tool.system.read.process",
+        structured_schema="system.process_resource_snapshot",
+        structured_content={
+            "processes": [
+                {"name": "Chrome", "cpu_percent": 4.2, "memory_percent": 11.7}
+            ],
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    wrong_field_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            process_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "11.7 + 10"}),
+        ),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            process_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "4.2 + 10"}),
+        ),
+    )
+
+    assert wrong_field_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_rejects_other_process_numeric_for_process_transform() -> None:
+    request = _request("Chrome CPU usage plus 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.process",
+        live_state_tool_names=("tool.system.read.process",),
+    )
+    process_ref = _completed_ref(
+        "tool.system.read.process",
+        structured_schema="system.process_resource_snapshot",
+        structured_content={
+            "processes": [
+                {"name": "Chrome", "cpu_percent": 4.2},
+                {"name": "Safari", "cpu_percent": 40.0},
+            ],
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    wrong_process_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            process_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "40 + 10"}),
+        ),
+    )
+    grounded_calculator_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            process_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "4.2 + 10"}),
+        ),
+    )
+
+    assert wrong_process_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_accepts_process_cpu_load_transform_from_cpu_percent() -> None:
+    request = _request("Chrome CPU load plus 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.process",
+        live_state_tool_names=("tool.system.read.process",),
+    )
+    process_ref = _completed_ref(
+        "tool.system.read.process",
+        structured_schema="system.process_resource_snapshot",
+        structured_content={"processes": [{"name": "Chrome", "cpu_percent": 4.2}]},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            process_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "4.2 + 10"}),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_detects_symbolic_live_numeric_transform() -> None:
+    request = _request("current CPU usage + 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert plan.families == frozenset(
+        {
+            LiveStateEvidenceFamily.SYSTEM_RESOURCES,
+            LiveStateEvidenceFamily.LIVE_STATE_MATH,
+        }
+    )
+    assert plan.missing_tool_names == frozenset(
+        {"tool.system.read.resources", "calculator.evaluate"}
+    )
+
+
+def test_live_state_evidence_plan_accepts_symbolic_live_numeric_transform_calculator() -> None:
+    request = _request("current CPU usage + 10")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        structured_schema="system.resource_overview",
+        structured_content={"cpu": {"used_percent": 10.2}},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "10.2 + 10"}),
+        ),
+    )
+
+    assert plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_accepts_average_live_numeric_transform() -> None:
+    request = _request("average current CPU usage and current memory usage")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+    resource_ref = _completed_ref(
+        "tool.system.read.resources",
+        arguments={"metric": "cpu_and_memory"},
+        structured_schema="system.resource_overview",
+        structured_content={
+            "cpu": {"used_percent": 20.0},
+            "memory": {"used_percent": 60.0},
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+    initial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    after_resource_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(resource_ref,),
+    )
+    valid_average_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            resource_ref,
+            _completed_ref("calculator.evaluate", arguments={"expression": "(20 + 60) / 2"}),
+        ),
+    )
+
+    assert initial_plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert initial_plan.missing_tool_names == frozenset(
+        {"tool.system.read.resources", "calculator.evaluate"}
+    )
+    assert after_resource_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert valid_average_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_keeps_aggregate_memory_transform_out_of_process_scope() -> None:
+    request = _request("add 10 to current memory percent")
+    request_plan = _plan(
+        "calculator.evaluate",
+        "tool.system.read.resources",
+        live_state_tool_names=("tool.system.read.resources",),
+    )
+
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert plan.families == frozenset(
+        {
+            LiveStateEvidenceFamily.SYSTEM_RESOURCES,
+            LiveStateEvidenceFamily.LIVE_STATE_MATH,
+        }
+    )
+    assert LiveStateEvidenceFamily.SYSTEM_PROCESS not in plan.families
+    assert plan.candidate_tool_names == frozenset(
+        {"tool.system.read.resources", "calculator.evaluate"}
+    )
+    assert plan.missing_tool_names == plan.candidate_tool_names
+
+
+def test_live_state_evidence_plan_does_not_treat_logarithm_as_logs_history() -> None:
+    plan = live_state_evidence_plan(
+        _request("calculate the natural logarithm of the number of seconds until New Year"),
+        _plan(
+            "calculator.evaluate",
+            "datetime.now",
+            "datetime.until",
+            live_state_tool_names=("datetime.now", "datetime.until"),
+        ),
+        tool_observation_refs=(),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+    assert plan.candidate_tool_names == frozenset(
+        {"datetime.now", "datetime.until", "calculator.evaluate"}
+    )
+    assert plan.missing_tool_names == plan.candidate_tool_names
+
+
+def test_live_state_evidence_plan_reports_unavailable_when_relevant_tool_is_not_allowed() -> None:
+    request = _request("what is current CPU usage?")
+    request_plan = _plan("datetime.now", live_state_tool_names=("datetime.now",))
+
+    plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    final_answer_plan = final_answer_missing_evidence_plan(
+        request,
+        request_plan,
         tool_observation_refs=(),
     )
 
@@ -3783,6 +6202,8 @@ def test_live_state_evidence_plan_reports_unavailable_when_relevant_tool_is_not_
     assert plan.candidate_tool_names == frozenset()
     assert plan.missing_tool_names == frozenset()
     assert plan.unavailable_reason == "live_state_tool_unavailable"
+    assert final_answer_plan is not None
+    assert final_answer_plan.unavailable_reason == "live_state_tool_unavailable"
 
 
 def test_live_state_math_plan_does_not_report_calculator_only_candidate_when_live_tool_unavailable() -> None:
@@ -3806,7 +6227,7 @@ def test_live_state_math_plan_stays_blocked_when_calculator_is_unavailable_after
             "tool.system.read.resources",
             live_state_tool_names=("tool.system.read.resources",),
         ),
-        tool_observation_refs=(_completed_ref("tool.system.read.resources"),),
+        tool_observation_refs=(_completed_resource_ref(),),
     )
 
     assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
@@ -3814,6 +6235,134 @@ def test_live_state_math_plan_stays_blocked_when_calculator_is_unavailable_after
     assert plan.candidate_tool_names == frozenset({"tool.system.read.resources"})
     assert plan.missing_tool_names == frozenset({"calculator.evaluate"})
     assert plan.unavailable_reason == "live_state_tool_unavailable"
+
+
+def test_live_state_evidence_plan_rejects_untyped_resource_observation_for_cpu() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is current CPU usage?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(_completed_ref("tool.system.read.resources"),),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.resources"})
+    assert plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+
+
+def test_live_state_evidence_plan_rejects_schema_less_resource_payload_for_cpu() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is current CPU usage?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                structured_content={"cpu": {"used_percent": 10.2}},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.resources"})
+    assert plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+
+
+def test_live_state_evidence_plan_rejects_content_embedded_resource_schema_for_cpu() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is current CPU usage?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                structured_content={
+                    "schema": "system.resource_overview",
+                    "cpu": {"used_percent": 10.2},
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.resources"})
+    assert plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+
+
+def test_live_state_evidence_plan_rejects_raw_json_resource_shape_for_cpu() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is current CPU usage?"),
+        _plan(
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                content='{"cpu": {"used_percent": 10.2}, "source": "fake"}',
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.resources"})
+    assert plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+
+
+def test_live_state_evidence_plan_rejects_untyped_daemon_status_observation() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is the daemon status?"),
+        _plan("daemon.status", live_state_tool_names=("daemon.status",)),
+        tool_observation_refs=(_completed_ref("daemon.status"),),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.DAEMON_STATUS
+    assert plan.candidate_tool_names == frozenset({"daemon.status"})
+    assert plan.missing_tool_names == frozenset({"daemon.status"})
+
+
+def test_live_state_evidence_plan_rejects_schema_less_daemon_status_payload() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is the daemon status?"),
+        _plan("daemon.status", live_state_tool_names=("daemon.status",)),
+        tool_observation_refs=(
+            _completed_ref(
+                "daemon.status",
+                structured_content={"status": "ok"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.DAEMON_STATUS
+    assert plan.candidate_tool_names == frozenset({"daemon.status"})
+    assert plan.missing_tool_names == frozenset({"daemon.status"})
+
+
+def test_live_state_evidence_plan_rejects_content_embedded_daemon_status_schema() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is the daemon status?"),
+        _plan("daemon.status", live_state_tool_names=("daemon.status",)),
+        tool_observation_refs=(
+            _completed_ref(
+                "daemon.status",
+                structured_content={"schema": "daemon.status", "status": "ok"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.DAEMON_STATUS
+    assert plan.candidate_tool_names == frozenset({"daemon.status"})
+    assert plan.missing_tool_names == frozenset({"daemon.status"})
 
 
 def test_failed_live_state_observation_exhausts_single_subtype_evidence() -> None:
@@ -3909,6 +6458,11 @@ def test_legacy_live_state_intent_wrapper_keeps_existing_math_guard_behavior() -
         )
         is True
     )
+
+
+def test_live_state_tool_name_helper_uses_explicit_allowlist() -> None:
+    assert is_live_state_tool_name("tool.system.read.resources") is True
+    assert is_live_state_tool_name("tool.system.read.future") is False
 
 
 def test_legacy_live_state_math_guard_uses_typed_near_miss_detection() -> None:

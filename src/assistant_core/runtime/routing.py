@@ -60,7 +60,14 @@ class CapabilityRoutingRegistry:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> CapabilityRoutingRegistry:
-        enabled = {"datetime.now", "datetime.until", "calculator.evaluate", "daemon.status"}
+        enabled = {
+            "calendar.diff",
+            "datetime.diff",
+            "datetime.now",
+            "datetime.until",
+            "calculator.evaluate",
+            "daemon.status",
+        }
         if "tool.shell.read" in settings.capabilities:
             enabled.add("tool.shell.read.project")
         system_read = settings.capabilities.get("tool.system.read", {})
@@ -117,6 +124,36 @@ class CapabilityRoutingRegistry:
 
 _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
     RoutingToolDescriptor(
+        tool_name="calendar.diff",
+        capability=Capability.TOOL_SAFE,
+        intent_families=frozenset({IntentFamily.SAFE_BUILTIN_TOOL}),
+        description=(
+            "Use for differences between two known timezone-aware ISO timestamps, "
+            "including calendar units such as months, quarters and decades. Provide "
+            "explicit from_iso/to_iso; this tool does not resolve event names or holidays."
+        ),
+        requires_live_state=True,
+        requires_execution=True,
+        requires_write=False,
+        risk_classes=frozenset({RiskClass.SAFE}),
+        sensitivity_ceiling=Sensitivity.PROJECT,
+    ),
+    RoutingToolDescriptor(
+        tool_name="datetime.diff",
+        capability=Capability.TOOL_SAFE,
+        intent_families=frozenset({IntentFamily.SAFE_BUILTIN_TOOL}),
+        description=(
+            "Use for elapsed time between two known timezone-aware ISO timestamps "
+            "in microseconds through weeks. Provide explicit from_iso/to_iso; this "
+            "tool does not resolve event names or holidays."
+        ),
+        requires_live_state=True,
+        requires_execution=True,
+        requires_write=False,
+        risk_classes=frozenset({RiskClass.SAFE}),
+        sensitivity_ceiling=Sensitivity.PROJECT,
+    ),
+    RoutingToolDescriptor(
         tool_name="datetime.now",
         capability=Capability.TOOL_SAFE,
         intent_families=frozenset({IntentFamily.SAFE_BUILTIN_TOOL}),
@@ -131,7 +168,11 @@ _DEFAULT_TOOL_DESCRIPTORS: tuple[RoutingToolDescriptor, ...] = (
         tool_name="datetime.until",
         capability=Capability.TOOL_SAFE,
         intent_families=frozenset({IntentFamily.SAFE_BUILTIN_TOOL}),
-        description="deterministic time interval calculation for supported calendar targets",
+        description=(
+            "Use for countdowns to supported calendar targets such as next_new_year. "
+            "Omit from_iso to use the tool's current local timestamp, or pass a "
+            "timezone-aware from_iso explicitly."
+        ),
         requires_live_state=True,
         requires_execution=True,
         requires_write=False,

@@ -46,8 +46,10 @@ from assistant_core.storage.memory_store import PostgresMemoryStore
 from assistant_core.storage.migrations import run_migrations
 from assistant_core.storage.model_invocations import PostgresModelInvocationRepository
 from assistant_core.tools.builtin import (
+    calendar_diff_tool,
     calculator_tool,
     daemon_status_tool,
+    datetime_diff_tool,
     datetime_now_tool,
     datetime_until_tool,
 )
@@ -131,6 +133,8 @@ def create_runtime_app(
             fake_echo_tool(),
             fake_fail_tool(),
             fake_timeout_tool(),
+            calendar_diff_tool(),
+            datetime_diff_tool(),
             datetime_now_tool(),
             datetime_until_tool(),
             calculator_tool(),

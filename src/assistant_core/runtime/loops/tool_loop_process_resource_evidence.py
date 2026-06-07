@@ -7,8 +7,8 @@ PROCESS_RESOURCE_SCHEMA = "system.process_resource_snapshot"
 _PROCESS_RESOURCE_PATTERNS: tuple[str, ...] = (
     r"\b(?:cpu|processor|memory|ram|load|usage|utili[sz]ation|percent|%)\b.*\b(?:process|service|pid)\b",
     r"\b(?:process|service|pid)\b.*\b(?:cpu|processor|memory|ram|load|usage|utili[sz]ation|percent|%)\b",
-    r"(?:процесс|служб|пид).*(?:cpu|процессор|памят|нагруз|использ|утилизац)",
-    r"(?:cpu|процессор|памят|нагруз|использ|утилизац).*(?:процесс|служб|пид)",
+    r"(?:процесс(?!ор)|служб|пид).*(?:cpu|процессор|памят|нагруз|использ|утилизац)",
+    r"(?:cpu|процессор|памят|нагруз|использ|утилизац).*(?:процесс(?!ор)|служб|пид)",
 )
 _PROCESS_NAME_WORD = r"(?!(?:process|service|app|application|cpu|processor|memory|ram|usage)\b)[\w.-]{2,}"
 _PROCESS_NAME_TOKEN = rf"{_PROCESS_NAME_WORD}(?:\s+{_PROCESS_NAME_WORD}){{0,3}}"
@@ -27,16 +27,25 @@ _PROCESS_RESOURCE_METRIC_PATTERNS: tuple[str, ...] = (
     r"\b(?:usage|percent|%)\b",
     r"\b(?:использ|процент)\b",
 )
+_PROCESS_RESOURCE_PID_PATTERNS: tuple[str, ...] = (
+    r"\bpid\s+(?P<pid>\d+)\b", r"\bprocess\s+(?P<pid>\d+)\b", r"\bпид\s+(?P<pid>\d+)\b",
+)
 _PROCESS_CPU_KEYS = frozenset({"cpu", "cpu_percent", "cpu_usage", "cpu_usage_percent", "load_percent"})
 _PROCESS_MEMORY_KEYS = frozenset({"memory", "memory_percent", "memory_usage", "memory_usage_percent", "rss", "rss_bytes"})
 _PROCESS_NAME_STOPWORDS = frozenset(
     {
-        "are", "battery", "computer", "cpu", "current", "daemon", "device", "disk", "global", "how",
-        "is", "laptop", "load", "local", "mac", "macbook", "machine", "memory", "much", "my",
-        "network", "overall", "process", "processor", "ram", "runtime", "service", "show", "system",
-        "the", "total", "usage", "vpn", "what",
+        "add", "and", "are", "average", "avg", "battery", "computer", "cpu", "current", "daemon", "device", "disk",
+        "divide", "divided", "global", "how", "is", "laptop", "load", "local", "mac", "macbook",
+        "machine", "mean", "memory", "minus", "much", "multiply", "my", "network", "or", "overall",
+        "of", "percent", "plus", "process", "processor", "ram", "runtime", "service", "show", "subtract",
+        "sum", "system", "than", "the", "times", "to", "total", "usage", "vpn", "what",
     },
 )
+_NON_PROCESS_RESOURCE_NAME_TOKENS = frozenset({
+    "add", "and", "average", "avg", "calculate", "compute", "derive", "divide",
+    "divided", "evaluate", "find", "mean", "minus", "multiply", "or", "percent",
+    "greater", "of", "plus", "subtract", "sum", "than", "times", "to",
+})
 _LIVE_SUFFIX_PATTERN = re.compile(r"\s+(?:right\s+now|now|currently|сейчас|в\s+данн\w*\s+момент)\s*$", re.IGNORECASE)
 
 
@@ -62,10 +71,34 @@ def requested_process_resource_names(request_text: str) -> frozenset[str]:
         for match in re.finditer(pattern, request_text, flags=re.IGNORECASE):
             raw_name = _LIVE_SUFFIX_PATTERN.sub("", match.group("name"))
             name = _normalize_process_name(raw_name)
-            tokens = {_normalize_process_name(part) for part in raw_name.split()}
-            if name and name not in _PROCESS_NAME_STOPWORDS and not tokens.issubset(_PROCESS_NAME_STOPWORDS):
+            if _is_valid_process_resource_name(raw_name, name):
                 names.add(name)
     return frozenset(names)
+
+
+def requested_process_resource_pids(request_text: str) -> frozenset[int]:
+    pids: set[int] = set()
+    for pattern in _PROCESS_RESOURCE_PID_PATTERNS:
+        for match in re.finditer(pattern, request_text, flags=re.IGNORECASE):
+            pids.add(int(match.group("pid")))
+    return frozenset(pids)
+
+
+def _is_valid_process_resource_name(raw_name: str, name: str) -> bool:
+    tokens = frozenset(
+        token
+        for token in (_normalize_process_name(part) for part in raw_name.split())
+        if token
+    )
+    if not name or name in _PROCESS_NAME_STOPWORDS or not tokens:
+        return False
+    if tokens.issubset(_PROCESS_NAME_STOPWORDS):
+        return False
+    if tokens.intersection(_NON_PROCESS_RESOURCE_NAME_TOKENS):
+        return False
+    if any(token.isdecimal() for token in tokens):
+        return False
+    return True
 
 
 def process_resource_payload_matches_request(
@@ -84,6 +117,18 @@ def process_resource_payload_matches_request(
         )
         for item in processes
     )
+
+
+def process_resource_items_matching_request(
+    content: dict,
+    *,
+    requested_names: frozenset[str],
+    requested_pids: frozenset[int],
+) -> tuple[dict, ...]:
+    processes = _process_items(content, "processes") or _process_items(content, "matches")
+    if not requested_names and not requested_pids:
+        return ()
+    return tuple(item for item in processes if _process_item_matches_request(item, requested_names, requested_pids))
 
 
 def _process_items(content: dict, key: str) -> tuple[dict, ...]:
@@ -147,11 +192,7 @@ def _normalize_process_name(value: str) -> str:
 def _process_name_variants(value: str) -> frozenset[str]:
     normalized = _normalize_process_name(value)
     variants = {normalized} if normalized else set()
-    tokens = [
-        token
-        for token in (_normalize_process_name(part) for part in value.split())
-        if token
-    ]
+    tokens = [token for token in (_normalize_process_name(part) for part in value.split()) if token]
     if len(tokens) > 1:
         variants.add(tokens[-1])
     first_segment = re.split(r"[-_.]", normalized, maxsplit=1)[0]
@@ -168,9 +209,8 @@ def _matches_any(patterns: tuple[str, ...], value: str) -> bool:
 
 
 __all__ = [
-    "PROCESS_RESOURCE_SCHEMA",
-    "process_resource_payload_matches_request",
-    "requested_process_resource_names",
-    "required_process_resource_metrics",
+    "PROCESS_RESOURCE_SCHEMA", "process_resource_payload_matches_request",
+    "process_resource_items_matching_request", "requested_process_resource_names",
+    "requested_process_resource_pids", "required_process_resource_metrics",
     "requires_process_resource_payload",
 ]

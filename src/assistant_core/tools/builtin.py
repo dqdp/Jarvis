@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import ast
 import math
+from calendar import monthrange
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from assistant_core.domain.policy import Capability, RiskClass
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolSpec
+from assistant_core.domain.tools import ToolInvocationResult, ToolParseStatus, ToolSpec
 
 
 @dataclass
@@ -27,6 +28,8 @@ _CALCULATOR_MAX_ABS_RESULT = 1e308
 _CALCULATOR_MAX_EXPONENT = 256
 _CALCULATOR_MAX_FACTORIAL = 100
 _CALCULATOR_MAX_ROUND_DIGITS = 12
+_TIME_DELTA_UNITS = ["microseconds", "milliseconds", "seconds", "minutes", "hours", "days", "weeks"]
+_CALENDAR_DIFF_UNITS = [*_TIME_DELTA_UNITS, "months", "quarters", "decades"]
 
 _CALCULATOR_CONSTANTS: dict[str, float] = {
     "pi": math.pi,
@@ -81,7 +84,7 @@ def datetime_now_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
             sensitivity_ceiling=Sensitivity.PROJECT,
             enabled=enabled,
         ),
-        handler=lambda _arguments: {"iso": datetime.now().astimezone().isoformat()},
+        handler=_datetime_now,
     )
 
 
@@ -90,7 +93,11 @@ def datetime_until_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
         spec=ToolSpec(
             name="datetime.until",
             display_name="Time Until",
-            description="Computes a deterministic time interval from a source timestamp to a supported target.",
+            description=(
+                "Use for countdowns to supported targets. If from_iso is omitted, "
+                "the tool uses its current local timestamp; otherwise from_iso must "
+                "be a timezone-aware ISO timestamp."
+            ),
             capability=Capability.TOOL_SAFE,
             risk_classes=frozenset({RiskClass.SAFE}),
             input_schema={
@@ -100,7 +107,7 @@ def datetime_until_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
                     "target": {"type": "string", "enum": ["next_new_year"]},
                     "unit": {
                         "type": "string",
-                        "enum": ["seconds", "minutes", "hours", "days"],
+                        "enum": _TIME_DELTA_UNITS,
                     },
                 },
                 "required": ["target", "unit"],
@@ -111,6 +118,94 @@ def datetime_until_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
             enabled=enabled,
         ),
         handler=_datetime_until,
+    )
+
+
+def datetime_diff_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
+    return BuiltinToolAdapter(
+        spec=ToolSpec(
+            name="datetime.diff",
+            display_name="Timestamp Difference",
+            description=(
+                "Use for elapsed time between two known timezone-aware ISO timestamps "
+                "in microseconds through weeks. Provide explicit from_iso/to_iso; this "
+                "tool does not resolve event names or holidays."
+            ),
+            capability=Capability.TOOL_SAFE,
+            risk_classes=frozenset({RiskClass.SAFE}),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "from_iso": {
+                        "type": "string",
+                        "description": "Start timestamp as timezone-aware ISO datetime.",
+                    },
+                    "to_iso": {
+                        "type": "string",
+                        "description": "End timestamp as timezone-aware ISO datetime.",
+                    },
+                    "unit": {
+                        "type": "string",
+                        "enum": _TIME_DELTA_UNITS,
+                        "description": "Requested fixed-duration output unit.",
+                    },
+                    "absolute": {
+                        "type": "boolean",
+                        "description": "Return an absolute value instead of a signed interval.",
+                    },
+                },
+                "required": ["from_iso", "to_iso", "unit"],
+                "additionalProperties": False,
+            },
+            adapter_name="builtin.datetime.diff",
+            sensitivity_ceiling=Sensitivity.PROJECT,
+            enabled=enabled,
+        ),
+        handler=_datetime_diff,
+    )
+
+
+def calendar_diff_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
+    return BuiltinToolAdapter(
+        spec=ToolSpec(
+            name="calendar.diff",
+            display_name="Calendar Difference",
+            description=(
+                "Use for differences between two known timezone-aware ISO timestamps, "
+                "including calendar units such as months, quarters and decades. Provide "
+                "explicit from_iso/to_iso; this tool does not resolve event names or holidays."
+            ),
+            capability=Capability.TOOL_SAFE,
+            risk_classes=frozenset({RiskClass.SAFE}),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "from_iso": {
+                        "type": "string",
+                        "description": "Start timestamp as timezone-aware ISO datetime.",
+                    },
+                    "to_iso": {
+                        "type": "string",
+                        "description": "End timestamp as timezone-aware ISO datetime.",
+                    },
+                    "unit": {
+                        "type": "string",
+                        "enum": _CALENDAR_DIFF_UNITS,
+                        "description": "Requested fixed-duration or calendar output unit.",
+                    },
+                    "absolute": {
+                        "type": "boolean",
+                        "description": "Return an absolute value instead of a signed interval.",
+                    },
+                },
+                "required": ["from_iso", "to_iso", "unit"],
+                "additionalProperties": False,
+            },
+            adapter_name="builtin.calendar.diff",
+            sensitivity_ceiling=Sensitivity.PROJECT,
+            enabled=enabled,
+        ),
+        handler=_calendar_diff,
     )
 
 
@@ -147,6 +242,7 @@ def calculator_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
 
 
 def daemon_status_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
+    payload = {"status": "ok"}
     return BuiltinToolAdapter(
         spec=ToolSpec(
             name="daemon.status",
@@ -164,11 +260,24 @@ def daemon_status_tool(*, enabled: bool = True) -> BuiltinToolAdapter:
             sensitivity_ceiling=Sensitivity.PUBLIC,
             enabled=enabled,
         ),
-        handler=lambda _arguments: {"status": "ok"},
+        handler=lambda _arguments: _typed_json_result(
+            payload,
+            structured_schema="daemon.status",
+            structured_content=payload,
+        ),
     )
 
 
-def _datetime_until(arguments: dict[str, Any]) -> dict[str, Any]:
+def _datetime_now(_arguments: dict[str, Any]) -> ToolInvocationResult:
+    payload = {"iso": datetime.now().astimezone().isoformat()}
+    return _typed_json_result(
+        payload,
+        structured_schema="datetime.now",
+        structured_content=payload,
+    )
+
+
+def _datetime_until(arguments: dict[str, Any]) -> ToolInvocationResult:
     raw_source = arguments.get("from_iso")
     source = (
         datetime.fromisoformat(str(raw_source))
@@ -187,22 +296,159 @@ def _datetime_until(arguments: dict[str, Any]) -> dict[str, Any]:
         second=0,
         microsecond=0,
     )
-    total_seconds = max(0, int((target - source).total_seconds()))
     unit = str(arguments["unit"])
-    values: dict[str, int | float] = {
-        "seconds": total_seconds,
-        "minutes": total_seconds / 60,
-        "hours": total_seconds / 3600,
-        "days": total_seconds / 86400,
-    }
-    return {
+    values = _fixed_duration_values(source, target, absolute=False)
+    if values["microseconds"] < 0:
+        values = _fixed_duration_values(source, source, absolute=False)
+    payload = {
         "from_iso": source.isoformat(),
         "target": target_name,
         "target_iso": target.isoformat(),
-        "seconds": total_seconds,
+        **values,
         "unit": unit,
         "value": values[unit],
     }
+    return _typed_json_result(
+        payload,
+        structured_schema="datetime.until",
+        structured_content=payload,
+    )
+
+
+def _datetime_diff(arguments: dict[str, Any]) -> ToolInvocationResult:
+    source = _timezone_aware_iso_datetime(arguments["from_iso"], argument_name="from_iso")
+    target = _timezone_aware_iso_datetime(arguments["to_iso"], argument_name="to_iso")
+    absolute = bool(arguments.get("absolute", False))
+    unit = str(arguments["unit"])
+    values = _fixed_duration_values(source, target, absolute=absolute)
+    payload = {
+        "from_iso": source.isoformat(),
+        "to_iso": target.isoformat(),
+        "microseconds": values["microseconds"],
+        "milliseconds": values["milliseconds"],
+        "seconds": values["seconds"],
+        "minutes": values["minutes"],
+        "hours": values["hours"],
+        "days": values["days"],
+        "weeks": values["weeks"],
+        "unit": unit,
+        "value": values[unit],
+        "absolute": absolute,
+    }
+    return _typed_json_result(
+        payload,
+        structured_schema="datetime.diff",
+        structured_content=payload,
+    )
+
+
+def _calendar_diff(arguments: dict[str, Any]) -> ToolInvocationResult:
+    source = _timezone_aware_iso_datetime(arguments["from_iso"], argument_name="from_iso")
+    target = _timezone_aware_iso_datetime(arguments["to_iso"], argument_name="to_iso")
+    absolute = bool(arguments.get("absolute", False))
+    unit = str(arguments["unit"])
+    values = _fixed_duration_values(source, target, absolute=absolute)
+    month_count = _whole_months_between(source, target)
+    if absolute:
+        month_count = abs(month_count)
+    values.update({
+        "months": month_count,
+        "quarters": _whole_calendar_units(month_count, 3),
+        "decades": _whole_calendar_units(month_count, 120),
+    })
+    payload = {
+        "from_iso": source.isoformat(),
+        "to_iso": target.isoformat(),
+        **values,
+        "unit": unit,
+        "value": values[unit],
+        "absolute": absolute,
+    }
+    return _typed_json_result(
+        payload,
+        structured_schema="calendar.diff",
+        structured_content=payload,
+    )
+
+
+def _fixed_duration_values(
+    source: datetime,
+    target: datetime,
+    *,
+    absolute: bool,
+) -> dict[str, int | float]:
+    delta = target - source
+    total_microseconds = (
+        delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
+    )
+    if absolute:
+        total_microseconds = abs(total_microseconds)
+    total_seconds_float = total_microseconds / 1_000_000
+    total_seconds: int | float = (
+        int(total_seconds_float)
+        if total_seconds_float.is_integer()
+        else total_seconds_float
+    )
+    return {
+        "microseconds": total_microseconds,
+        "milliseconds": total_microseconds / 1000,
+        "seconds": total_seconds,
+        "minutes": total_seconds_float / 60,
+        "hours": total_seconds_float / 3600,
+        "days": total_seconds_float / 86400,
+        "weeks": total_seconds_float / 604800,
+    }
+
+
+def _whole_months_between(source: datetime, target: datetime) -> int:
+    if target < source:
+        return -_whole_months_between(target, source)
+    months = (target.year - source.year) * 12 + target.month - source.month
+    if _add_months(source, months) > target:
+        months -= 1
+    return months
+
+
+def _add_months(value: datetime, months: int) -> datetime:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    return value.replace(day=min(value.day, monthrange(year, month)[1]), year=year, month=month)
+
+
+def _whole_calendar_units(month_count: int, months_per_unit: int) -> int:
+    sign = -1 if month_count < 0 else 1
+    return sign * (abs(month_count) // months_per_unit)
+
+
+def _timezone_aware_iso_datetime(value: object, *, argument_name: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{argument_name} must be an ISO timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{argument_name} must include a timezone offset")
+    return parsed
+
+
+def _typed_json_result(
+    payload: dict[str, Any],
+    *,
+    structured_schema: str,
+    structured_content: dict[str, Any],
+) -> ToolInvocationResult:
+    import json
+
+    content = json.dumps(payload, sort_keys=True)
+    return ToolInvocationResult(
+        content=content,
+        content_type="application/json",
+        output_bytes=len(content.encode("utf-8")),
+        structured_content=structured_content,
+        structured_schema=structured_schema,
+        structured_schema_version=1,
+        parse_status=ToolParseStatus.PARSED,
+    )
 
 
 def _evaluate_expression(expression: str) -> str:

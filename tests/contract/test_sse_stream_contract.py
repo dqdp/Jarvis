@@ -564,6 +564,7 @@ def test_stream_emits_heartbeat_while_waiting_for_running_request(stream_parts) 
         await asyncio.sleep(0.02)
         provider.release.set()
         status, raw = await stream_task
+        await app.state.request_execution_manager.shutdown()
         return status, _sse_events(raw)
 
     status, events = asyncio.run(scenario())

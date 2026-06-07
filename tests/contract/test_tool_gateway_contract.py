@@ -7,13 +7,15 @@ import pytest
 from assistant_core.domain.events import EventType
 from assistant_core.domain.policy import PolicyDecision, PolicyDecisionOutcome
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolCallRequest, ToolObservationStatus
+from assistant_core.domain.tools import ToolCallRequest, ToolObservationStatus, ToolParseStatus
 from assistant_core.events.in_memory import InMemoryEventLog
 from assistant_core.ports.event_log import EventFilter
 from assistant_core.ports.tools import ToolGatewayPort
 from assistant_core.tools.builtin import (
+    calendar_diff_tool,
     calculator_tool,
     daemon_status_tool,
+    datetime_diff_tool,
     datetime_now_tool,
     datetime_until_tool,
 )
@@ -56,6 +58,8 @@ def _gateway(
             [
                 fake_echo_tool(),
                 fake_fail_tool(),
+                calendar_diff_tool(),
+                datetime_diff_tool(),
                 datetime_now_tool(),
                 datetime_until_tool(),
                 calculator_tool(),
@@ -91,7 +95,9 @@ def test_tool_gateway_lists_enabled_tools() -> None:
 
     assert [spec.name for spec in specs] == [
         "calculator.evaluate",
+        "calendar.diff",
         "daemon.status",
+        "datetime.diff",
         "datetime.now",
         "datetime.until",
         "fake.echo",
@@ -127,7 +133,22 @@ def test_tool_gateway_invokes_datetime_now() -> None:
 
     assert observation.status == ToolObservationStatus.COMPLETED
     assert observation.content_type == "application/json"
+    assert observation.structured_schema == "datetime.now"
     assert "iso" in observation.content
+
+
+def test_tool_gateway_invokes_daemon_status_as_typed_json() -> None:
+    gateway, _policy, _event_log = _gateway()
+
+    observation = asyncio.run(
+        gateway.invoke(_request("daemon.status", sensitivity=Sensitivity.PUBLIC))
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert observation.content_type == "application/json"
+    assert observation.structured_schema == "daemon.status"
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.structured_content == {"status": "ok"}
 
 
 def test_tool_gateway_invokes_datetime_until_next_new_year() -> None:
@@ -174,6 +195,141 @@ def test_tool_gateway_invokes_datetime_until_without_source_timestamp() -> None:
     assert '"target": "next_new_year"' in observation.content
     assert '"unit": "seconds"' in observation.content
     assert '"seconds":' in observation.content
+
+
+def test_tool_gateway_invokes_datetime_until_with_subsecond_units() -> None:
+    gateway, _policy, _event_log = _gateway()
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(
+                "datetime.until",
+                {
+                    "from_iso": "2026-12-31T23:59:59.500000+03:00",
+                    "target": "next_new_year",
+                    "unit": "microseconds",
+                },
+                sensitivity=Sensitivity.PUBLIC,
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert observation.structured_schema == "datetime.until"
+    assert observation.structured_content["microseconds"] == 500000
+    assert observation.structured_content["milliseconds"] == 500.0
+    assert observation.structured_content["seconds"] == 0.5
+    assert observation.structured_content["value"] == 500000
+
+
+def test_tool_gateway_invokes_datetime_diff_between_timestamps() -> None:
+    gateway, _policy, _event_log = _gateway()
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(
+                "datetime.diff",
+                {
+                    "from_iso": "2026-06-07T20:17:00+03:00",
+                    "to_iso": "2026-06-07T20:47:30+03:00",
+                    "unit": "minutes",
+                },
+                sensitivity=Sensitivity.PUBLIC,
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert observation.content_type == "application/json"
+    assert observation.structured_schema == "datetime.diff"
+    assert observation.structured_content == {
+        "from_iso": "2026-06-07T20:17:00+03:00",
+        "to_iso": "2026-06-07T20:47:30+03:00",
+        "microseconds": 1830000000,
+        "milliseconds": 1830000.0,
+        "seconds": 1830,
+        "minutes": 30.5,
+        "hours": 0.5083333333333333,
+        "days": 0.021180555555555557,
+        "weeks": 0.0030257936507936507,
+        "unit": "minutes",
+        "value": 30.5,
+        "absolute": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("unit", "expected_value"),
+    [
+        ("microseconds", 1830000000),
+        ("milliseconds", 1830000.0),
+        ("weeks", 0.0030257936507936507),
+    ],
+)
+def test_tool_gateway_invokes_datetime_diff_for_extended_time_units(
+    unit: str,
+    expected_value: float,
+) -> None:
+    gateway, _policy, _event_log = _gateway()
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(
+                "datetime.diff",
+                {
+                    "from_iso": "2026-06-07T20:17:00+03:00",
+                    "to_iso": "2026-06-07T20:47:30+03:00",
+                    "unit": unit,
+                },
+                sensitivity=Sensitivity.PUBLIC,
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert observation.structured_schema == "datetime.diff"
+    assert observation.structured_content["unit"] == unit
+    assert observation.structured_content["value"] == expected_value
+
+
+@pytest.mark.parametrize(
+    ("unit", "expected_value"),
+    [
+        ("microseconds", 11145600000000),
+        ("minutes", 185760.0),
+        ("hours", 3096.0),
+        ("days", 129.0),
+        ("weeks", 18.428571428571427),
+        ("months", 4),
+        ("quarters", 1),
+        ("decades", 0),
+    ],
+)
+def test_tool_gateway_invokes_calendar_diff_between_timestamps(
+    unit: str,
+    expected_value: int | float,
+) -> None:
+    gateway, _policy, _event_log = _gateway()
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(
+                "calendar.diff",
+                {
+                    "from_iso": "2025-11-27T00:00:00+00:00",
+                    "to_iso": "2026-04-05T00:00:00+00:00",
+                    "unit": unit,
+                },
+                sensitivity=Sensitivity.PUBLIC,
+            ),
+        ),
+    )
+
+    assert observation.status == ToolObservationStatus.COMPLETED
+    assert observation.content_type == "application/json"
+    assert observation.structured_schema == "calendar.diff"
+    assert observation.structured_content["unit"] == unit
+    assert observation.structured_content["value"] == expected_value
 
 
 def test_tool_gateway_invokes_calculator_evaluate() -> None:

@@ -775,7 +775,7 @@ def test_tool_react_loop_ignores_legacy_direct_plan_metadata() -> None:
         loop, _store, assembler, event_log = _loop(router=router)
         result = await loop.run_turn(
             _request(
-                user_input="Сколько время?",
+                user_input="Explain how current-time tools are routed.",
                 metadata=_direct_plan_metadata(
                     scenario="current_time",
                     tool_names=["datetime.now"],

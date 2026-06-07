@@ -216,7 +216,9 @@ def test_agent_request_plan_filters_allowed_tools_by_sensitivity_ceiling() -> No
 
     allowed = set(resolution.agent_request_plan.allowed_tool_names)
     assert "calculator.evaluate" not in allowed
+    assert "calendar.diff" not in allowed
     assert "daemon.status" not in allowed
+    assert "datetime.diff" not in allowed
     assert "datetime.now" not in allowed
     assert "datetime.until" not in allowed
     assert "tool.shell.read.project" not in allowed
@@ -414,6 +416,8 @@ def test_default_auto_request_builds_agent_loop_plan_without_classifier() -> Non
     assert resolution.metadata["selected_model_profile"] == "local_main"
     assert resolution.metadata["model_profile"] == "local_main"
     assert resolution.agent_request_plan.tool_policy is AgentToolPolicy.AVAILABLE
+    assert "calendar.diff" in resolution.metadata["agent_live_state_tool_names"]
+    assert "datetime.diff" in resolution.metadata["agent_live_state_tool_names"]
     assert "datetime.now" in resolution.metadata["agent_live_state_tool_names"]
     assert "datetime.until" in resolution.metadata["agent_live_state_tool_names"]
     assert "tool.system.read.resources" in resolution.metadata["agent_live_state_tool_names"]
@@ -428,9 +432,15 @@ def test_default_auto_request_builds_agent_loop_plan_without_classifier() -> Non
     hardware = next(
         item for item in summaries if item["tool_name"] == "tool.system.read.hardware"
     )
+    calendar_diff = next(item for item in summaries if item["tool_name"] == "calendar.diff")
+    datetime_diff = next(item for item in summaries if item["tool_name"] == "datetime.diff")
     assert "CPU load" in resources["description"]
     assert "memory usage" in resources["description"]
     assert "not live CPU load" in hardware["description"]
+    assert "two known timezone-aware ISO timestamps" in calendar_diff["description"]
+    assert "does not resolve event names or holidays" in calendar_diff["description"]
+    assert "microseconds through weeks" in datetime_diff["description"]
+    assert "does not resolve event names or holidays" in datetime_diff["description"]
     assert "loop_selection_confidence" not in resolution.metadata
     assert "loop_selection_intent_family" not in resolution.metadata
     assert "loop_selection_classification_source" not in resolution.metadata

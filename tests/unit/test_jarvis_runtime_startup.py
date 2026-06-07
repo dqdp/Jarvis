@@ -12,8 +12,10 @@ from assistant_core.config.settings import ConfigLoader
 from assistant_core.domain.policy import Capability, RiskClass
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.tools.builtin import (
+    calendar_diff_tool,
     calculator_tool,
     daemon_status_tool,
+    datetime_diff_tool,
     datetime_now_tool,
     datetime_until_tool,
 )
@@ -81,8 +83,10 @@ def test_runtime_app_validates_request_plan_tool_policy_shape_matches_gateway_re
     registry = ToolRegistry(
         [
             adapter,
+            calendar_diff_tool(),
             calculator_tool(),
             daemon_status_tool(),
+            datetime_diff_tool(),
             datetime_until_tool(),
             project_shell_read_tool_from_config(settings.capabilities),
             *system_diagnostics_tools_from_config(settings.capabilities),

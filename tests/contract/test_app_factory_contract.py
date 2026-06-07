@@ -822,7 +822,7 @@ def test_runtime_app_factory_api_can_select_tool_react_loop() -> None:
     assert stream_events[-1] == "request.processing.completed"
     assert stream_payloads[-1][1]["assistant_message_id"]
     assert EventType.TOOL_CALL_COMPLETED in event_types
-    assert structured_calls == 2
+    assert structured_calls == 1
 
 
 def test_runtime_app_factory_api_runs_safe_route_through_agent_loop() -> None:
@@ -907,7 +907,7 @@ def test_runtime_app_factory_api_runs_safe_route_through_agent_loop() -> None:
     assert stream_events[-1] == "request.processing.completed"
     assert request_payload["status"] == "completed"
     assert EventType.TOOL_CALL_COMPLETED in event_types
-    assert structured_calls == 2
+    assert structured_calls == 1
 
 
 def test_runtime_app_factory_api_no_tool_turn_persists_transcript() -> None:
@@ -1081,9 +1081,9 @@ def test_runtime_app_factory_api_tool_turn_replays_after_new_app_instance() -> N
     assert EventType.TOOL_CALL_COMPLETED.value in first_events
     assert replay_events[-1] == EventType.REQUEST_PROCESSING_COMPLETED.value
     assert EventType.TOOL_CALL_COMPLETED.value in replay_events
-    assert messages["messages"][-1]["content"] == "tool transcript answer"
-    assert first_provider.structured_calls == 2
-    assert first_provider.chat_calls == 1
+    assert messages["messages"][-1]["content"].startswith("Сейчас ")
+    assert first_provider.structured_calls == 1
+    assert first_provider.chat_calls == 0
     assert second_provider.structured_calls == 0
     assert second_provider.chat_calls == 0
 

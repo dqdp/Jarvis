@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -23,7 +24,7 @@ from assistant_core.domain.loops import (
 )
 from assistant_core.domain.policy import PermissionMode
 from assistant_core.domain.sensitivity import Sensitivity
-from assistant_core.domain.tools import ToolObservationStatus, ToolParseStatus
+from assistant_core.domain.tools import ToolObservation, ToolObservationStatus, ToolParseStatus
 from assistant_core.models.router import StructuredOutputValidationError
 from assistant_core.runtime.loops.failure_policy import LoopFailureDecision
 from assistant_core.runtime.loops.observation_recovery import (
@@ -85,6 +86,73 @@ def _tool_plan_metadata(
     if live_state_tool_names:
         metadata["agent_live_state_tool_names"] = list(live_state_tool_names)
     return metadata
+
+
+def _completed_tool_observation(
+    request,
+    *,
+    content: str,
+    content_type: str = "application/json",
+    now: datetime | None = None,
+    structured_schema: str | None = None,
+    structured_content: dict | None = None,
+) -> ToolObservation:
+    observed_at = now or datetime.now(UTC)
+    return ToolObservation(
+        tool_call_id=f"tool-call-{request.tool_name}",
+        tool_name=request.tool_name,
+        status=ToolObservationStatus.COMPLETED,
+        content=content,
+        content_type=content_type,
+        sensitivity=request.sensitivity,
+        truncated=False,
+        output_bytes=len(content),
+        started_at=observed_at,
+        completed_at=observed_at,
+        duration_ms=0,
+        structured_content=structured_content,
+        structured_schema=structured_schema,
+        structured_schema_version=1 if structured_schema is not None else None,
+        parse_status=(
+            ToolParseStatus.PARSED
+            if structured_schema is not None
+            else ToolParseStatus.NOT_APPLICABLE
+        ),
+    )
+
+
+def _typed_datetime_now_observation(request, *, iso: str, now: datetime | None = None) -> ToolObservation:
+    payload = {"iso": iso}
+    content = json.dumps(payload, sort_keys=True)
+    return _completed_tool_observation(
+        request,
+        content=content,
+        now=now,
+        structured_schema="datetime.now",
+        structured_content=payload,
+    )
+
+
+def _typed_resource_observation(
+    request,
+    *,
+    cpu_percent: float = 10.2,
+    memory_percent: float = 42.0,
+    now: datetime | None = None,
+) -> ToolObservation:
+    payload = {
+        "cpu": {"used_percent": cpu_percent},
+        "memory": {"used_percent": memory_percent},
+        "source": "fake",
+    }
+    content = json.dumps(payload, sort_keys=True)
+    return _completed_tool_observation(
+        request,
+        content=content,
+        now=now,
+        structured_schema="system.resource_overview",
+        structured_content=payload,
+    )
 
 
 def test_agent_loop_state_taxonomy_matches_pm08l_contract() -> None:
@@ -807,23 +875,12 @@ def test_tool_react_loop_does_not_deterministically_answer_compound_available_to
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime(2026, 6, 6, 12, 34, tzinfo=UTC)
-            content = '{"iso":"2026-06-06T12:34:00+00:00","timezone":"UTC"}'
-            return ToolObservation(
-                tool_call_id="tool-call-now",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
+            return _typed_datetime_now_observation(
+                request,
+                iso="2026-06-06T12:34:00+00:00",
+                now=now,
             )
 
     async def scenario(user_input: str):
@@ -1373,20 +1430,7 @@ def test_tool_react_loop_recovery_finalization_defers_when_live_state_evidence_s
                     completed_at=now,
                     error={"code": "tool_failed", "message": "tool execution failed"},
                 )
-            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -1437,13 +1481,6 @@ def test_tool_react_loop_recovery_finalization_defers_when_live_state_evidence_s
     ]
     assert router.structured_calls == 2
     assert router.chat_calls == 1
-    assert any(
-        event.payload.get("action") == "final_answer_deferred_missing_evidence"
-        and event.payload.get("missing_evidence_family") == "system_resources"
-        and event.payload.get("missing_tool_names") == ["tool.system.read.resources"]
-        for event in events
-        if event.event_type is EventType.AGENT_STEP_COMPLETED
-    )
 
 
 def test_tool_react_loop_relevant_failed_live_state_observation_uses_unavailable_recovery() -> None:
@@ -1512,6 +1549,45 @@ def test_tool_react_loop_relevant_failed_live_state_observation_uses_unavailable
     )
 
 
+def test_tool_react_loop_blocks_final_answer_when_relevant_live_tool_is_unavailable_in_plan() -> None:
+    async def scenario():
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [{"action": "final_answer"}],
+            chat_response="hallucinated CPU usage",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=object(),
+        )
+        with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
+            await loop.run_turn(
+                replace(
+                    _request(
+                        metadata=_tool_plan_metadata(
+                            "datetime.now",
+                            live_state_tool_names=("datetime.now",),
+                        ),
+                        budget=replace(_budget(), max_tool_calls=0),
+                    ),
+                    user_input="what is current CPU usage?",
+                )
+            )
+        return router, event_log.events
+
+    router, events = asyncio.run(scenario())
+
+    assert router.structured_calls == 0
+    assert router.chat_calls == 0
+    assert not any(
+        event.event_type is EventType.ASSISTANT_MESSAGE_CREATED
+        for event in events
+    )
+
+
 def test_tool_react_loop_live_state_approval_denied_fails_closed() -> None:
     class DeniedResourcesGateway:
         async def get_tool(self, tool_name: str):
@@ -1560,7 +1636,7 @@ def test_tool_react_loop_live_state_approval_denied_fails_closed() -> None:
                         ),
                         budget=replace(_budget(), max_tool_calls=2),
                     ),
-                    user_input="what is current CPU usage?",
+                    user_input="what time is it and what is current CPU usage?",
                 )
             )
         return router, event_log.events
@@ -1800,20 +1876,7 @@ def test_tool_react_loop_failed_live_state_observation_does_not_finalize_while_o
                     completed_at=now,
                     error={"code": "tool_failed", "message": "datetime read failed"},
                 )
-            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -1901,20 +1964,7 @@ def test_tool_react_loop_failed_live_state_math_observation_does_not_finalize_wh
                     completed_at=now,
                     error={"code": "tool_failed", "message": "datetime read failed"},
                 )
-            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -1994,20 +2044,7 @@ def test_tool_react_loop_irrelevant_failed_live_state_after_completed_evidence_u
                     completed_at=now,
                     error={"code": "tool_failed", "message": "datetime read failed"},
                 )
-            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -2355,20 +2392,7 @@ def test_tool_react_loop_recovery_finalize_defers_when_live_state_evidence_is_mi
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
             if request.tool_name == "tool.system.read.resources":
-                content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-                return ToolObservation(
-                    tool_call_id="tool-call-resources",
-                    tool_name=request.tool_name,
-                    status=ToolObservationStatus.COMPLETED,
-                    content=content,
-                    content_type="application/json",
-                    sensitivity=request.sensitivity,
-                    truncated=False,
-                    output_bytes=len(content),
-                    started_at=now,
-                    completed_at=now,
-                    duration_ms=0,
-                )
+                return _typed_resource_observation(request, now=now)
             return ToolObservation.empty(
                 tool_name=request.tool_name,
                 status=ToolObservationStatus.TIMEOUT,
@@ -2389,6 +2413,7 @@ def test_tool_react_loop_recovery_finalize_defers_when_live_state_evidence_is_mi
                     "tool_name": "tool.system.read.resources",
                     "arguments": {"metric": "cpu_and_memory"},
                 },
+                {"action": "final_answer"},
             ],
             chat_response="CPU usage is 10.2%.",
         )
@@ -2423,13 +2448,6 @@ def test_tool_react_loop_recovery_finalize_defers_when_live_state_evidence_is_mi
     ]
     assert router.structured_calls == 2
     assert router.chat_calls == 1
-    assert any(
-        event.payload.get("action") == "final_answer_deferred_missing_evidence"
-        and event.payload.get("missing_tool_names") == ["tool.system.read.resources"]
-        and event.payload.get("missing_evidence_family") == "system_resources"
-        for event in events
-        if event.event_type is EventType.AGENT_STEP_COMPLETED
-    )
 
 
 def test_tool_react_loop_required_failed_observation_fails_with_typed_reason() -> None:
@@ -3028,7 +3046,7 @@ def test_tool_react_loop_proposal_contract_limits_live_state_tools_to_live_state
                         live_state_tool_names=("datetime.now",),
                     ),
                 ),
-                user_input="сколько секунд пройдет с прошлого Рождества до следующего?",
+                user_input="объясни, что такое календарный интервал",
             )
         )
         return assembler.seen_contracts[0]
@@ -3553,6 +3571,13 @@ def test_tool_react_loop_finalizes_when_structured_output_breaks_after_completed
                 started_at=now,
                 completed_at=now,
                 duration_ms=0,
+                structured_schema="system.resource_overview",
+                structured_schema_version=1,
+                structured_content={
+                    "cpu": {"used_percent": 15.0},
+                    "memory": {"used_gib": 23.0},
+                },
+                parse_status=ToolParseStatus.PARSED,
             )
 
     class BrokenSecondProposalRouter(FakeStructuredAndChatRouter):
@@ -3594,7 +3619,7 @@ def test_tool_react_loop_finalizes_when_structured_output_breaks_after_completed
     assert EventType.REQUEST_PROCESSING_FAILED not in [event.event_type for event in events]
 
 
-def test_tool_react_loop_does_not_synthesize_datetime_until_before_finalizing_countdown() -> None:
+def test_tool_react_loop_requires_model_selected_datetime_until_before_finalizing_countdown() -> None:
     class Gateway:
         def __init__(self) -> None:
             self.calls: list[tuple[str, dict]] = []
@@ -3603,33 +3628,28 @@ def test_tool_react_loop_does_not_synthesize_datetime_until_before_finalizing_co
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
             if request.tool_name == "datetime.now":
-                content = '{"iso": "2026-06-02T18:14:39+03:00"}'
-            else:
-                content = (
-                    '{"from_iso": "2026-06-02T18:14:39+03:00", '
-                    '"target": "next_new_year", '
-                    '"target_iso": "2027-01-01T00:00:00+03:00", '
-                    '"seconds": 18337521, '
-                    '"unit": "seconds", '
-                    '"value": 18337521}'
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-02T18:14:39+03:00",
+                    now=now,
                 )
-            return ToolObservation(
-                tool_call_id=f"tool-call-{request.tool_name}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
+            payload = {
+                "from_iso": "2026-06-02T18:14:39+03:00",
+                "target": "next_new_year",
+                "target_iso": "2027-01-01T00:00:00+03:00",
+                "seconds": 18337521,
+                "unit": "seconds",
+                "value": 18337521,
+            }
+            return _completed_tool_observation(
+                request,
+                content=json.dumps(payload, sort_keys=True),
+                now=now,
+                structured_schema="datetime.until",
+                structured_content=payload,
             )
 
     async def scenario():
@@ -3637,6 +3657,12 @@ def test_tool_react_loop_does_not_synthesize_datetime_until_before_finalizing_co
         router = FakeStructuredAndChatRouter(
             [
                 {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.until",
+                    "arguments": {"target": "next_new_year", "unit": "seconds"},
+                },
                 {"action": "final_answer"},
             ],
             chat_response="Финальный ответ формируется моделью по доступному наблюдению.",
@@ -3664,9 +3690,12 @@ def test_tool_react_loop_does_not_synthesize_datetime_until_before_finalizing_co
     result, gateway, router = asyncio.run(scenario())
 
     assert result.response_text == "Финальный ответ формируется моделью по доступному наблюдению."
-    assert [tool_name for tool_name, _arguments in gateway.calls] == ["datetime.now"]
-    assert result.used_tool_calls == 1
-    assert router.structured_calls == 2
+    assert [tool_name for tool_name, _arguments in gateway.calls] == [
+        "datetime.now",
+        "datetime.until",
+    ]
+    assert result.used_tool_calls == 2
+    assert router.structured_calls == 3
     assert router.chat_calls == 1
 
 
@@ -3675,6 +3704,7 @@ def _run_current_time_observation_scenario(
     *,
     structured_responses: list[dict] | None = None,
     chat_response: str = "wrong model time",
+    max_tool_calls: int | None = None,
 ):
     class Gateway:
         def __init__(self) -> None:
@@ -3684,23 +3714,12 @@ def _run_current_time_observation_scenario(
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append(request.tool_name)
             now = datetime.now(UTC)
-            content = '{"iso": "2026-06-05T20:59:07+03:00"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{request.tool_name}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
+            return _typed_datetime_now_observation(
+                request,
+                iso="2026-06-05T20:59:07+03:00",
+                now=now,
             )
 
     async def scenario():
@@ -3717,14 +3736,17 @@ def _run_current_time_observation_scenario(
             event_log=FakeEventLog(),
             tool_gateway=gateway,
         )
+        request_kwargs = {
+            "metadata": _tool_plan_metadata(
+                "datetime.now",
+                "datetime.until",
+                live_state_tool_names=("datetime.now", "datetime.until"),
+            )
+        }
+        if max_tool_calls is not None:
+            request_kwargs["budget"] = replace(_budget(), max_tool_calls=max_tool_calls)
         request = replace(
-            _request(
-                metadata=_tool_plan_metadata(
-                    "datetime.now",
-                    "datetime.until",
-                    live_state_tool_names=("datetime.now", "datetime.until"),
-                )
-            ),
+            _request(**request_kwargs),
             user_input=user_input,
         )
         result = await loop.run_turn(request)
@@ -3786,7 +3808,6 @@ def test_tool_react_loop_current_time_formulations_finalize_from_observation(
     "user_input",
     [
         "сколько времени до нового года?",
-        "сколько секунд до нового года?",
         "через сколько времени будет новый год?",
         "сколько времени заняла операция?",
         "который час был вчера в Москве?",
@@ -3881,6 +3902,69 @@ def test_tool_react_loop_ru_en_current_time_variants_finalize_from_observation(
     assert router.chat_calls == 0
 
 
+def test_tool_react_loop_rejects_raw_json_datetime_now_for_deterministic_time_finalizer() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append(request.tool_name)
+            now = datetime.now(UTC)
+            content = '{"iso": "2026-06-05T20:59:07+03:00"}'
+            return ToolObservation(
+                tool_call_id="tool-call-datetime",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+            ],
+            chat_response="wrong model time",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
+            await loop.run_turn(
+                replace(
+                    _request(
+                        metadata=_tool_plan_metadata(
+                            "datetime.now",
+                            live_state_tool_names=("datetime.now",),
+                        ),
+                        budget=replace(_budget(), max_tool_calls=1),
+                    ),
+                    user_input="сколько времени сейчас?",
+                )
+            )
+        return gateway, router
+
+    gateway, router = asyncio.run(scenario())
+
+    assert gateway.calls == ["datetime.now"]
+    assert router.chat_calls == 0
+
+
 @pytest.mark.parametrize(
     "user_input",
     [
@@ -3913,12 +3997,9 @@ def test_tool_react_loop_ru_en_current_time_variants_finalize_from_observation(
         "what cron time should I use?",
         "show Python datetime.now examples",
         "read the system time from the logs",
-        "What time is it, and how many seconds until Christmas?",
-        "tell me the time and how many seconds until Christmas",
         "في دبي كم الساعة؟",
         "東京は今何時ですか",
         "北京现在几点",
-        "Который час, и сколько секунд осталось до Рождества?",
         "كم الساعة في دبي؟",
         "今何時ですか 東京",
         "现在几点 北京",
@@ -3983,23 +4064,12 @@ def test_tool_react_loop_canonicalizes_datetime_now_arguments_for_location_evide
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = '{"iso": "2026-06-05T20:59:07+03:00"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{request.tool_name}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
+            return _typed_datetime_now_observation(
+                request,
+                iso="2026-06-05T20:59:07+03:00",
+                now=now,
             )
 
     async def scenario():
@@ -4090,6 +4160,7 @@ def test_tool_react_loop_countdown_requires_datetime_without_local_time_finalize
         "сколько секунд прошло с Рождества?",
         "сколько минут прошло с последнего Рождества?",
         "сколько секунд осталось до Рождества?",
+        "Который час, и сколько секунд осталось до Рождества?",
         "сколько секунд прошло с последнего Нового года?",
         "how many seconds have passed since last Christmas?",
         "seconds since last Christmas?",
@@ -4099,26 +4170,25 @@ def test_tool_react_loop_countdown_requires_datetime_without_local_time_finalize
         "how many seconds since Christmas?",
         "how many minutes have passed since last Christmas?",
         "how many seconds until Christmas?",
+        "What time is it, and how many seconds until Christmas?",
+        "tell me the time and how many seconds until Christmas",
         "how many seconds since last New Year?",
     ],
 )
 def test_tool_react_loop_does_not_hardcode_calendar_duration_answers_after_datetime_observation(
     user_input: str,
 ) -> None:
-    result, gateway, router = _run_current_time_observation_scenario(
-        user_input,
-        structured_responses=[
-            {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
-            {"action": "final_answer"},
-        ],
-        chat_response="fallback final answer",
-    )
+    with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
+        _run_current_time_observation_scenario(
+            user_input,
+            structured_responses=[
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+            ],
+            chat_response="fallback final answer",
+            max_tool_calls=1,
+        )
 
-    assert result.response_text == "fallback final answer"
-    assert gateway.calls == ["datetime.now"]
-    assert result.used_tool_calls == 1
-    assert router.structured_calls == 2
-    assert router.chat_calls == 1
 
 
 def test_tool_react_loop_answers_current_time_from_datetime_observation_without_final_chat() -> None:
@@ -4130,23 +4200,12 @@ def test_tool_react_loop_answers_current_time_from_datetime_observation_without_
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append(request.tool_name)
             now = datetime.now(UTC)
-            content = '{"iso": "2026-06-05T20:59:07+03:00"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{request.tool_name}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
+            return _typed_datetime_now_observation(
+                request,
+                iso="2026-06-05T20:59:07+03:00",
+                now=now,
             )
 
     async def scenario():
@@ -4195,23 +4254,12 @@ def test_tool_react_loop_does_not_force_datetime_until_for_current_time_question
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append(request.tool_name)
             now = datetime.now(UTC)
-            content = '{"iso": "2026-06-02T18:14:39+03:00"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{request.tool_name}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
+            return _typed_datetime_now_observation(
+                request,
+                iso="2026-06-02T18:14:39+03:00",
+                now=now,
             )
 
     async def scenario():
@@ -4263,23 +4311,12 @@ def test_tool_react_loop_recovers_malformed_current_time_tool_call_with_datetime
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = '{"iso": "2026-06-02T18:14:39+03:00"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{request.tool_name}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
+            return _typed_datetime_now_observation(
+                request,
+                iso="2026-06-02T18:14:39+03:00",
+                now=now,
             )
 
     async def scenario():
@@ -4331,23 +4368,12 @@ def test_tool_react_loop_does_not_deterministically_finalize_duration_question()
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append(request.tool_name)
             now = datetime.now(UTC)
-            content = '{"iso": "2026-06-02T18:14:39+03:00"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{request.tool_name}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
+            return _typed_datetime_now_observation(
+                request,
+                iso="2026-06-02T18:14:39+03:00",
+                now=now,
             )
 
     async def scenario():
@@ -4388,7 +4414,7 @@ def test_tool_react_loop_does_not_deterministically_finalize_duration_question()
     assert router.chat_calls == 1
 
 
-def test_tool_react_loop_structured_validation_fallback_does_not_synthesize_datetime_until() -> None:
+def test_tool_react_loop_structured_validation_fallback_waits_for_model_selected_datetime_until() -> None:
     class Gateway:
         def __init__(self) -> None:
             self.calls: list[str] = []
@@ -4397,33 +4423,28 @@ def test_tool_react_loop_structured_validation_fallback_does_not_synthesize_date
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append(request.tool_name)
             now = datetime.now(UTC)
             if request.tool_name == "datetime.now":
-                content = '{"iso": "2026-06-02T18:14:39+03:00"}'
-            else:
-                content = (
-                    '{"from_iso": "2026-06-02T18:14:39+03:00", '
-                    '"target": "next_new_year", '
-                    '"target_iso": "2027-01-01T00:00:00+03:00", '
-                    '"seconds": 18337521, '
-                    '"unit": "seconds", '
-                    '"value": 18337521}'
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-02T18:14:39+03:00",
+                    now=now,
                 )
-            return ToolObservation(
-                tool_call_id=f"tool-call-{request.tool_name}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
+            payload = {
+                "from_iso": "2026-06-02T18:14:39+03:00",
+                "target": "next_new_year",
+                "target_iso": "2027-01-01T00:00:00+03:00",
+                "seconds": 18337521,
+                "unit": "seconds",
+                "value": 18337521,
+            }
+            return _completed_tool_observation(
+                request,
+                content=json.dumps(payload, sort_keys=True),
+                now=now,
+                structured_schema="datetime.until",
+                structured_content=payload,
             )
 
     class BrokenSecondProposalRouter(FakeStructuredAndChatRouter):
@@ -4435,7 +4456,17 @@ def test_tool_react_loop_structured_validation_fallback_does_not_synthesize_date
                 return StructuredModelResponse(
                     value={"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
                 )
-            raise StructuredOutputValidationError("invalid structured output")
+            if self.structured_calls == 2:
+                raise StructuredOutputValidationError("invalid structured output")
+            from assistant_core.domain.models import StructuredModelResponse
+
+            return StructuredModelResponse(
+                value={
+                    "action": "tool_call",
+                    "tool_name": "datetime.until",
+                    "arguments": {"target": "next_new_year", "unit": "seconds"},
+                },
+            )
 
     async def scenario():
         gateway = Gateway()
@@ -4463,9 +4494,9 @@ def test_tool_react_loop_structured_validation_fallback_does_not_synthesize_date
     result, gateway, router = asyncio.run(scenario())
 
     assert result.response_text == "fallback final answer"
-    assert gateway.calls == ["datetime.now"]
-    assert result.used_tool_calls == 1
-    assert router.structured_calls == 2
+    assert gateway.calls == ["datetime.now", "datetime.until"]
+    assert result.used_tool_calls == 2
+    assert router.structured_calls == 3
     assert router.chat_calls == 1
 
 
@@ -4478,20 +4509,25 @@ def test_tool_react_loop_executes_model_selected_datetime_until_without_source()
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
             if request.tool_name == "datetime.now":
                 content = '{"redacted": true}'
+                structured_schema = None
+                structured_content = None
+                parse_status = ToolParseStatus.NOT_APPLICABLE
             else:
-                content = (
-                    '{"target": "next_new_year", '
-                    '"target_iso": "2027-01-01T00:00:00+03:00", '
-                    '"seconds": 18337521, '
-                    '"unit": "seconds", '
-                    '"value": 18337521}'
-                )
+                structured_content = {
+                    "from_iso": "2026-06-05T20:59:07+03:00",
+                    "target": "next_new_year",
+                    "target_iso": "2027-01-01T00:00:00+03:00",
+                    "seconds": 18337521,
+                    "unit": "seconds",
+                    "value": 18337521,
+                }
+                content = json.dumps(structured_content, sort_keys=True)
+                structured_schema = "datetime.until"
+                parse_status = ToolParseStatus.PARSED
             return ToolObservation(
                 tool_call_id=f"tool-call-{request.tool_name}",
                 tool_name=request.tool_name,
@@ -4504,6 +4540,10 @@ def test_tool_react_loop_executes_model_selected_datetime_until_without_source()
                 started_at=now,
                 completed_at=now,
                 duration_ms=0,
+                structured_schema=structured_schema,
+                structured_schema_version=1 if structured_schema is not None else None,
+                structured_content=structured_content,
+                parse_status=parse_status,
             )
 
     async def scenario():
@@ -4557,7 +4597,7 @@ def test_tool_react_loop_executes_model_selected_datetime_until_without_source()
     assert router.chat_calls == 1
 
 
-def test_tool_react_loop_repeated_datetime_now_finalizes_without_semantic_followup() -> None:
+def test_tool_react_loop_repeated_datetime_now_waits_for_datetime_until() -> None:
     class Gateway:
         def __init__(self) -> None:
             self.calls: list[str] = []
@@ -4566,33 +4606,28 @@ def test_tool_react_loop_repeated_datetime_now_finalizes_without_semantic_follow
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append(request.tool_name)
             now = datetime.now(UTC)
             if request.tool_name == "datetime.now":
-                content = '{"iso": "2026-06-02T18:14:39+03:00"}'
-            else:
-                content = (
-                    '{"from_iso": "2026-06-02T18:14:39+03:00", '
-                    '"target": "next_new_year", '
-                    '"target_iso": "2027-01-01T00:00:00+03:00", '
-                    '"seconds": 18337521, '
-                    '"unit": "seconds", '
-                    '"value": 18337521}'
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-02T18:14:39+03:00",
+                    now=now,
                 )
-            return ToolObservation(
-                tool_call_id=f"tool-call-{request.tool_name}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
+            payload = {
+                "from_iso": "2026-06-02T18:14:39+03:00",
+                "target": "next_new_year",
+                "target_iso": "2027-01-01T00:00:00+03:00",
+                "seconds": 18337521,
+                "unit": "seconds",
+                "value": 18337521,
+            }
+            return _completed_tool_observation(
+                request,
+                content=json.dumps(payload, sort_keys=True),
+                now=now,
+                structured_schema="datetime.until",
+                structured_content=payload,
             )
 
     async def scenario():
@@ -4601,6 +4636,11 @@ def test_tool_react_loop_repeated_datetime_now_finalizes_without_semantic_follow
             [
                 {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
                 {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.until",
+                    "arguments": {"target": "next_new_year", "unit": "seconds"},
+                },
             ],
             chat_response="Финальный ответ после повторного tool proposal.",
         )
@@ -4627,9 +4667,9 @@ def test_tool_react_loop_repeated_datetime_now_finalizes_without_semantic_follow
     result, gateway, router = asyncio.run(scenario())
 
     assert result.response_text == "Финальный ответ после повторного tool proposal."
-    assert gateway.calls == ["datetime.now"]
-    assert result.used_tool_calls == 1
-    assert router.structured_calls == 2
+    assert gateway.calls == ["datetime.now", "datetime.until"]
+    assert result.used_tool_calls == 2
+    assert router.structured_calls == 3
     assert router.chat_calls == 1
 
 
@@ -4642,30 +4682,9 @@ def test_tool_react_loop_does_not_rewrite_model_selected_diagnostics_tool() -> N
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = (
-                '{"exit_code": 0, '
-                '"stdout": "CPU usage: 10% user, 5% sys, 85% idle\\n'
-                'PhysMem: 12G used (2G wired), 20G unused.\\n", '
-                '"stderr": "", '
-                '"truncated": {"stdout": false, "stderr": false}}'
-            )
-            return ToolObservation(
-                tool_call_id=f"tool-call-{request.tool_name}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, cpu_percent=15.0, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -4721,25 +4740,17 @@ def test_tool_react_loop_executes_model_selected_resources_and_calculator_calls(
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
             if request.tool_name == "tool.system.read.resources":
-                content = (
-                    '{"exit_code": 0, '
-                    '"stdout": "CPU usage: 8.82% user, 12.61% sys, 78.56% idle\\n", '
-                    '"stderr": "", '
-                    '"truncated": {"stdout": false, "stderr": false}}'
-                )
-            else:
-                content = "27.1828182845905"
+                return _typed_resource_observation(request, cpu_percent=21.43, now=now)
+            content = "27.1828182845905"
             return ToolObservation(
                 tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
                 status=ToolObservationStatus.COMPLETED,
                 content=content,
-                content_type="application/json" if request.tool_name.startswith("tool.") else "text/plain",
+                content_type="text/plain",
                 sensitivity=request.sensitivity,
                 truncated=False,
                 output_bytes=len(content),
@@ -4818,21 +4829,17 @@ def test_tool_react_loop_does_not_apply_initial_proposal_timeout_cap_after_tool_
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = (
-                '{"cpu": {"used_percent": 20.0}, "source": "fake"}'
-                if request.tool_name == "tool.system.read.resources"
-                else "27.1828182845905"
-            )
+            if request.tool_name == "tool.system.read.resources":
+                return _typed_resource_observation(request, cpu_percent=20.0, now=now)
+            content = "27.1828182845905"
             return ToolObservation(
                 tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
                 status=ToolObservationStatus.COMPLETED,
                 content=content,
-                content_type="application/json" if request.tool_name.startswith("tool.") else "text/plain",
+                content_type="text/plain",
                 sensitivity=request.sensitivity,
                 truncated=False,
                 output_bytes=len(content),
@@ -4922,25 +4929,17 @@ def test_tool_react_loop_does_not_apply_initial_proposal_timeout_cap_to_live_sta
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = (
-                '{"cpu": {"used_percent": 20.0}, "source": "fake"}'
-                if request.tool_name == "tool.system.read.resources"
-                else "27.1828182845905"
-            )
+            if request.tool_name == "tool.system.read.resources":
+                return _typed_resource_observation(request, cpu_percent=20.0, now=now)
+            content = "27.1828182845905"
             return ToolObservation(
                 tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
                 status=ToolObservationStatus.COMPLETED,
                 content=content,
-                content_type=(
-                    "application/json"
-                    if request.tool_name == "tool.system.read.resources"
-                    else "text/plain"
-                ),
+                content_type="text/plain",
                 sensitivity=request.sensitivity,
                 truncated=False,
                 output_bytes=len(content),
@@ -5028,24 +5027,9 @@ def test_tool_react_loop_initial_proposal_timeout_for_live_state_status_does_not
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = '{"cpu": {"used_percent": 20.0}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, cpu_percent=20.0, now=now)
 
     class SlowInitialProposalRouter(FakeStructuredAndChatRouter):
         async def structured(self, request):
@@ -5085,7 +5069,7 @@ def test_tool_react_loop_initial_proposal_timeout_for_live_state_status_does_not
                         ),
                         budget=replace(_budget(), max_model_call_seconds=0.01, max_tool_calls=1),
                     ),
-                    user_input="what is current CPU usage?",
+                    user_input="what time is it and what is current CPU usage?",
                 )
             )
         return gateway, router, event_log.events
@@ -5201,20 +5185,7 @@ def test_tool_react_loop_defers_direct_final_answer_until_live_state_evidence() 
 
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id="tool-call-resources",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -5379,20 +5350,7 @@ def test_tool_react_loop_required_policy_defers_direct_final_answer_until_live_s
 
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id="tool-call-resources",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -5460,22 +5418,11 @@ def test_tool_react_loop_proposal_contract_blocks_final_answer_for_missing_live_
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             now = datetime.now(UTC)
-            content = '{"iso": "2026-06-05T20:59:07+03:00"}'
-            return ToolObservation(
-                tool_call_id="tool-call-datetime-now",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
+            return _typed_datetime_now_observation(
+                request,
+                iso="2026-06-05T20:59:07+03:00",
+                now=now,
             )
 
     async def scenario():
@@ -5525,27 +5472,15 @@ def test_tool_react_loop_malformed_fallback_defers_until_all_live_state_evidence
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
             if request.tool_name == "datetime.now":
-                content = '{"iso": "2026-06-05T20:59:07+03:00"}'
-            else:
-                content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-05T20:59:07+03:00",
+                    now=now,
+                )
+            return _typed_resource_observation(request, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -5621,27 +5556,15 @@ def test_tool_react_loop_validation_fallback_defers_until_all_live_state_evidenc
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
             if request.tool_name == "datetime.now":
-                content = '{"iso": "2026-06-05T20:59:07+03:00"}'
-            else:
-                content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-05T20:59:07+03:00",
+                    now=now,
+                )
+            return _typed_resource_observation(request, now=now)
 
     class BrokenSecondProposalRouter(FakeStructuredAndChatRouter):
         async def structured(self, request):
@@ -5731,27 +5654,15 @@ def test_tool_react_loop_timeout_fallback_defers_until_all_live_state_evidence()
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
             if request.tool_name == "datetime.now":
-                content = '{"iso": "2026-06-05T20:59:07+03:00"}'
-            else:
-                content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-05T20:59:07+03:00",
+                    now=now,
+                )
+            return _typed_resource_observation(request, now=now)
 
     class SlowSecondProposalRouter(FakeStructuredAndChatRouter):
         async def structured(self, request):
@@ -5835,27 +5746,15 @@ def test_tool_react_loop_repeated_call_recovery_defers_until_all_live_state_evid
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
             if request.tool_name == "datetime.now":
-                content = '{"iso": "2026-06-05T20:59:07+03:00"}'
-            else:
-                content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-05T20:59:07+03:00",
+                    now=now,
+                )
+            return _typed_resource_observation(request, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -5918,7 +5817,7 @@ def test_tool_react_loop_repeated_call_recovery_defers_until_all_live_state_evid
     )
 
 
-def test_tool_react_loop_no_proposal_final_chat_fails_when_live_state_evidence_is_missing() -> None:
+def test_tool_react_loop_preserves_model_selected_live_state_tool_calls_until_evidence_complete() -> None:
     class Gateway:
         def __init__(self) -> None:
             self.calls: list[tuple[str, dict]] = []
@@ -5929,11 +5828,30 @@ def test_tool_react_loop_no_proposal_final_chat_fails_when_live_state_evidence_i
         async def invoke(self, request):
             from assistant_core.domain.tools import ToolObservation
 
-            self.calls.append((request.tool_name, dict(request.arguments)))
+            arguments = dict(request.arguments)
+            self.calls.append((request.tool_name, arguments))
             now = datetime.now(UTC)
-            content = '{"iso": "2026-06-05T20:59:07+03:00"}'
+            if request.tool_name == "tool.system.read.network":
+                content = '{"interfaces": [{"name": "en0", "bytes_in": 1000, "bytes_out": 2000}]}'
+                structured_schema = "system.network_interfaces"
+                structured_content = {"interfaces": [{"name": "en0"}]}
+            elif arguments.get("argv") == ["df", "-h"]:
+                content = '{"filesystems": [{"mount": "/", "available_percent": 64.0}]}'
+                structured_schema = "system.disk_free"
+                structured_content = {"filesystems": [{"mount": "/", "available_percent": 64.0}]}
+            elif arguments.get("argv") == ["top", "-l", "1", "-n", "0"]:
+                content = '{"used_percent": 12.5}'
+                structured_schema = "system.cpu_overview"
+                structured_content = {"used_percent": 12.5}
+            else:
+                content = '{"cpu": {"used_percent": 10.2}, "memory": {"used_percent": 62.5}}'
+                structured_schema = "system.resource_overview"
+                structured_content = {
+                    "cpu": {"used_percent": 10.2},
+                    "memory": {"used_percent": 62.5},
+                }
             return ToolObservation(
-                tool_call_id="tool-call-datetime-now",
+                tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
                 status=ToolObservationStatus.COMPLETED,
                 content=content,
@@ -5944,6 +5862,103 @@ def test_tool_react_loop_no_proposal_final_chat_fails_when_live_state_evidence_i
                 started_at=now,
                 completed_at=now,
                 duration_ms=0,
+                structured_content=structured_content,
+                structured_schema=structured_schema,
+                structured_schema_version=1,
+                parse_status=ToolParseStatus.PARSED,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {"metric": "cpu_and_memory"},
+                },
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {"argv": ["top", "-l", "1", "-n", "0"]},
+                },
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {"argv": ["df", "-h"]},
+                },
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.network",
+                    "arguments": {"argv": ["ifconfig"]},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="CPU 10.2%, memory 62.5%, network active, storage 64% free.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "tool.system.read.resources",
+                        "tool.system.read.network",
+                        live_state_tool_names=(
+                            "tool.system.read.resources",
+                            "tool.system.read.network",
+                        ),
+                    ),
+                    budget=replace(
+                        _budget(),
+                        max_steps=6,
+                        max_model_calls=6,
+                        max_tool_calls=4,
+                    ),
+                ),
+                user_input=(
+                    "Предоставь сводку данных о текущем состоянии системы, включая "
+                    "нагрузку процессора, занятую память, активность сети и процент "
+                    "свободного хранилища."
+                ),
+            )
+        )
+        return result, gateway, router, event_log.events
+
+    result, gateway, router, events = asyncio.run(scenario())
+
+    assert result.response_text == "CPU 10.2%, memory 62.5%, network active, storage 64% free."
+    assert gateway.calls == [
+        ("tool.system.read.resources", {"metric": "cpu_and_memory"}),
+        ("tool.system.read.resources", {"argv": ["top", "-l", "1", "-n", "0"]}),
+        ("tool.system.read.resources", {"argv": ["df", "-h"]}),
+        ("tool.system.read.network", {"argv": ["ifconfig"]}),
+    ]
+    assert router.structured_calls == 4
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_no_proposal_final_chat_fails_when_live_state_evidence_is_missing() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            return _typed_datetime_now_observation(
+                request,
+                iso="2026-06-05T20:59:07+03:00",
+                now=now,
             )
 
     async def scenario():
@@ -5974,7 +5989,7 @@ def test_tool_react_loop_no_proposal_final_chat_fails_when_live_state_evidence_i
                         ),
                         budget=replace(_budget(), max_tool_calls=1),
                     ),
-                    user_input="what is current CPU usage?",
+                    user_input="what time is it and what is current CPU usage?",
                 )
             )
         return gateway, router, event_log.events
@@ -5996,21 +6011,17 @@ def test_tool_react_loop_defers_final_answer_until_live_state_math_has_calculato
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = (
-                '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-                if request.tool_name == "tool.system.read.resources"
-                else "27.1828182845905"
-            )
+            if request.tool_name == "tool.system.read.resources":
+                return _typed_resource_observation(request, now=now)
+            content = "27.1828182845905"
             return ToolObservation(
                 tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
                 status=ToolObservationStatus.COMPLETED,
                 content=content,
-                content_type="application/json" if request.tool_name.startswith("tool.") else "text/plain",
+                content_type="text/plain",
                 sensitivity=request.sensitivity,
                 truncated=False,
                 output_bytes=len(content),
@@ -6078,6 +6089,527 @@ def test_tool_react_loop_defers_final_answer_until_live_state_math_has_calculato
     )
 
 
+def test_tool_react_loop_defers_countdown_transform_final_answer_until_calculator_evidence() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.until":
+                structured_content = {
+                    "from_iso": "2026-06-05T20:59:07+03:00",
+                    "target": "next_new_year",
+                    "target_iso": "2027-01-01T00:00:00+03:00",
+                    "unit": "seconds",
+                    "seconds": 18337521,
+                    "value": 18337521,
+                }
+                content = json.dumps(structured_content, sort_keys=True)
+                content_type = "application/json"
+                structured_schema = "datetime.until"
+            else:
+                content = "16.7244752667616"
+                content_type = "text/plain"
+                structured_content = None
+                structured_schema = None
+            return ToolObservation(
+                tool_call_id=f"tool-call-{len(self.calls)}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type=content_type,
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+                structured_schema=structured_schema,
+                structured_schema_version=1 if structured_schema is not None else None,
+                structured_content=structured_content,
+                parse_status=(
+                    ToolParseStatus.PARSED
+                    if request.tool_name == "datetime.until"
+                    else ToolParseStatus.NOT_APPLICABLE
+                ),
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.until",
+                    "arguments": {"target": "next_new_year", "unit": "seconds"},
+                },
+                {"action": "final_answer"},
+                {
+                    "action": "tool_call",
+                    "tool_name": "calculator.evaluate",
+                    "arguments": {"expression": "round(ln(18337521), 4)"},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="16.7245",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "calculator.evaluate",
+                        "datetime.now",
+                        "datetime.until",
+                        live_state_tool_names=("datetime.now", "datetime.until"),
+                    ),
+                    budget=replace(
+                        _budget(),
+                        max_steps=6,
+                        max_model_calls=6,
+                        max_tool_calls=3,
+                    ),
+                ),
+                user_input=(
+                    "посчитай с точностью до 4 знаков после запятой натуральный "
+                    "логарифм количества секунд, оставшихся до Нового года"
+                ),
+            )
+        )
+        return result, gateway, router, event_log.events
+
+    result, gateway, router, events = asyncio.run(scenario())
+
+    assert result.response_text == "16.7245"
+    assert gateway.calls == [
+        ("datetime.until", {"target": "next_new_year", "unit": "seconds"}),
+        ("calculator.evaluate", {"expression": "round(ln(18337521), 4)"}),
+    ]
+    assert router.structured_calls == 4
+    assert router.chat_calls == 1
+    assert any(
+        event.payload.get("action") == "final_answer_deferred_missing_evidence"
+        and event.payload.get("missing_evidence_family") == "live_state_math"
+        and "calculator.evaluate" in event.payload.get("missing_tool_names", [])
+        for event in events
+        if event.event_type is EventType.AGENT_STEP_COMPLETED
+    )
+
+
+def test_tool_react_loop_uses_datetime_diff_for_derived_elapsed_duration_answer() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-07T20:17:00+03:00",
+                    now=now,
+                )
+            if request.tool_name == "datetime.diff":
+                payload = {
+                    "from_iso": "2025-11-27T00:00:00-05:00",
+                    "to_iso": "2026-06-07T20:17:00+03:00",
+                    "seconds": 16910220,
+                    "minutes": 281837,
+                    "hours": 4697.283333333334,
+                    "days": 195.7201388888889,
+                    "unit": "minutes",
+                    "value": 281837,
+                    "absolute": False,
+                }
+                content = json.dumps(payload, sort_keys=True)
+                return ToolObservation(
+                    tool_call_id=f"tool-call-{len(self.calls)}",
+                    tool_name=request.tool_name,
+                    status=ToolObservationStatus.COMPLETED,
+                    content=content,
+                    content_type="application/json",
+                    sensitivity=request.sensitivity,
+                    truncated=False,
+                    output_bytes=len(content),
+                    started_at=now,
+                    completed_at=now,
+                    duration_ms=0,
+                    structured_schema="datetime.diff",
+                    structured_schema_version=1,
+                    structured_content=payload,
+                    parse_status=ToolParseStatus.PARSED,
+                )
+            return ToolObservation(
+                tool_call_id=f"tool-call-{len(self.calls)}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content="65.63",
+                content_type="text/plain",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len("65.63"),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+                parse_status=ToolParseStatus.NOT_APPLICABLE,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.diff",
+                    "arguments": {
+                        "from_iso": "2025-11-27T00:00:00-05:00",
+                        "to_iso": "2026-06-07T20:17:00+03:00",
+                        "unit": "minutes",
+                    },
+                },
+                {"action": "final_answer"},
+                {
+                    "action": "tool_call",
+                    "tool_name": "calculator.evaluate",
+                    "arguments": {"expression": "cbrt(281837)"},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="65.63",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "calculator.evaluate",
+                        "datetime.diff",
+                        "datetime.now",
+                        "datetime.until",
+                        live_state_tool_names=("datetime.diff", "datetime.now", "datetime.until"),
+                    ),
+                    budget=replace(
+                        _budget(),
+                        max_steps=8,
+                        max_model_calls=8,
+                        max_tool_calls=3,
+                    ),
+                ),
+                user_input=(
+                    "корень кубический из количества минут, прошедших с "
+                    "2025-11-27T00:00:00-05:00."
+                ),
+            )
+        )
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "65.63"
+    assert gateway.calls == [
+        ("datetime.now", {}),
+        (
+            "datetime.diff",
+            {
+                "from_iso": "2025-11-27T00:00:00-05:00",
+                "to_iso": "2026-06-07T20:17:00+03:00",
+                "unit": "minutes",
+            },
+        ),
+        ("calculator.evaluate", {"expression": "cbrt(281837)"}),
+    ]
+    assert result.tool_observation_refs[1].arguments == {
+        "from_iso": "2025-11-27T00:00:00-05:00",
+        "to_iso": "2026-06-07T20:17:00+03:00",
+        "unit": "minutes",
+    }
+    assert router.structured_calls == 5
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_blocks_derived_elapsed_duration_answer_without_typed_duration_evidence() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-07T20:17:00+03:00",
+                    now=now,
+                )
+            return ToolObservation(
+                tool_call_id=f"tool-call-{len(self.calls)}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content="65.63",
+                content_type="text/plain",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len("65.63"),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+                parse_status=ToolParseStatus.NOT_APPLICABLE,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+                {
+                    "action": "tool_call",
+                    "tool_name": "calculator.evaluate",
+                    "arguments": {"expression": "cbrt(281837)"},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="65.63",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
+            await loop.run_turn(
+                replace(
+                    _request(
+                        metadata=_tool_plan_metadata(
+                            "calculator.evaluate",
+                            "datetime.diff",
+                            "datetime.now",
+                            "datetime.until",
+                            live_state_tool_names=("datetime.diff", "datetime.now", "datetime.until"),
+                        ),
+                        budget=replace(
+                            _budget(),
+                            max_steps=8,
+                            max_model_calls=8,
+                            max_tool_calls=2,
+                        ),
+                    ),
+                    user_input=(
+                        "корень кубический из количества минут, прошедших с дня "
+                        "благодарения последнего."
+                    ),
+                )
+            )
+        return gateway, router
+
+    gateway, router = asyncio.run(scenario())
+
+    assert gateway.calls == [
+        ("datetime.now", {}),
+        ("calculator.evaluate", {"expression": "cbrt(281837)"}),
+    ]
+    assert router.structured_calls == 3
+    assert router.chat_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("prompt", "from_iso", "hours_value", "expression", "answer"),
+    [
+        (
+            "Десятичный логарифм количества часов, прошедших с "
+            "2025-09-01T00:00:00+03:00.",
+            "2025-09-01T00:00:00+03:00",
+            6716.283333333334,
+            "log10(6716.283333333334)",
+            "3.827129009012716",
+        ),
+        (
+            "двоичный логарифм количества часов, прошедших с "
+            "2025-09-11T00:00:00+03:00.",
+            "2025-09-11T00:00:00+03:00",
+            6476.283333333334,
+            "log2(6476.283333333334)",
+            "12.660950388686324",
+        ),
+        (
+            "Десятичный логарифм количества часов, прошедших с "
+            "1946-08-19T00:00:00-05:00.",
+            "1946-08-19T00:00:00-05:00",
+            699999.95,
+            "log10(699999.95)",
+            "5.845097969970787",
+        ),
+    ],
+)
+def test_tool_react_loop_elapsed_hours_log_prompts_require_diff_and_calculator(
+    prompt: str,
+    from_iso: str,
+    hours_value: float,
+    expression: str,
+    answer: str,
+) -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-07T20:17:00+03:00",
+                    now=now,
+                )
+            if request.tool_name == "datetime.diff":
+                payload = {
+                    "from_iso": from_iso,
+                    "to_iso": "2026-06-07T20:17:00+03:00",
+                    "seconds": hours_value * 3600,
+                    "minutes": hours_value * 60,
+                    "hours": hours_value,
+                    "days": hours_value / 24,
+                    "unit": "hours",
+                    "value": hours_value,
+                    "absolute": False,
+                }
+                content = json.dumps(payload, sort_keys=True)
+                return ToolObservation(
+                    tool_call_id=f"tool-call-{len(self.calls)}",
+                    tool_name=request.tool_name,
+                    status=ToolObservationStatus.COMPLETED,
+                    content=content,
+                    content_type="application/json",
+                    sensitivity=request.sensitivity,
+                    truncated=False,
+                    output_bytes=len(content),
+                    started_at=now,
+                    completed_at=now,
+                    duration_ms=0,
+                    structured_schema="datetime.diff",
+                    structured_schema_version=1,
+                    structured_content=payload,
+                    parse_status=ToolParseStatus.PARSED,
+                )
+            return ToolObservation(
+                tool_call_id=f"tool-call-{len(self.calls)}",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=answer,
+                content_type="text/plain",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(answer),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+                parse_status=ToolParseStatus.NOT_APPLICABLE,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.diff",
+                    "arguments": {
+                        "from_iso": from_iso,
+                        "to_iso": "2026-06-07T20:17:00+03:00",
+                        "unit": "hours",
+                    },
+                },
+                {"action": "final_answer"},
+                {
+                    "action": "tool_call",
+                    "tool_name": "calculator.evaluate",
+                    "arguments": {"expression": expression},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response=answer,
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "calculator.evaluate",
+                        "datetime.diff",
+                        "datetime.now",
+                        live_state_tool_names=("datetime.diff", "datetime.now"),
+                    ),
+                    budget=replace(
+                        _budget(),
+                        max_steps=8,
+                        max_model_calls=8,
+                        max_tool_calls=3,
+                    ),
+                ),
+                user_input=prompt,
+            )
+        )
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == answer
+    assert gateway.calls == [
+        ("datetime.now", {}),
+        (
+            "datetime.diff",
+            {
+                "from_iso": from_iso,
+                "to_iso": "2026-06-07T20:17:00+03:00",
+                "unit": "hours",
+            },
+        ),
+        ("calculator.evaluate", {"expression": expression}),
+    ]
+    assert router.structured_calls == 5
+    assert router.chat_calls == 1
+
+
 def test_tool_react_loop_blocks_final_answer_in_contract_when_calculator_evidence_is_missing() -> None:
     class Gateway:
         def __init__(self) -> None:
@@ -6087,15 +6619,11 @@ def test_tool_react_loop_blocks_final_answer_in_contract_when_calculator_evidenc
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = (
-                '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-                if request.tool_name == "tool.system.read.resources"
-                else "27.1828182845905"
-            )
+            if request.tool_name == "tool.system.read.resources":
+                return _typed_resource_observation(request, now=now)
+            content = "27.1828182845905"
             return ToolObservation(
                 tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
@@ -6186,20 +6714,7 @@ def test_tool_react_loop_fails_final_answer_when_live_state_math_calculator_is_n
 
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -6266,20 +6781,7 @@ def test_tool_react_loop_failed_calculator_does_not_clear_live_state_math_eviden
                     completed_at=now,
                     error={"code": "tool_failed", "message": "calculator failed"},
                 )
-            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -6343,15 +6845,11 @@ def test_tool_react_loop_does_not_synthesize_partial_calculator_expression_for_b
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = (
-                '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-                if request.tool_name == "tool.system.read.resources"
-                else "27.1828182845905"
-            )
+            if request.tool_name == "tool.system.read.resources":
+                return _typed_resource_observation(request, now=now)
+            content = "27.1828182845905"
             return ToolObservation(
                 tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
@@ -6426,15 +6924,11 @@ def test_tool_react_loop_does_not_reuse_completed_deferred_step_for_tool_executi
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = (
-                '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-                if request.tool_name == "tool.system.read.resources"
-                else "27.1828182845905"
-            )
+            if request.tool_name == "tool.system.read.resources":
+                return _typed_resource_observation(request, now=now)
+            content = "27.1828182845905"
             return ToolObservation(
                 tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
@@ -6520,20 +7014,7 @@ def test_tool_react_loop_malformed_final_proposal_after_observation_uses_observe
 
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id="tool-call-resources",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, now=now)
 
     class ContractContextAssembler(FakeContextAssembler):
         def __init__(self) -> None:
@@ -6599,21 +7080,17 @@ def test_tool_react_loop_defers_malformed_final_proposal_to_calculator_evidence(
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = (
-                '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-                if request.tool_name == "tool.system.read.resources"
-                else "27.1828182845905"
-            )
+            if request.tool_name == "tool.system.read.resources":
+                return _typed_resource_observation(request, now=now)
+            content = "27.1828182845905"
             return ToolObservation(
                 tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
                 status=ToolObservationStatus.COMPLETED,
                 content=content,
-                content_type="application/json",
+                content_type="text/plain",
                 sensitivity=request.sensitivity,
                 truncated=False,
                 output_bytes=len(content),
@@ -6682,21 +7159,17 @@ def test_tool_react_loop_defers_repeated_live_state_tool_when_math_needs_calcula
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = (
-                '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-                if request.tool_name == "tool.system.read.resources"
-                else "27.1828182845905"
-            )
+            if request.tool_name == "tool.system.read.resources":
+                return _typed_resource_observation(request, now=now)
+            content = "27.1828182845905"
             return ToolObservation(
                 tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
                 status=ToolObservationStatus.COMPLETED,
                 content=content,
-                content_type="application/json" if request.tool_name.startswith("tool.") else "text/plain",
+                content_type="text/plain",
                 sensitivity=request.sensitivity,
                 truncated=False,
                 output_bytes=len(content),
@@ -6777,17 +7250,18 @@ def test_tool_react_loop_does_not_synthesize_exact_calculator_expression_after_w
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
+            if request.tool_name == "tool.system.read.resources":
+                return _typed_resource_observation(request, now=now)
             content = "10" if request.arguments["expression"] == "10" else "27.1828182845905"
+            content_type = "text/plain"
             return ToolObservation(
                 tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
                 status=ToolObservationStatus.COMPLETED,
                 content=content,
-                content_type="text/plain",
+                content_type=content_type,
                 sensitivity=request.sensitivity,
                 truncated=False,
                 output_bytes=len(content),
@@ -6800,6 +7274,11 @@ def test_tool_react_loop_does_not_synthesize_exact_calculator_expression_after_w
         gateway = Gateway()
         router = FakeStructuredAndChatRouter(
             [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.resources",
+                    "arguments": {"metric": "cpu_and_memory"},
+                },
                 {
                     "action": "tool_call",
                     "tool_name": "calculator.evaluate",
@@ -6816,24 +7295,30 @@ def test_tool_react_loop_does_not_synthesize_exact_calculator_expression_after_w
             event_log=FakeEventLog(),
             tool_gateway=gateway,
         )
-        result = await loop.run_turn(
-            replace(
-                _request(
-                    metadata=_tool_plan_metadata("calculator.evaluate"),
-                    budget=replace(_budget(), max_tool_calls=2),
-                ),
-                user_input="is CPU load greater than 10*e",
+        with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
+            await loop.run_turn(
+                replace(
+                    _request(
+                        metadata=_tool_plan_metadata(
+                            "calculator.evaluate",
+                            "tool.system.read.resources",
+                            live_state_tool_names=("tool.system.read.resources",),
+                        ),
+                        budget=replace(_budget(), max_tool_calls=2),
+                    ),
+                    user_input="is CPU load greater than 10*e",
+                )
             )
-        )
-        return result, gateway, router
+        return gateway, router
 
-    result, gateway, router = asyncio.run(scenario())
+    gateway, router = asyncio.run(scenario())
 
-    assert result.response_text == "10*e is 27.1828182845905."
-    assert gateway.calls == [("calculator.evaluate", {"expression": "10"})]
-    assert result.used_tool_calls == 1
+    assert gateway.calls == [
+        ("tool.system.read.resources", {"metric": "cpu_and_memory"}),
+        ("calculator.evaluate", {"expression": "10"}),
+    ]
     assert router.structured_calls == 2
-    assert router.chat_calls == 1
+    assert router.chat_calls == 0
 
 
 def test_tool_react_loop_omits_secret_like_calculator_expression_from_observation_ref_arguments() -> None:
@@ -6901,16 +7386,22 @@ def test_tool_react_loop_preserves_safe_datetime_until_arguments_in_observation_
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             now = datetime.now(UTC)
-            content = (
-                '{"target": "next_new_year", '
-                '"target_iso": "2027-01-01T00:00:00+03:00", '
-                '"seconds": 18337521, '
-                '"unit": "seconds", '
-                '"value": 18337521}'
-            )
+            if request.tool_name == "datetime.now":
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-05T20:59:07+03:00",
+                    now=now,
+                )
+            payload = {
+                "from_iso": "2026-06-05T20:59:07+03:00",
+                "target": "next_new_year",
+                "target_iso": "2027-01-01T00:00:00+03:00",
+                "seconds": 18337521,
+                "unit": "seconds",
+                "value": 18337521,
+            }
+            content = json.dumps(payload, sort_keys=True)
             return ToolObservation(
                 tool_call_id="tool-call-datetime-until",
                 tool_name=request.tool_name,
@@ -6923,11 +7414,20 @@ def test_tool_react_loop_preserves_safe_datetime_until_arguments_in_observation_
                 started_at=now,
                 completed_at=now,
                 duration_ms=0,
+                structured_schema="datetime.until",
+                structured_schema_version=1,
+                structured_content=payload,
+                parse_status=ToolParseStatus.PARSED,
             )
 
     async def scenario():
         router = FakeStructuredAndChatRouter(
             [
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.now",
+                    "arguments": {},
+                },
                 {
                     "action": "tool_call",
                     "tool_name": "datetime.until",
@@ -6952,8 +7452,9 @@ def test_tool_react_loop_preserves_safe_datetime_until_arguments_in_observation_
             replace(
                 _request(
                     metadata=_tool_plan_metadata(
+                        "datetime.now",
                         "datetime.until",
-                        live_state_tool_names=("datetime.until",),
+                        live_state_tool_names=("datetime.now", "datetime.until"),
                     ),
                     budget=replace(_budget(), max_tool_calls=2),
                 ),
@@ -6965,7 +7466,7 @@ def test_tool_react_loop_preserves_safe_datetime_until_arguments_in_observation_
     result = asyncio.run(scenario())
 
     assert result.response_text == "До Нового года осталось 18 337 521 секунд."
-    assert result.tool_observation_refs[0].arguments == {
+    assert result.tool_observation_refs[1].arguments == {
         "from_iso": "2026-06-05T20:59:07+03:00",
         "target": "next_new_year",
         "unit": "seconds",
@@ -7057,7 +7558,7 @@ def test_tool_react_loop_preserves_safe_system_diagnostics_arguments_and_metadat
     }
 
 
-def test_tool_react_loop_omits_unsupported_datetime_until_target_from_observation_ref() -> None:
+def test_tool_react_loop_fails_closed_for_countdown_when_datetime_now_is_unavailable() -> None:
     class Gateway:
         async def get_tool(self, tool_name: str):
             return None
@@ -7079,6 +7580,13 @@ def test_tool_react_loop_omits_unsupported_datetime_until_target_from_observatio
                 started_at=now,
                 completed_at=now,
                 duration_ms=0,
+                structured_schema="system.resource_overview",
+                structured_schema_version=1,
+                structured_content={
+                    "cpu": {"used_percent": 15.0},
+                    "memory": {"used_gib": 23.0},
+                },
+                parse_status=ToolParseStatus.PARSED,
             )
 
     async def scenario():
@@ -7100,24 +7608,24 @@ def test_tool_react_loop_omits_unsupported_datetime_until_target_from_observatio
             event_log=FakeEventLog(),
             tool_gateway=Gateway(),
         )
-        result = await loop.run_turn(
-            replace(
-                _request(
-                    metadata=_tool_plan_metadata(
-                        "datetime.until",
-                        live_state_tool_names=("datetime.until",),
+        with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
+            await loop.run_turn(
+                replace(
+                    _request(
+                        metadata=_tool_plan_metadata(
+                            "datetime.until",
+                            live_state_tool_names=("datetime.until",),
+                        ),
+                        budget=replace(_budget(), max_tool_calls=1),
                     ),
-                    budget=replace(_budget(), max_tool_calls=2),
-                ),
-                user_input="how many seconds until Christmas?",
+                    user_input="how many seconds until Christmas?",
+                )
             )
-        )
-        return result
+        return router
 
-    result = asyncio.run(scenario())
+    router = asyncio.run(scenario())
 
-    assert result.response_text == "Fallback answer."
-    assert result.tool_observation_refs[0].arguments == {}
+    assert router.chat_calls == 0
 
 
 def test_tool_react_loop_omits_invalid_datetime_until_from_iso_from_observation_ref() -> None:
@@ -7126,10 +7634,14 @@ def test_tool_react_loop_omits_invalid_datetime_until_from_iso_from_observation_
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             now = datetime.now(UTC)
-            content = '{"target": "next_new_year", "unit": "seconds", "value": 42}'
+            payload = {
+                "from_iso": "2026-06-05T20:59:07+03:00",
+                "target": "next_new_year",
+                "unit": "seconds",
+                "value": 42,
+            }
+            content = json.dumps(payload, sort_keys=True)
             return ToolObservation(
                 tool_call_id="tool-call-datetime-until",
                 tool_name=request.tool_name,
@@ -7142,6 +7654,10 @@ def test_tool_react_loop_omits_invalid_datetime_until_from_iso_from_observation_
                 started_at=now,
                 completed_at=now,
                 duration_ms=0,
+                structured_schema="datetime.until",
+                structured_schema_version=1,
+                structured_content=payload,
+                parse_status=ToolParseStatus.PARSED,
             )
 
     async def scenario():
@@ -7274,21 +7790,17 @@ def test_tool_react_loop_defers_live_state_final_answer_after_wrong_calculator_e
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = (
-                '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-                if request.tool_name == "tool.system.read.resources"
-                else "10"
-            )
+            if request.tool_name == "tool.system.read.resources":
+                return _typed_resource_observation(request, now=now)
+            content = "10"
             return ToolObservation(
                 tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
                 status=ToolObservationStatus.COMPLETED,
                 content=content,
-                content_type="application/json" if request.tool_name.startswith("tool.") else "text/plain",
+                content_type="text/plain",
                 sensitivity=request.sensitivity,
                 truncated=False,
                 output_bytes=len(content),
@@ -7366,20 +7878,7 @@ def test_tool_react_loop_fails_clearly_when_live_state_math_evidence_needs_exhau
 
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = '{"cpu": {"used_percent": 10.2}, "source": "fake"}'
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -7470,23 +7969,23 @@ def test_tool_react_loop_tool_budget_exhaustion_does_not_synthesize_missing_calc
             event_log=event_log,
             tool_gateway=gateway,
         )
-        result = await loop.run_turn(
-            replace(
-                _request(
-                    metadata=_tool_plan_metadata("calculator.evaluate"),
-                    budget=replace(_budget(), max_tool_calls=1),
-                ),
-                user_input="is CPU load greater than 10*e",
+        with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
+            await loop.run_turn(
+                replace(
+                    _request(
+                        metadata=_tool_plan_metadata("calculator.evaluate"),
+                        budget=replace(_budget(), max_tool_calls=1),
+                    ),
+                    user_input="is CPU load greater than 10*e",
+                )
             )
-        )
-        return result, gateway, router, event_log.events
+        return gateway, router, event_log.events
 
-    result, gateway, router, events = asyncio.run(scenario())
+    gateway, router, events = asyncio.run(scenario())
 
-    assert result.response_text == "incorrect final answer"
     assert gateway.calls == [("calculator.evaluate", {"expression": "10"})]
-    assert router.chat_calls == 1
-    assert EventType.REQUEST_PROCESSING_FAILED not in [event.event_type for event in events]
+    assert router.chat_calls == 0
+    assert EventType.REQUEST_PROCESSING_FAILED in [event.event_type for event in events]
 
 
 def test_tool_react_loop_structured_validation_fallback_does_not_synthesize_calculator_evidence() -> None:
@@ -7542,23 +8041,23 @@ def test_tool_react_loop_structured_validation_fallback_does_not_synthesize_calc
             event_log=event_log,
             tool_gateway=gateway,
         )
-        result = await loop.run_turn(
-            replace(
-                _request(
-                    metadata=_tool_plan_metadata("calculator.evaluate"),
-                    budget=replace(_budget(), max_tool_calls=1),
-                ),
-                user_input="is CPU load greater than 10*e",
+        with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
+            await loop.run_turn(
+                replace(
+                    _request(
+                        metadata=_tool_plan_metadata("calculator.evaluate"),
+                        budget=replace(_budget(), max_tool_calls=1),
+                    ),
+                    user_input="is CPU load greater than 10*e",
+                )
             )
-        )
-        return result, gateway, router, event_log.events
+        return gateway, router, event_log.events
 
-    result, gateway, router, events = asyncio.run(scenario())
+    gateway, router, events = asyncio.run(scenario())
 
-    assert result.response_text == "incorrect final answer"
     assert gateway.calls == [("calculator.evaluate", {"expression": "10"})]
-    assert router.chat_calls == 1
-    assert EventType.REQUEST_PROCESSING_FAILED not in [event.event_type for event in events]
+    assert router.chat_calls == 0
+    assert EventType.REQUEST_PROCESSING_FAILED in [event.event_type for event in events]
 
 
 def test_tool_react_loop_finalizes_after_completed_cpu_memory_snapshot_without_repeat_proposal() -> None:
@@ -7570,30 +8069,9 @@ def test_tool_react_loop_finalizes_after_completed_cpu_memory_snapshot_without_r
             return None
 
         async def invoke(self, request):
-            from assistant_core.domain.tools import ToolObservation
-
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
-            content = (
-                '{"exit_code": 0, '
-                '"stdout": "CPU usage: 10% user, 5% sys, 85% idle\\n'
-                'PhysMem: 12G used (2G wired), 20G unused.\\n", '
-                '"stderr": "", '
-                '"truncated": {"stdout": false, "stderr": false}}'
-            )
-            return ToolObservation(
-                tool_call_id=f"tool-call-{len(self.calls)}",
-                tool_name=request.tool_name,
-                status=ToolObservationStatus.COMPLETED,
-                content=content,
-                content_type="application/json",
-                sensitivity=request.sensitivity,
-                truncated=False,
-                output_bytes=len(content),
-                started_at=now,
-                completed_at=now,
-                duration_ms=0,
-            )
+            return _typed_resource_observation(request, cpu_percent=15.0, now=now)
 
     async def scenario():
         gateway = Gateway()
@@ -7654,20 +8132,13 @@ def test_tool_react_loop_allows_distinct_live_state_tools_after_completed_snapsh
             self.calls.append((request.tool_name, dict(request.arguments)))
             now = datetime.now(UTC)
             if request.tool_name == "tool.system.read.resources":
-                content = (
-                    '{"exit_code": 0, '
-                    '"stdout": "CPU usage: 10% user, 5% sys, 85% idle\\n'
-                    'PhysMem: 12G used (2G wired), 20G unused.\\n", '
-                    '"stderr": "", '
-                    '"truncated": {"stdout": false, "stderr": false}}'
-                )
-            else:
-                content = (
-                    '{"exit_code": 0, '
-                    '"stdout": "10\\n", '
-                    '"stderr": "", '
-                    '"truncated": {"stdout": false, "stderr": false}}'
-                )
+                return _typed_resource_observation(request, cpu_percent=15.0, now=now)
+            content = (
+                '{"exit_code": 0, '
+                '"stdout": "10\\n", '
+                '"stderr": "", '
+                '"truncated": {"stdout": false, "stderr": false}}'
+            )
             return ToolObservation(
                 tool_call_id=f"tool-call-{len(self.calls)}",
                 tool_name=request.tool_name,
@@ -8013,6 +8484,13 @@ def test_tool_react_loop_final_answer_contract_for_completed_tool_observations_f
                 started_at=now,
                 completed_at=now,
                 duration_ms=0,
+                structured_schema="system.resource_overview",
+                structured_schema_version=1,
+                structured_content={
+                    "cpu": {"used_percent": 15.0},
+                    "memory": {"used_gib": 23.0},
+                },
+                parse_status=ToolParseStatus.PARSED,
             )
 
     class ContractContextAssembler(FakeContextAssembler):
