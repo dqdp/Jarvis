@@ -66,11 +66,14 @@ through PolicyPort and ToolGatewayPort.
 The evidence guard uses broad live-state intent families rather than exact
 deterministic-question allowlists. It must cover current time/date wording,
 including "what time is it", "current time", "local time", `сколько времени`,
-`который час`, `текущее время`, `в данный момент` and `сейчас`; local machine
-and daemon state such as CPU, memory, load, battery, network/VPN/IP, disk,
-hardware and status wording; and current live values combined with arithmetic,
-threshold or comparison wording. A match only means that completed evidence is
-required before a live-state claim can be accepted.
+`который час`, `текущее время`, `в данный момент` and `сейчас`; local machine,
+process and daemon state such as CPU, memory, load, battery, network/VPN/IP,
+disk, hardware, process/service/PID and status wording; and current live values
+combined with arithmetic, threshold or comparison wording. A match only means
+that completed evidence is required before a live-state claim can be accepted.
+For process-scoped claims, the completed observation must match the requested
+process identity. Per-process CPU or memory claims require typed process-resource
+evidence, not aggregate `tool.system.read.resources` evidence.
 
 The guard algorithm is intentionally limited: build the candidate live-state
 tool set from explicit metadata and allowed local tools; lightly normalize user

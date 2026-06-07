@@ -109,6 +109,8 @@ def _tool(
     sensor_provider: FakeSensorProvider | None = None,
     resource_provider: FakeResourceProvider | None = None,
     platform: str = "linux",
+    max_stdout_bytes: int = 200,
+    max_lines: int = 3,
 ) -> SystemDiagnosticsTool:
     return SystemDiagnosticsTool(
         family=family,
@@ -116,9 +118,9 @@ def _tool(
         executor=executor,
         sensor_provider=sensor_provider,
         resource_provider=resource_provider,
-        max_stdout_bytes=200,
+        max_stdout_bytes=max_stdout_bytes,
         max_stderr_bytes=200,
-        max_lines=3,
+        max_lines=max_lines,
         timeout_seconds=0.5,
         platform=platform,
     )
@@ -133,6 +135,8 @@ def _gateway(
     resource_provider: FakeResourceProvider | None = None,
     platform: str = "linux",
     policy: AllowPolicy | None = None,
+    max_stdout_bytes: int = 200,
+    max_lines: int = 3,
 ):
     event_log = InMemoryEventLog()
     policy = policy or AllowPolicy()
@@ -146,6 +150,8 @@ def _gateway(
                     sensor_provider=sensor_provider,
                     resource_provider=resource_provider,
                     platform=platform,
+                    max_stdout_bytes=max_stdout_bytes,
+                    max_lines=max_lines,
                 ),
             ],
         ),
@@ -798,22 +804,215 @@ def test_system_diagnostics_tool_marks_failed_vpn_command_unparsed(tmp_path: Pat
     assert "command_failed" in observation.parse_warnings
 
 
-def test_system_diagnostics_tool_returns_typed_process_search_payload(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("pgrep_flag", "query", "stdout", "expected_match"),
+    [
+        ("-l", "HFT", "12345 HFT-strategy-runner\n", {"pid": 12345, "name": "HFT-strategy-runner"}),
+        (
+            "-fl",
+            "HFT",
+            "12345 /usr/local/bin/HFT-strategy-runner --config prod.toml\n",
+            {"pid": 12345, "name": "HFT-strategy-runner"},
+        ),
+        (
+            "-lf",
+            "server.py",
+            "12345 python server.py --port 8080\n",
+            {"pid": 12345, "name": "python", "command_name": "server.py"},
+        ),
+    ],
+)
+def test_system_diagnostics_tool_returns_typed_process_search_payload(
+    tmp_path: Path,
+    pgrep_flag: str,
+    query: str,
+    stdout: str,
+    expected_match: dict,
+) -> None:
     executor = RecordingDiagnosticsExecutor(
-        ShellExecutionResult(exit_code=0, stdout="12345 HFT-strategy-runner\n", stderr=""),
+        ShellExecutionResult(exit_code=0, stdout=stdout, stderr=""),
     )
     gateway, _policy, _event_log = _gateway(tmp_path, executor)
 
     observation = asyncio.run(
-        gateway.invoke(_request(tmp_path, ["pgrep", "-l", "HFT"], tool_name="tool.system.read.process")),
+        gateway.invoke(_request(tmp_path, ["pgrep", pgrep_flag, query], tool_name="tool.system.read.process")),
     )
 
     assert observation.structured_schema == "system.process_name_search"
     assert observation.parse_status is ToolParseStatus.PARSED
-    assert observation.structured_content["query"] == "HFT"
-    assert observation.structured_content["matches"] == [
-        {"pid": 12345, "name": "HFT-strategy-runner"},
+    assert observation.structured_content["query"] == query
+    assert observation.structured_content["matches"] == [expected_match]
+
+
+def test_system_diagnostics_tool_returns_typed_process_resource_payload(tmp_path: Path) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(
+            exit_code=0,
+            stdout=(
+                "USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\n"
+                "alex      123 12.5  3.2 123456 7890 ?        Ssl  10:00   0:01 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --type=renderer\n"
+            ),
+            stderr="",
+        ),
+    )
+    gateway, _policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        max_stdout_bytes=2_000,
+        max_lines=20,
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(_request(tmp_path, ["ps", "aux"], tool_name="tool.system.read.process")),
+    )
+
+    assert observation.structured_schema == "system.process_resource_snapshot"
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.structured_content["source"] == "ps"
+    assert observation.structured_content["processes"] == [
+        {
+            "pid": 123,
+            "name": "Google Chrome",
+            "cpu_percent": 12.5,
+            "memory_percent": 3.2,
+        },
     ]
+    assert observation.structured_content["truncated"] is False
+
+
+def test_system_diagnostics_tool_returns_typed_process_status_payload_from_ps_ao(tmp_path: Path) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(
+            exit_code=0,
+            stdout=(
+                "  PID COMM COMMAND\n"
+                " 1234 python python server.py --port 8080\n"
+            ),
+            stderr="",
+        ),
+    )
+    gateway, _policy, _event_log = _gateway(tmp_path, executor)
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(
+                tmp_path,
+                ["ps", "-Ao", "pid,comm,command"],
+                tool_name="tool.system.read.process",
+            ),
+        ),
+    )
+
+    assert observation.structured_schema == "system.process_resource_snapshot"
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.structured_content["source"] == "ps"
+    assert observation.structured_content["processes"] == [
+        {"pid": 1234, "name": "python", "command_name": "server.py"},
+    ]
+
+
+def test_system_diagnostics_tool_returns_typed_process_status_payload_from_ps_ef(tmp_path: Path) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(
+            exit_code=0,
+            stdout=(
+                "UID        PID  PPID  C STIME TTY          TIME CMD\n"
+                "alex      1234     1  0 10:00 ?        00:00:00 python server.py --port 8080\n"
+            ),
+            stderr="",
+        ),
+    )
+    gateway, _policy, _event_log = _gateway(tmp_path, executor)
+
+    observation = asyncio.run(
+        gateway.invoke(
+            _request(
+                tmp_path,
+                ["ps", "-ef"],
+                tool_name="tool.system.read.process",
+            ),
+        ),
+    )
+
+    assert observation.structured_schema == "system.process_resource_snapshot"
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.structured_content["source"] == "ps"
+    assert observation.structured_content["processes"] == [
+        {"pid": 1234, "name": "python", "command_name": "server.py"},
+    ]
+
+
+def test_system_diagnostics_tool_marks_typed_process_resource_payload_truncated(tmp_path: Path) -> None:
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(
+            exit_code=0,
+            stdout=(
+                "USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\n"
+                "alex      123 12.5  3.2 123456 7890 ?        Ssl  10:00   0:01 python server.py --port 8080\n"
+            ),
+            stderr="",
+            stdout_truncated=True,
+        ),
+    )
+    gateway, _policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        max_stdout_bytes=2_000,
+        max_lines=20,
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(_request(tmp_path, ["ps", "aux"], tool_name="tool.system.read.process")),
+    )
+
+    assert observation.structured_schema == "system.process_resource_snapshot"
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert observation.structured_content["truncated"] is True
+
+
+def test_system_diagnostics_tool_keeps_all_bounded_typed_process_resource_rows(tmp_path: Path) -> None:
+    rows = [
+        f"alex      {100 + index}  {index}.0  1.0 123456 7890 ?        Ssl  10:00   0:01 worker-{index}"
+        for index in range(5)
+    ]
+    rows.append(
+        "alex      123 12.5  3.2 123456 7890 ?        Ssl  10:00   0:01 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --type=renderer"
+    )
+    rows.extend(
+        f"alex      {200 + index}  {index}.0  1.0 123456 7890 ?        Ssl  10:00   0:01 helper-{index}"
+        for index in range(2)
+    )
+    executor = RecordingDiagnosticsExecutor(
+        ShellExecutionResult(
+            exit_code=0,
+            stdout=(
+                "USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\n"
+                f"{'\n'.join(rows)}\n"
+            ),
+            stderr="",
+        ),
+    )
+    gateway, _policy, _event_log = _gateway(
+        tmp_path,
+        executor,
+        max_stdout_bytes=2_000,
+        max_lines=20,
+    )
+
+    observation = asyncio.run(
+        gateway.invoke(_request(tmp_path, ["ps", "aux"], tool_name="tool.system.read.process")),
+    )
+
+    assert observation.structured_schema == "system.process_resource_snapshot"
+    assert observation.parse_status is ToolParseStatus.PARSED
+    assert len(observation.structured_content["processes"]) == 8
+    assert {
+        "pid": 123,
+        "name": "Google Chrome",
+        "cpu_percent": 12.5,
+        "memory_percent": 3.2,
+    } in observation.structured_content["processes"]
+    assert observation.structured_content["truncated"] is False
 
 
 def test_sensor_command_stdout_returns_normalized_snapshot(tmp_path: Path) -> None:

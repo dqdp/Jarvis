@@ -272,6 +272,7 @@ system.battery_charge v1
 system.disk_free v1
 system.vpn_status v1
 system.process_name_search v1
+system.process_resource_snapshot v1
 system.cpu_overview v1
 system.sensor_snapshot v1
 ```

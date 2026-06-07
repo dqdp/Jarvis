@@ -647,6 +647,7 @@ class SystemDiagnosticsTool:
             stderr=bounded_stderr.text,
             exit_code=result.exit_code,
             platform=self._platform,
+            stdout_truncated=stdout_truncated,
         )
         return ToolInvocationResult(
             content=json.dumps(content, sort_keys=True),

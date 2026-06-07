@@ -86,8 +86,8 @@ execution route. It must follow the full guard algorithm in
 tools from explicit metadata and allowed local tools, lightly normalize user
 text, match broad live-state intent families, return typed guard metadata, block
 unevidenced live-state finalization, and finalize only after matching completed
-evidence. It must cover current time/date wording, local machine or daemon
-state wording, current live values combined with arithmetic, threshold or
+evidence. It must cover current time/date wording, local machine, process or
+daemon state wording, current live values combined with arithmetic, threshold or
 comparison wording, unavailable-tool behavior and location/scope wording.
 
 Current available-tools questions are answered from runtime request metadata,
@@ -475,7 +475,10 @@ voice surface beyond the initial PM-09 foundation:
   detection, candidate evidence planning, observation matching, unavailable
   recovery pruning and calculator/live-state math matching. Until then,
   architecture tests enforce a size budget so the helper does not keep
-  accumulating unrelated responsibilities;
+  accumulating unrelated responsibilities. Process live-state intent and
+  observation matching now lives in `tool_loop_process_evidence.py`, with
+  process-resource matching isolated in `tool_loop_process_resource_evidence.py`;
+  the remaining helper responsibilities still need the same extraction treatment;
 - replace brittle lexical live-state finalization guards with typed
   request-plan/evidence metadata where possible. Keep the pre-answer evidence
   guard broad and safety-oriented, and keep deterministic finalizers narrow,

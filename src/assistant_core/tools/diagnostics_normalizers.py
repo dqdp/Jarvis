@@ -33,6 +33,7 @@ def normalize_command_output(
     stderr: str,
     exit_code: int,
     platform: str,
+    stdout_truncated: bool = False,
 ) -> DiagnosticsStructuredPayload:
     argv = tuple(decision.argv)
     if argv == ("sw_vers",):
@@ -80,8 +81,26 @@ def normalize_command_output(
         if exit_code != 0:
             return _unparsed("system.vpn_status", "command_failed")
         return _normalize_ip_vpn(stdout)
-    if len(argv) == 3 and argv[:2] in {("pgrep", "-l"), ("pgrep", "-fl")}:
-        return _normalize_pgrep(stdout, stderr=stderr, exit_code=exit_code, query=argv[2])
+    if len(argv) == 3 and argv[:2] in {("pgrep", "-l"), ("pgrep", "-fl"), ("pgrep", "-lf")}:
+        return _normalize_pgrep(
+            stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            query=argv[2],
+            full_command=argv[1] in {"-fl", "-lf"},
+        )
+    if argv == ("ps", "aux"):
+        if exit_code != 0:
+            return _unparsed("system.process_resource_snapshot", "command_failed")
+        return _normalize_ps_aux(stdout, truncated=stdout_truncated)
+    if len(argv) == 3 and argv[:2] == ("ps", "-Ao"):
+        if exit_code != 0:
+            return _unparsed("system.process_resource_snapshot", "command_failed")
+        return _normalize_ps_table(stdout, truncated=stdout_truncated)
+    if argv == ("ps", "-ef"):
+        if exit_code != 0:
+            return _unparsed("system.process_resource_snapshot", "command_failed")
+        return _normalize_ps_table(stdout, truncated=stdout_truncated)
     if argv == ("sysctl", "-n", "hw.logicalcpu"):
         if exit_code != 0:
             return _unparsed("system.cpu_overview", "command_failed")
@@ -332,6 +351,7 @@ def _normalize_pgrep(
     stderr: str,
     exit_code: int,
     query: str,
+    full_command: bool = False,
 ) -> DiagnosticsStructuredPayload:
     if exit_code not in {0, 1}:
         return _partial(
@@ -343,13 +363,93 @@ def _normalize_pgrep(
     for line in stdout.splitlines():
         if not line.strip():
             continue
-        pid, _, name = line.strip().partition(" ")
+        pid, _, raw_name = line.strip().partition(" ")
+        name = _process_name_from_command(raw_name) if full_command else raw_name
         if not pid.isdigit() or not name:
             continue
-        matches.append({"pid": int(pid), "name": name})
+        match = {"pid": int(pid), "name": name}
+        command_name = _wrapper_command_name(raw_name) if full_command else None
+        if command_name and command_name != name:
+            match["command_name"] = command_name
+        matches.append(match)
     return _parsed(
         "system.process_name_search",
         {"query": query, "matches": matches, "source": "pgrep"},
+    )
+
+
+def _normalize_ps_aux(stdout: str, *, truncated: bool = False) -> DiagnosticsStructuredPayload:
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return _unparsed("system.process_resource_snapshot")
+    headers = lines[0].split()
+    required = ("PID", "%CPU", "%MEM", "COMMAND")
+    if not all(header in headers for header in required):
+        return _unparsed("system.process_resource_snapshot")
+    command_index = headers.index("COMMAND")
+    processes: list[dict[str, Any]] = []
+    parsed_rows = 0
+    for line in lines[1:]:
+        columns = line.split(None, len(headers) - 1)
+        if len(columns) <= command_index:
+            continue
+        pid = _integer(columns[headers.index("PID")])
+        cpu_percent = _number(columns[headers.index("%CPU")])
+        memory_percent = _number(columns[headers.index("%MEM")])
+        name = _process_name_from_command(columns[command_index])
+        if pid is None or cpu_percent is None or memory_percent is None or not name:
+            continue
+        parsed_rows += 1
+        item: dict[str, Any] = {
+            "pid": pid,
+            "name": name,
+            "cpu_percent": cpu_percent,
+            "memory_percent": memory_percent,
+        }
+        command_name = _wrapper_command_name(columns[command_index])
+        if command_name and command_name != name:
+            item["command_name"] = command_name
+        processes.append(item)
+    if not processes:
+        return _unparsed("system.process_resource_snapshot")
+    return _parsed(
+        "system.process_resource_snapshot",
+        {
+            "processes": processes,
+            "source": "ps",
+            "truncated": truncated,
+        },
+    )
+
+
+def _normalize_ps_table(stdout: str, *, truncated: bool = False) -> DiagnosticsStructuredPayload:
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return _unparsed("system.process_resource_snapshot")
+    headers = lines[0].split()
+    if "PID" not in headers:
+        return _unparsed("system.process_resource_snapshot")
+    command_key = "COMMAND" if "COMMAND" in headers else "CMD" if "CMD" in headers else None
+    processes: list[dict[str, Any]] = []
+    for line in lines[1:]:
+        columns = line.split(None, len(headers) - 1)
+        if len(columns) < len(headers):
+            continue
+        pid = _integer(columns[headers.index("PID")])
+        command = columns[headers.index(command_key)] if command_key is not None else ""
+        name = columns[headers.index("COMM")] if "COMM" in headers else _process_name_from_command(command)
+        if pid is None or not isinstance(name, str) or not name.strip():
+            continue
+        item = {"pid": pid, "name": name.strip()}
+        command_name = _wrapper_command_name(command)
+        if command_name and command_name != item["name"]:
+            item["command_name"] = command_name
+        processes.append(item)
+    if not processes:
+        return _unparsed("system.process_resource_snapshot")
+    return _parsed(
+        "system.process_resource_snapshot",
+        {"processes": processes, "source": "ps", "truncated": truncated},
     )
 
 
@@ -413,6 +513,37 @@ def _number(value: str | None) -> float | None:
     if value is None or not re.fullmatch(r"\d+(?:\.\d+)?", value):
         return None
     return float(value)
+
+
+def _integer(value: str | None) -> int | None:
+    if value is None or not re.fullmatch(r"\d+", value):
+        return None
+    return int(value)
+
+
+def _process_name_from_command(command: str) -> str | None:
+    app_match = re.search(r"/([^/\n]+)\.app(?:/|$)", command)
+    if app_match is not None:
+        return app_match.group(1).strip() or None
+    executable = command.strip().split(maxsplit=1)[0] if command.strip() else ""
+    name = executable.rsplit("/", 1)[-1].strip()
+    if not name:
+        return None
+    return name.removesuffix(".app")
+
+
+def _wrapper_command_name(command: str) -> str | None:
+    parts = command.strip().split()
+    if len(parts) < 2:
+        return None
+    executable = _process_name_from_command(parts[0]) or ""
+    if not re.fullmatch(r"(?:python[\d.]*|node|ruby|uvicorn|gunicorn)", executable):
+        return None
+    for token in parts[1:]:
+        if token.startswith("-"):
+            continue
+        return _process_name_from_command(token)
+    return None
 
 
 def _mib(value: str) -> str:

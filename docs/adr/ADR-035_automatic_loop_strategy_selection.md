@@ -640,11 +640,11 @@ df on macOS/Linux          -> system.disk_free v1
 vm_stat / free              -> system.memory_overview v1
 ```
 
-CPU and memory direct-answer schemas are aggregate-only in v1. Per-core CPU
-usage, per-process memory, top-process resource summaries, thread-level stats and
-memory pressure/stall breakdowns are deferred to later schemas such as
-`system.cpu_per_core_snapshot`, `system.process_resource_snapshot` or
-`system.memory_pressure` if they become necessary.
+CPU and memory direct-answer schemas are aggregate-only in v1. Typed
+`system.process_resource_snapshot` evidence may exist for guarded process-scoped
+claims, but deterministic per-process memory, top-process resource summaries,
+per-core CPU usage, thread-level stats and memory pressure/stall breakdowns
+remain deferred to later schemas or finalizers if they become necessary.
 
 Process command lines, network evidence and similar host details are
 sensitivity-aware fields. They should be omitted or redacted by default unless

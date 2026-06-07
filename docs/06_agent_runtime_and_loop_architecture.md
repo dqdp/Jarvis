@@ -192,9 +192,9 @@ The live-state evidence guard algorithm is:
    - current time/date wording, including "what time is it", "current time",
      "local time", `сколько времени`, `который час`,
      `текущее время`, `в данный момент` and `сейчас`;
-   - current local machine or daemon state, including CPU/processor, memory/RAM,
-     load/usage, battery, network/VPN/IP, disk, hardware and daemon/status
-     wording;
+   - current local machine, process or daemon state, including CPU/processor,
+     memory/RAM, load/usage, battery, network/VPN/IP, disk, hardware,
+     process/service/PID and daemon/status wording;
    - current live values combined with arithmetic, threshold or comparison
      wording, such as requests that calculate from the current time or current
      resource values.
@@ -206,7 +206,11 @@ The live-state evidence guard algorithm is:
    authorize a tool.
 6. When a positive live-state intent match has a relevant allowed local tool,
    the loop must not accept a `final_answer` that asserts current live state
-   before a matching completed tool observation exists.
+   before a matching completed tool observation exists. Process
+   existence/status evidence must match the requested process name or PID;
+   process resource claims such as per-process CPU or memory require a typed
+   process-resource observation such as `system.process_resource_snapshot`, not
+   a global machine resource snapshot.
 7. After a completed observation exists, finalization follows the normal bounded
    loop. A narrow deterministic finalizer may synthesize a short answer only
    from completed typed evidence, for example formatting a completed

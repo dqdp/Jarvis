@@ -1070,6 +1070,7 @@ def test_known_facades_stay_below_god_module_size() -> None:
         SRC_ROOT / "cli_app" / "line_reader.py": 300,
         SRC_ROOT / "cli_app" / "renderers.py": 220,
         SRC_ROOT / "tools" / "gateway.py": 850,
+        SRC_ROOT / "tools" / "diagnostics_normalizers.py": 600,
         SRC_ROOT / "runtime" / "loops" / "tool_react.py": 1200,
         SRC_ROOT / "context_assembly" / "deterministic.py": 780,
     }
@@ -1085,6 +1086,8 @@ def test_known_facades_stay_below_god_module_size() -> None:
 def test_loop_evidence_helpers_stay_below_size_budget() -> None:
     max_lines_by_path = {
         SRC_ROOT / "runtime" / "loops" / "tool_loop_evidence.py": 2100,
+        SRC_ROOT / "runtime" / "loops" / "tool_loop_process_evidence.py": 320,
+        SRC_ROOT / "runtime" / "loops" / "tool_loop_process_resource_evidence.py": 180,
         SRC_ROOT / "runtime" / "loops" / "available_tools_finalizer.py": 140,
     }
     offenders = [

@@ -16,6 +16,14 @@ from assistant_core.domain.tools import (
     ToolObservationStatus,
     ToolParseStatus,
 )
+from assistant_core.runtime.loops.tool_loop_process_evidence import (
+    PROCESS_SHARED_SUFFIX_TOPIC_PATTERNS,
+    PROCESS_TASK_CONTINUATION_CLAUSE_PATTERNS,
+    PROCESS_TOOL_NAMES,
+    is_process_scoped_resource_request,
+    matches_process_live_state_intent,
+    process_observations_match_request,
+)
 
 
 TOOL_PROPOSAL_MAX_MODEL_CALL_SECONDS = 8.0
@@ -28,6 +36,7 @@ class LiveStateEvidenceFamily(StrEnum):
     SYSTEM_NETWORK = "system_network"
     SYSTEM_HARDWARE = "system_hardware"
     SYSTEM_SENSORS = "system_sensors"
+    SYSTEM_PROCESS = "system_process"
     DAEMON_STATUS = "daemon_status"
     LIVE_STATE_MATH = "live_state_math"
 
@@ -100,6 +109,7 @@ _SYSTEM_RESOURCE_TOOL_NAMES = frozenset({"tool.system.read.resources"})
 _SYSTEM_NETWORK_TOOL_NAMES = frozenset({"tool.system.read.network"})
 _SYSTEM_HARDWARE_TOOL_NAMES = frozenset({"tool.system.read.hardware"})
 _SYSTEM_SENSOR_TOOL_NAMES = frozenset({"tool.system.read.sensors"})
+_SYSTEM_PROCESS_TOOL_NAMES = PROCESS_TOOL_NAMES
 _NON_RECOVERABLE_LIVE_STATE_ERROR_CODES = (
     NON_RECOVERABLE_TOOL_OBSERVATION_ERROR_CODES | frozenset({"invalid_arguments"})
 )
@@ -121,17 +131,20 @@ _CURRENT_LOCAL_OBSERVATION_PATTERNS: tuple[str, ...] = (
     r"\b(?:right\s+now|now)\b",
 )
 _LIVE_STATE_CLAUSE_SEPARATOR_PATTERN = re.compile(
-    r"[\r\n]+|[!?]+|(?<!\d)\.(?!\d)|(?<!\d),|,(?!\d)|[:;]+|"
+    r"[\r\n]+|[!?]+|(?<!\d)\.(?!\d|app\b|py\b|js\b|ts\b|mjs\b|cjs\b|rb\b)|"
+    r"(?<!\d),|,(?!\d)|[:;]+|"
     r"\b(?:and|also|then|but)\b|\b(?:и|а|но)\b",
     flags=re.IGNORECASE,
 )
 _NON_LIVE_DEFINITION_CONTEXT_PATTERNS: tuple[str, ...] = (
     r"\bwhat\s+does\b.+\bmean\b",
     r"\bwhat(?:'s|\s+is)\b.+\b(?:concept|meaning)\b",
-    r"\bwhat\s+is\s+(?:(?:a|an|the)\s+)?(?:network\s+interface|temperature\s+sensor|ip\s+address|cpu|processor|daemon|sensor|battery|disk|vpn)(?:\s+(?:right\s+)?now)?\s*$",
+    r"\bwhat\s+is\s+(?:(?:a|an|the)\s+)?(?:network\s+interface|temperature\s+sensor|ip\s+address|cpu|processor|daemon|process|service|pid|pgrep|ps|sensor|battery|disk|vpn)(?:\s+(?:right\s+)?now)?\s*$",
+    r"\bwhat\s+is\s+(?:(?:a|an|the)\s+)?[\w.-]+(?:\s+[\w.-]+){0,2}\s+daemon\s*\??$",
+    r"\bwhat\s+is\s+(?:(?:a|an|the)\s+)?(?:pid\s+controller|process\s+manager|service\s+manager)\b",
     r"\bwhat(?:'s|\s+is)\s+(?:cpu|processor|memory|ram|disk|battery|network|vpn)\s+(?:usage|load|utili[sz]ation)\s*$",
     r"\bhow\s+does\b.+\bwork\b",
-    r"\bexplain\b.+\b(?:usage|load|network|daemon|sensor|battery|disk|vpn|ip)\b",
+    r"\bexplain\b.+\b(?:usage|load|network|daemon|sensor|battery|disk|vpn|ip|pgrep|ps\s+command)\b",
     r"что\s+(?:значит|такое)\b",
 )
 _NON_LIVE_OPERATIONAL_MEANING_CONTEXT_PATTERNS: tuple[str, ...] = (
@@ -143,6 +156,7 @@ _NON_LIVE_MEANING_CONTEXT_PATTERNS: tuple[str, ...] = (
 )
 _SHARED_SUFFIX_TOPIC_PATTERNS: tuple[str, ...] = (
     r"^(?:my\s+)?(?:vpn|wi[- ]?fi|wifi|internet|network|battery|disk|hardware|sensors?|temperature|thermal|daemon|впн|интернет|wi-fi|вайфай|сеть|батар\w*|аккумулятор|диск|желез\w*|оборудован\w*|датчик\w*|температур\w*|демон)$",
+    *PROCESS_SHARED_SUFFIX_TOPIC_PATTERNS,
 )
 _SHARED_LIVE_SUFFIX_PATTERNS: tuple[str, ...] = (
     r"\bstatus\b",
@@ -473,6 +487,10 @@ _DAEMON_STATUS_PATTERNS: tuple[str, ...] = (
     r"\b(?:system|runtime)\s+status\b",
     r"статус\s+демон|демон.*(?:статус|работ)",
 )
+_THIRD_PARTY_DAEMON_PROCESS_PATTERN = re.compile(
+    r"\b(?!(?:the|a|an|is|are|what|system|runtime|assistant)\b)[a-z][\w.-]*(?:\s+[a-z][\w.-]*){0,2}\s+daemon\b",
+    flags=re.IGNORECASE,
+)
 
 
 def live_state_evidence_plan(
@@ -505,6 +523,7 @@ def live_state_evidence_plan(
             LiveStateEvidenceFamily.SYSTEM_NETWORK,
             LiveStateEvidenceFamily.SYSTEM_HARDWARE,
             LiveStateEvidenceFamily.SYSTEM_SENSORS,
+            LiveStateEvidenceFamily.SYSTEM_PROCESS,
             LiveStateEvidenceFamily.DAEMON_STATUS,
         }
     ):
@@ -643,9 +662,18 @@ def _detect_live_state_families_from_text(
         families.append(LiveStateEvidenceFamily.SYSTEM_SENSORS)
     if _matches_any(_SYSTEM_NETWORK_PATTERNS, value):
         families.append(LiveStateEvidenceFamily.SYSTEM_NETWORK)
-    if _matches_any(_SYSTEM_RESOURCE_PATTERNS, value):
+    third_party_daemon_process = _THIRD_PARTY_DAEMON_PROCESS_PATTERN.search(value) is not None
+    daemon_status = _matches_any(_DAEMON_STATUS_PATTERNS, value) and not third_party_daemon_process
+    process_scoped = (
+        third_party_daemon_process
+        or is_process_scoped_resource_request(value)
+        or matches_process_live_state_intent(value)
+    ) and not daemon_status
+    if _matches_any(_SYSTEM_RESOURCE_PATTERNS, value) and not process_scoped:
         families.append(LiveStateEvidenceFamily.SYSTEM_RESOURCES)
-    if _matches_any(_DAEMON_STATUS_PATTERNS, value):
+    if process_scoped:
+        families.append(LiveStateEvidenceFamily.SYSTEM_PROCESS)
+    if daemon_status:
         families.append(LiveStateEvidenceFamily.DAEMON_STATUS)
     if _matches_any(_SYSTEM_HARDWARE_PATTERNS, value):
         families.append(LiveStateEvidenceFamily.SYSTEM_HARDWARE)
@@ -840,6 +868,7 @@ _NON_LIVE_TASK_CONTINUATION_CLAUSE_PATTERNS: tuple[str, ...] = (
     r"^(?:whether|if|when)\s+(?:current\s+)?(?:(?:cpu|processor|memory|ram|disk|battery|network)\s+)*(?:usage|load|status|space|level|charge)\b.*(?:[<>]=?|\b(?:above|below|over|under|greater|less|higher|lower)\b)",
     r"^(?:is|are)\s+(?:current\s+)?(?:(?:cpu|processor|memory|ram|disk|battery|network)\s+)*(?:usage|load|status|space|level|charge)\b.*(?:[<>]=?|\b(?:above|below|over|under|greater|less|higher|lower)\b)",
     r"^check\s+(?:current\s+)?(?:(?:cpu|processor|memory|ram|disk|battery|network)\s+)*(?:usage|load|status|space|level|charge)(?:\s+(?:now|right\s+now|later))?$",
+    *PROCESS_TASK_CONTINUATION_CLAUSE_PATTERNS,
 )
 _INDEPENDENT_LIVE_CLAUSE_START_PATTERNS: tuple[str, ...] = (
     r"^(?:what|which|how\s+much|how\s+many|show|check|is|are|am|can|does|do)\b",
@@ -1183,6 +1212,8 @@ def _required_tool_names_for_family(family: LiveStateEvidenceFamily) -> frozense
         return _SYSTEM_HARDWARE_TOOL_NAMES
     if family is LiveStateEvidenceFamily.SYSTEM_SENSORS:
         return _SYSTEM_SENSOR_TOOL_NAMES
+    if family is LiveStateEvidenceFamily.SYSTEM_PROCESS:
+        return _SYSTEM_PROCESS_TOOL_NAMES
     if family is LiveStateEvidenceFamily.DAEMON_STATUS:
         return _DAEMON_STATUS_TOOL_NAMES
     return frozenset()
@@ -1215,6 +1246,11 @@ def _has_matching_completed_observation(
             request_text or request.user_input,
             tool_observation_refs,
         )
+    if tool_name == "tool.system.read.process":
+        return process_observations_match_request(
+            request_text or request.user_input,
+            tool_observation_refs,
+        )
     if tool_name.startswith("tool.system.read."):
         return any(
             is_completed_observation(ref)
@@ -1239,7 +1275,7 @@ def _resource_observations_match_request(
     )
     if not refs:
         return False
-    if _is_process_scoped_resource_request(request_text):
+    if is_process_scoped_resource_request(request_text):
         return False
     requires_disk = _matches_any(_SYSTEM_DISK_EVIDENCE_PATTERNS, request_text)
     requires_cpu = _matches_any(_SYSTEM_CPU_EVIDENCE_PATTERNS, request_text)
@@ -1499,21 +1535,6 @@ def _network_ref_matches_connectivity(ref: ToolObservationRef) -> bool:
         ("ifconfig",),
         ("ip", "addr"),
     }
-
-
-def _is_process_scoped_resource_request(request_text: str) -> bool:
-    return bool(
-        re.search(
-            r"\b(?:process|daemon|service|pid|python|node|java|postgres|redis)\b",
-            request_text,
-            flags=re.IGNORECASE,
-        )
-        or re.search(
-            r"\b(?:процесс|демон|служб|пид)\b",
-            request_text,
-            flags=re.IGNORECASE,
-        )
-    )
 
 
 def _system_ref_argv(ref: ToolObservationRef) -> tuple[str, ...]:
@@ -1806,6 +1827,7 @@ def _missing_families_for_tool_names(
         "tool.system.read.network": LiveStateEvidenceFamily.SYSTEM_NETWORK,
         "tool.system.read.hardware": LiveStateEvidenceFamily.SYSTEM_HARDWARE,
         "tool.system.read.sensors": LiveStateEvidenceFamily.SYSTEM_SENSORS,
+        "tool.system.read.process": LiveStateEvidenceFamily.SYSTEM_PROCESS,
         "daemon.status": LiveStateEvidenceFamily.DAEMON_STATUS,
     }
     families.update(

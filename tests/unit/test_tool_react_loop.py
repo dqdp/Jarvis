@@ -980,6 +980,55 @@ def test_tool_observation_rendering_omits_secret_like_calculator_arguments() -> 
     assert "expression" not in rendered
 
 
+def test_tool_observation_rendering_omits_raw_process_command_for_structured_payload() -> None:
+    ref = ToolObservationRef(
+        tool_call_id="tool-call-process",
+        tool_name="tool.system.read.process",
+        status=ToolObservationStatus.COMPLETED,
+        content=(
+            '{"exit_code": 0, "stdout": "12345 python server.py --port 8080\\n", '
+            '"stderr": "", "truncated": {"stdout": false, "stderr": false}}'
+        ),
+        content_type="application/json",
+        sensitivity=Sensitivity.PROJECT,
+        structured_schema="system.process_name_search",
+        structured_content={
+            "query": "server.py",
+            "matches": [{"pid": 12345, "name": "python", "command_name": "server.py"}],
+            "source": "pgrep",
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    rendered = tool_observation_content([ref])
+
+    assert "server.py" in rendered
+    assert "raw_content" not in rendered
+    assert "python server.py --port 8080" not in rendered
+
+
+def test_tool_observation_rendering_omits_raw_process_command_for_unstructured_payload() -> None:
+    ref = ToolObservationRef(
+        tool_call_id="tool-call-process",
+        tool_name="tool.system.read.process",
+        status=ToolObservationStatus.COMPLETED,
+        content=(
+            '{"exit_code": 0, "stdout": "USER PID %CPU %MEM COMMAND\\n'
+            'alex 123 0.0 0.1 python server.py --port 8080\\n", "stderr": ""}'
+        ),
+        content_type="application/json",
+        sensitivity=Sensitivity.PROJECT,
+        arguments={"argv": ["ps", "aux"]},
+    )
+
+    rendered = tool_observation_content([ref])
+
+    assert "arguments" in rendered
+    assert "ps" in rendered
+    assert "content=" not in rendered
+    assert "python server.py --port 8080" not in rendered
+
+
 def test_tool_react_loop_final_chat_failure_records_attempted_model_call() -> None:
     class FailingChatRouter(FakeChatRouter):
         async def chat(self, request):
@@ -5155,6 +5204,99 @@ def test_tool_react_loop_defers_direct_final_answer_until_live_state_evidence() 
     assert deferred[0]["missing_tool_names"] == ["tool.system.read.resources"]
 
 
+def test_tool_react_loop_defers_process_status_final_answer_until_process_evidence() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            content = (
+                '{"query": "Ollama", "matches": [{"pid": 1234, "name": "Ollama"}], '
+                '"source": "pgrep"}'
+            )
+            return ToolObservation(
+                tool_call_id="tool-call-process",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+                structured_content={
+                    "query": "Ollama",
+                    "matches": [{"pid": 1234, "name": "Ollama"}],
+                    "source": "pgrep",
+                },
+                structured_schema="system.process_name_search",
+                parse_status=ToolParseStatus.PARSED,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "final_answer"},
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.process",
+                    "arguments": {"argv": ["pgrep", "-l", "Ollama"]},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="Ollama is running.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "tool.system.read.process",
+                        live_state_tool_names=("tool.system.read.process",),
+                    ),
+                    budget=replace(_budget(), max_tool_calls=2),
+                ),
+                user_input="is Ollama running?",
+            )
+        )
+        return result, gateway, router, event_log.events
+
+    result, gateway, router, events = asyncio.run(scenario())
+
+    assert result.response_text == "Ollama is running."
+    assert gateway.calls == [("tool.system.read.process", {"argv": ["pgrep", "-l", "Ollama"]})]
+    assert router.structured_calls == 3
+    assert router.chat_calls == 1
+    deferred = [
+        event.payload
+        for event in events
+        if event.event_type is EventType.AGENT_STEP_COMPLETED
+        and event.payload.get("action") == "final_answer_deferred_missing_evidence"
+    ]
+    assert len(deferred) == 1
+    assert deferred[0]["missing_evidence_family"] == "system_process"
+    assert deferred[0]["missing_evidence_families"] == ["system_process"]
+    assert deferred[0]["candidate_tool_names"] == ["tool.system.read.process"]
+    assert deferred[0]["missing_tool_names"] == ["tool.system.read.process"]
+
+
 def test_tool_react_loop_required_policy_defers_direct_final_answer_until_live_state_evidence() -> None:
     class Gateway:
         def __init__(self) -> None:
@@ -7599,6 +7741,97 @@ def test_tool_react_loop_preserves_safe_system_diagnostics_argv_for_network_evid
     assert result.response_text == "Local IP address is 192.168.1.10."
     assert result.tool_observation_refs[0].arguments == {"argv": ["ifconfig"]}
     assert gateway.calls == [("tool.system.read.network", {"argv": ["ifconfig"]})]
+    assert router.structured_calls == 1
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_preserves_safe_system_diagnostics_argv_for_process_evidence() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            from assistant_core.domain.tools import ToolObservation
+
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            content = (
+                '{"exit_code": 0, '
+                '"stdout": "USER PID %CPU %MEM COMMAND\\nalex 123 0.0 0.1 python\\n", '
+                '"stderr": "", '
+                '"truncated": {"stdout": false, "stderr": false}}'
+            )
+            return ToolObservation(
+                tool_call_id="tool-call-process",
+                tool_name=request.tool_name,
+                status=ToolObservationStatus.COMPLETED,
+                content=content,
+                content_type="application/json",
+                sensitivity=request.sensitivity,
+                truncated=False,
+                output_bytes=len(content),
+                started_at=now,
+                completed_at=now,
+                duration_ms=0,
+                structured_content={
+                    "processes": [
+                        {
+                            "pid": 123,
+                            "name": "python",
+                            "cpu_percent": 0.0,
+                            "memory_percent": 0.1,
+                        },
+                    ],
+                    "source": "ps",
+                    "truncated": False,
+                },
+                structured_schema="system.process_resource_snapshot",
+                structured_schema_version=1,
+                parse_status=ToolParseStatus.PARSED,
+            )
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {
+                    "action": "tool_call",
+                    "tool_name": "tool.system.read.process",
+                    "arguments": {"argv": ["ps", "aux"]},
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="Process snapshot observed.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "tool.system.read.process",
+                        live_state_tool_names=("tool.system.read.process",),
+                    ),
+                    budget=replace(_budget(), max_tool_calls=1),
+                ),
+                user_input="show process list",
+            )
+        )
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "Process snapshot observed."
+    assert result.tool_observation_refs[0].arguments == {"argv": ["ps", "aux"]}
+    assert gateway.calls == [("tool.system.read.process", {"argv": ["ps", "aux"]})]
     assert router.structured_calls == 1
     assert router.chat_calls == 1
 

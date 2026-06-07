@@ -2934,7 +2934,16 @@ tools/system_diagnostics:
       matches[]
         pid
         name
-        command optional, redacted/bounded
+        command_name optional, sanitized executable/script basename
+    system.process_resource_snapshot v1:
+      processes[]
+        pid
+        name
+        command_name optional, sanitized executable/script basename
+        cpu_percent optional
+        memory_percent optional
+      source
+      truncated
     system.cpu_overview v1:
       logical_cores
       physical_cores optional
@@ -2969,7 +2978,7 @@ runtime/loops:
   direct answer builders read typed payloads only
   CPU and memory direct-answer v1 is aggregate-only:
     no per-core usage
-    no per-process memory
+    no deterministic per-process resource summary
     no top-process list
     no thread-level statistics
     no pressure/stall breakdown
@@ -2980,7 +2989,9 @@ runtime/loops:
   unparsed:
     do not invent a parsed answer
   when model calls are allowed, ordinary ReAct may analyze bounded raw
-    observations as data after direct typed answering is unavailable
+    observations as data after direct typed answering is unavailable, except
+    process diagnostics: `tool.system.read.process` raw stdout/stderr stays out
+    of prompt context and process live-state evidence must use typed schemas
   when model calls are not allowed, return a clear unparsed/unavailable result
   keep scope-specific stdout parsing out of tool_react_loop
 ```
@@ -3012,7 +3023,7 @@ MCP tool schema export
 artifact storage for large raw outputs
 write-capable tools
 per-core CPU direct answer payloads
-per-process memory/resource payloads
+broad per-process resource analysis beyond typed `ps aux` evidence snapshots
 top-process resource summaries
 voice input/output
 ```

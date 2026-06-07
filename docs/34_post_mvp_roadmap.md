@@ -464,8 +464,9 @@ PM-08h:
   punctuation, wake-name prefixes, casing variants and mixed-language terms;
 - keep misheard tool nouns as advisory evaluation cases until real STT output
   shows recurring errors worth promoting to hard-gate fixtures;
-- keep CPU and memory direct-answer v1 aggregate-only, with per-core and
-  per-process resource details deferred to later schemas;
+- keep CPU and memory direct-answer v1 aggregate-only; typed per-process
+  snapshots may exist as evidence, but deterministic per-process resource
+  summaries remain deferred;
 - keep real local model evaluation out of CI; classifier model comparison is
   historical/evaluation evidence after PM-08k, not a PM-09 runtime gate;
 - treat recorded PM-09 readiness evidence as spoken-transcript-like agent-loop

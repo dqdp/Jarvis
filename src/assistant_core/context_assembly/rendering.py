@@ -116,7 +116,7 @@ def tool_observation_content(refs: list[ToolObservationRef]) -> str:
                 arguments = _safe_tool_observation_arguments(ref.arguments)
                 if arguments:
                     payload["arguments"] = arguments
-            if ref.content.strip():
+            if ref.content.strip() and not _omit_raw_content_for_structured_observation(ref):
                 payload["raw_content"] = ref.content
             if ref.error_code is not None:
                 payload["error_code"] = ref.error_code
@@ -139,7 +139,7 @@ def tool_observation_content(refs: list[ToolObservationRef]) -> str:
                 )
         if ref.error_code is not None:
             diagnostics.append(f"error_code={ref.error_code}")
-        if ref.content.strip():
+        if ref.content.strip() and not _omit_raw_content_for_observation(ref):
             body = ref.content
             if diagnostics:
                 body = "; ".join(diagnostics) + f"; content={body}"
@@ -160,6 +160,14 @@ def _safe_tool_observation_arguments(arguments: dict[str, object]) -> dict[str, 
     if redacted != arguments:
         return {}
     return dict(arguments)
+
+
+def _omit_raw_content_for_structured_observation(ref: ToolObservationRef) -> bool:
+    return _omit_raw_content_for_observation(ref)
+
+
+def _omit_raw_content_for_observation(ref: ToolObservationRef) -> bool:
+    return ref.tool_name == "tool.system.read.process"
 
 
 def memory_content(hits: list[MemoryHit]) -> str:

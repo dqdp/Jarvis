@@ -75,6 +75,7 @@ def _completed_ref(
     structured_schema: str | None = None,
     parse_status: ToolParseStatus | None = None,
     metadata: dict | None = None,
+    truncated: bool = False,
 ) -> ToolObservationRef:
     if metadata is None and arguments and isinstance(arguments.get("argv"), list):
         metadata = {"exit_code": 0}
@@ -85,6 +86,7 @@ def _completed_ref(
         content=content,
         content_type="application/json",
         sensitivity=Sensitivity.PROJECT,
+        truncated=truncated,
         structured_content=structured_content,
         structured_schema=structured_schema,
         parse_status=parse_status,
@@ -578,6 +580,7 @@ def test_direct_live_state_family_detection_normalizes_like_plan_helper() -> Non
         "write a Python script to show current CPU usage",
         "write Python code to show CPU and memory usage",
         "write Python code to show CPU and current memory usage",
+        "write Python code: is Ollama running?",
         "write Python code to check CPU and whether memory usage is above 80%",
         "write Python code to check CPU and check memory usage",
         "write Python code: is memory usage above 80%",
@@ -606,6 +609,13 @@ def test_direct_live_state_family_detection_normalizes_like_plan_helper() -> Non
         "what is CPU?",
         "explain network basics",
         "what is a daemon?",
+        "what is a process?",
+        "what is a service?",
+        "what is a PID?",
+        "what is a PID controller?",
+        "what is a process manager?",
+        "what is pgrep?",
+        "explain ps command",
         "what is a temperature sensor?",
         "what is VPN?",
         "что такое нагрузка?",
@@ -970,6 +980,257 @@ def test_live_state_evidence_plan_tracks_multiple_live_state_families() -> None:
         {"datetime.now", "tool.system.read.resources"}
     )
     assert plan.missing_tool_names == plan.candidate_tool_names
+
+
+def test_live_state_evidence_plan_keeps_script_process_clause_in_mixed_live_request() -> None:
+    plan = live_state_evidence_plan(
+        _request("is server.py running and what is current CPU usage?"),
+        _plan(
+            "tool.system.read.process",
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.process", "tool.system.read.resources"),
+        ),
+        tool_observation_refs=(),
+    )
+
+    assert plan.families == frozenset(
+        {
+            LiveStateEvidenceFamily.SYSTEM_PROCESS,
+            LiveStateEvidenceFamily.SYSTEM_RESOURCES,
+        }
+    )
+    assert plan.candidate_tool_names == frozenset(
+        {"tool.system.read.process", "tool.system.read.resources"}
+    )
+    assert plan.missing_tool_names == plan.candidate_tool_names
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "is the wifi up?",
+        "is the internet up?",
+        "is VPN running?",
+    ],
+)
+def test_live_state_evidence_plan_network_status_does_not_require_process_evidence(
+    user_input: str,
+) -> None:
+    plan = live_state_evidence_plan(
+        _request(user_input),
+        _plan(
+            "tool.system.read.network",
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.network", "tool.system.read.process"),
+        ),
+        tool_observation_refs=(),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_NETWORK
+    assert plan.families == frozenset({LiveStateEvidenceFamily.SYSTEM_NETWORK})
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.network"})
+    assert plan.missing_tool_names == frozenset({"tool.system.read.network"})
+
+
+def test_live_state_evidence_plan_requires_process_observation_for_process_status() -> None:
+    request = _request("is Ollama running?")
+    request_plan = _plan(
+        "tool.system.read.process",
+        live_state_tool_names=("tool.system.read.process",),
+    )
+    missing_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    observed_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Ollama"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Ollama",
+                    "matches": [{"pid": 1234, "name": "Ollama"}],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert missing_plan.family is not None
+    assert missing_plan.family.value == "system_process"
+    assert missing_plan.families == frozenset({missing_plan.family})
+    assert missing_plan.candidate_tool_names == frozenset({"tool.system.read.process"})
+    assert missing_plan.missing_tool_names == frozenset({"tool.system.read.process"})
+    assert missing_plan.missing_families == frozenset({missing_plan.family})
+    assert observed_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_named_third_party_daemon_requires_process_observation() -> None:
+    plan = live_state_evidence_plan(
+        _request("is the Ollama daemon running?"),
+        _plan(
+            "daemon.status",
+            "tool.system.read.process",
+            live_state_tool_names=("daemon.status", "tool.system.read.process"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "daemon.status",
+                structured_schema="daemon.status",
+                structured_content={"status": "running"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert plan.families == frozenset({LiveStateEvidenceFamily.SYSTEM_PROCESS})
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.process"})
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_generic_named_daemon_requires_process_observation() -> None:
+    plan = live_state_evidence_plan(
+        _request("is the ClickHouse daemon running?"),
+        _plan(
+            "daemon.status",
+            "tool.system.read.process",
+            live_state_tool_names=("daemon.status", "tool.system.read.process"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "daemon.status",
+                structured_schema="daemon.status",
+                structured_content={"status": "running"},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.process"})
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_named_daemon_subject_first_keeps_identity() -> None:
+    unrelated_plan = live_state_evidence_plan(
+        _request("ClickHouse daemon is running?"),
+        _plan(
+            "daemon.status",
+            "tool.system.read.process",
+            live_state_tool_names=("daemon.status", "tool.system.read.process"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                structured_schema="system.process_resource_snapshot",
+                structured_content={
+                    "processes": [{"pid": 123, "name": "MongoDB"}],
+                    "source": "ps",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+    matching_plan = live_state_evidence_plan(
+        _request("ClickHouse daemon is running?"),
+        _plan(
+            "daemon.status",
+            "tool.system.read.process",
+            live_state_tool_names=("daemon.status", "tool.system.read.process"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                structured_schema="system.process_resource_snapshot",
+                structured_content={
+                    "processes": [{"pid": 123, "name": "clickhouse-server"}],
+                    "source": "ps",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert unrelated_plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert unrelated_plan.missing_tool_names == frozenset({"tool.system.read.process"})
+    assert matching_plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert matching_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_named_daemon_status_rejects_unrelated_process_snapshot() -> None:
+    plan = live_state_evidence_plan(
+        _request("Ollama daemon status"),
+        _plan(
+            "daemon.status",
+            "tool.system.read.process",
+            live_state_tool_names=("daemon.status", "tool.system.read.process"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                structured_schema="system.process_resource_snapshot",
+                structured_content={
+                    "processes": [{"pid": 123, "name": "MongoDB"}],
+                    "source": "ps",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_named_daemon_definition_is_near_miss() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is the Docker daemon?"),
+        _plan(
+            "daemon.status",
+            "tool.system.read.process",
+            live_state_tool_names=("daemon.status", "tool.system.read.process"),
+        ),
+        tool_observation_refs=(),
+    )
+
+    assert plan.family is None
+    assert plan.evidence_required is False
+
+
+def test_live_state_evidence_plan_rejects_mismatched_process_observation() -> None:
+    plan = live_state_evidence_plan(
+        _request("is Ollama running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Redis"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Redis",
+                    "matches": [{"pid": 2345, "name": "redis-server"}],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
 
 
 @pytest.mark.parametrize(
@@ -1739,7 +2000,7 @@ def test_live_state_evidence_plan_ignores_threshold_calculator_non_comparison_af
         ),
         (
             "what is current CPU usage of the Python process?",
-            LiveStateEvidenceFamily.SYSTEM_RESOURCES,
+            LiveStateEvidenceFamily.SYSTEM_PROCESS,
         ),
         (
             "is daemon runtime CPU load greater than 10*e?",
@@ -1762,8 +2023,15 @@ def test_live_state_evidence_plan_near_miss_exclusions_do_not_hide_system_math(
     )
 
     assert plan.family is expected_family
-    assert "tool.system.read.resources" in plan.candidate_tool_names
-    if expected_family is LiveStateEvidenceFamily.LIVE_STATE_MATH:
+    if "process" in user_input.lower():
+        assert plan.candidate_tool_names == frozenset()
+        assert plan.unavailable_reason == "live_state_tool_unavailable"
+    else:
+        assert "tool.system.read.resources" in plan.candidate_tool_names
+    if (
+        expected_family is LiveStateEvidenceFamily.LIVE_STATE_MATH
+        and "tool.system.read.resources" in plan.candidate_tool_names
+    ):
         assert "calculator.evaluate" in plan.candidate_tool_names
 
 
@@ -1928,8 +2196,9 @@ def test_live_state_evidence_plan_process_resource_request_rejects_global_resour
         _request("is the Python process memory usage greater than 10*e?"),
         _plan(
             "calculator.evaluate",
+            "tool.system.read.process",
             "tool.system.read.resources",
-            live_state_tool_names=("tool.system.read.resources",),
+            live_state_tool_names=("tool.system.read.process", "tool.system.read.resources"),
         ),
         tool_observation_refs=(
             _completed_ref(
@@ -1945,8 +2214,9 @@ def test_live_state_evidence_plan_process_resource_request_rejects_global_resour
     global_cpu_plan = live_state_evidence_plan(
         _request("what is current CPU usage of the Python process?"),
         _plan(
+            "tool.system.read.process",
             "tool.system.read.resources",
-            live_state_tool_names=("tool.system.read.resources",),
+            live_state_tool_names=("tool.system.read.process", "tool.system.read.resources"),
         ),
         tool_observation_refs=(
             _completed_ref(
@@ -1960,9 +2230,951 @@ def test_live_state_evidence_plan_process_resource_request_rejects_global_resour
     )
 
     assert global_memory_plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
-    assert global_memory_plan.missing_tool_names == frozenset({"tool.system.read.resources"})
-    assert global_cpu_plan.family is LiveStateEvidenceFamily.SYSTEM_RESOURCES
-    assert global_cpu_plan.missing_tool_names == frozenset({"tool.system.read.resources"})
+    assert global_memory_plan.missing_tool_names == frozenset({"tool.system.read.process"})
+    assert global_cpu_plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert global_cpu_plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "what is current CPU usage of Python?",
+        "what is current CPU usage of Chrome?",
+        "what is current CPU usage of Chrome right now?",
+        "what is current memory usage for qwen-server?",
+        "How much CPU is Chrome using right now?",
+        "How much memory is Ollama using?",
+        "CPU usage of Google Chrome",
+        "Google Chrome.app CPU usage",
+        "Chrome CPU usage",
+        "qwen-server memory usage",
+    ],
+)
+def test_live_state_evidence_plan_named_process_resource_request_rejects_global_resources(
+    user_input: str,
+) -> None:
+    plan = live_state_evidence_plan(
+        _request(user_input),
+        _plan(
+            "tool.system.read.process",
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.process", "tool.system.read.resources"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["top", "-l", "1", "-n", "0"]},
+                structured_schema="system.cpu_overview",
+                structured_content={"used_percent": 20.0},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.process"})
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_named_process_using_threshold_requires_process_evidence_only() -> None:
+    plan = live_state_evidence_plan(
+        _request("Is Chrome using more than 10% CPU?"),
+        _plan(
+            "calculator.evaluate",
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert "tool.system.read.process" in plan.candidate_tool_names
+    assert "tool.system.read.process" in plan.missing_tool_names
+    assert "calculator.evaluate" not in plan.candidate_tool_names
+    assert "calculator.evaluate" not in plan.missing_tool_names
+
+
+def test_live_state_evidence_plan_named_process_resource_accepts_ps_aux_snapshot() -> None:
+    plans = [
+        live_state_evidence_plan(
+            _request(user_input),
+            _plan(
+                "tool.system.read.process",
+                live_state_tool_names=("tool.system.read.process",),
+            ),
+            tool_observation_refs=(
+                _completed_ref(
+                    "tool.system.read.process",
+                    arguments={"argv": ["ps", "aux"]},
+                    structured_schema="system.process_resource_snapshot",
+                    structured_content={
+                        "processes": [
+                            {
+                                "pid": 123,
+                                "name": "Google Chrome",
+                                "cpu_percent": 12.5,
+                                "memory_percent": 3.2,
+                            },
+                        ],
+                        "source": "ps",
+                    },
+                    parse_status=ToolParseStatus.PARSED,
+                ),
+            ),
+        )
+        for user_input in (
+            "Chrome CPU usage",
+            "what is current CPU usage of Chrome right now?",
+            "How much CPU is Chrome using right now?",
+        )
+    ]
+
+    assert [plan.family for plan in plans] == [LiveStateEvidenceFamily.SYSTEM_PROCESS] * 3
+    assert [plan.missing_tool_names for plan in plans] == [frozenset()] * 3
+
+
+def test_live_state_evidence_plan_named_script_resource_accepts_ps_aux_command_name() -> None:
+    plan = live_state_evidence_plan(
+        _request("server.py CPU usage"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                structured_schema="system.process_resource_snapshot",
+                structured_content={
+                    "processes": [
+                        {
+                            "pid": 123,
+                            "name": "python",
+                            "command_name": "server.py",
+                            "cpu_percent": 12.5,
+                            "memory_percent": 3.2,
+                        },
+                    ],
+                    "source": "ps",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_named_process_resource_rejects_mismatched_ps_aux_snapshot() -> None:
+    plan = live_state_evidence_plan(
+        _request("Chrome CPU usage"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                structured_schema="system.process_resource_snapshot",
+                structured_content={
+                    "processes": [
+                        {
+                            "pid": 123,
+                            "name": "MongoDB",
+                            "cpu_percent": 12.5,
+                            "memory_percent": 3.2,
+                        },
+                    ],
+                    "source": "ps",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_named_process_resource_accepts_versioned_executable_name() -> None:
+    plan = live_state_evidence_plan(
+        _request("Python process CPU usage"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                structured_schema="system.process_resource_snapshot",
+                structured_content={
+                    "processes": [
+                        {"pid": 321, "name": "python3.11", "cpu_percent": 7.5},
+                    ],
+                    "source": "ps",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert plan.missing_tool_names == frozenset()
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "is CPU load greater than 10*e",
+        "is memory usage 8GB or less?",
+        "what processor do I have?",
+    ],
+)
+def test_live_state_evidence_plan_named_process_resource_parser_keeps_system_requests_global(
+    user_input: str,
+) -> None:
+    plan = live_state_evidence_plan(
+        _request(user_input),
+        _plan(
+            "calculator.evaluate",
+            "tool.system.read.hardware",
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.resources", "tool.system.read.hardware"),
+        ),
+        tool_observation_refs=(),
+    )
+
+    assert plan.family is not LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert "tool.system.read.process" not in plan.candidate_tool_names
+
+
+def test_live_state_evidence_plan_process_resource_request_requires_process_tool() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is current CPU usage of the Python process?"),
+        _plan(
+            "tool.system.read.process",
+            "tool.system.read.resources",
+            live_state_tool_names=("tool.system.read.process", "tool.system.read.resources"),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.resources",
+                arguments={"argv": ["top", "-l", "1", "-n", "0"]},
+                structured_schema="system.cpu_overview",
+                structured_content={"used_percent": 20.0},
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.candidate_tool_names == frozenset({"tool.system.read.process"})
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_process_resource_request_accepts_typed_process_resource_payload() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is current CPU usage of the Python process?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                structured_schema="system.process_resource_snapshot",
+                structured_content={
+                    "processes": [
+                        {
+                            "pid": 3456,
+                            "name": "Python",
+                            "cpu_percent": 12.5,
+                            "memory_percent": 1.2,
+                        },
+                    ],
+                    "source": "ps",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_process_resource_request_rejects_mismatched_process_tool() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is current CPU usage of the Python process?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Redis"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Redis",
+                    "matches": [{"pid": 2345, "name": "redis-server"}],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_process_resource_request_rejects_name_only_process_tool() -> None:
+    plan = live_state_evidence_plan(
+        _request("what is current CPU usage of the Python process?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Python"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Python",
+                    "matches": [{"pid": 3456, "name": "Python"}],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_process_status_rejects_query_with_unrelated_match() -> None:
+    plan = live_state_evidence_plan(
+        _request("is go running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "go"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "go",
+                    "matches": [{"pid": 4567, "name": "mongo"}],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_process_status_rejects_partial_process_search() -> None:
+    plan = live_state_evidence_plan(
+        _request("is Ollama running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Ollama"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Ollama",
+                    "matches": [],
+                    "error": "pgrep failed",
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARTIAL,
+                metadata={"exit_code": 2},
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_process_status_rejects_query_without_matches_field() -> None:
+    plan = live_state_evidence_plan(
+        _request("is Ollama running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Ollama"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Ollama",
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_process_status_accepts_full_command_script_name() -> None:
+    plan = live_state_evidence_plan(
+        _request("is server.py running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-lf", "server.py"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "server.py",
+                    "matches": [{"pid": 1234, "name": "python", "command_name": "server.py"}],
+                    "source": "pgrep",
+                    "match_mode": "full_command",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert plan.missing_tool_names == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("truncated", "metadata"),
+    [
+        (True, {}),
+        (False, {"stdout_truncated": True}),
+    ],
+)
+def test_live_state_evidence_plan_process_status_rejects_truncated_absence_search(
+    truncated: bool,
+    metadata: dict,
+) -> None:
+    plan = live_state_evidence_plan(
+        _request("is Ollama running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Ollama"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Ollama",
+                    "matches": [],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+                metadata=metadata,
+                truncated=truncated,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_process_status_accepts_non_truncated_absence_search() -> None:
+    plan = live_state_evidence_plan(
+        _request("is Ollama running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Ollama"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Ollama",
+                    "matches": [],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_process_status_rejects_structured_evidence_without_parsed_status() -> None:
+    plan = live_state_evidence_plan(
+        _request("is Ollama running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Ollama"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Ollama",
+                    "matches": [{"pid": 1234, "name": "Ollama"}],
+                    "source": "pgrep",
+                },
+                parse_status=None,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_process_status_rejects_generic_query_without_matches_field() -> None:
+    plan = live_state_evidence_plan(
+        _request("process status"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Ollama"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Ollama",
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_generic_process_status_rejects_narrow_process_search() -> None:
+    plan = live_state_evidence_plan(
+        _request("process status"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Ollama"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Ollama",
+                    "matches": [{"pid": 1234, "name": "Ollama"}],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_named_process_request_rejects_raw_query_without_structured_rows() -> None:
+    plan = live_state_evidence_plan(
+        _request("is go running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "go"]},
+                content='{"exit_code": 0, "stdout": "4567 mongo\\n", "stderr": ""}',
+                structured_content=None,
+                structured_schema=None,
+                parse_status=None,
+                metadata={"exit_code": 0},
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_generic_process_request_rejects_raw_failed_content() -> None:
+    plan = live_state_evidence_plan(
+        _request("process status"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                content='{"exit_code": 2, "stdout": "", "stderr": "ps failed"}',
+                structured_content=None,
+                structured_schema=None,
+                parse_status=None,
+                metadata={},
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_generic_process_list_rejects_raw_ps_snapshot() -> None:
+    plan = live_state_evidence_plan(
+        _request("show process list"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                content='{"exit_code": 0, "stdout": "USER PID %CPU %MEM COMMAND\\n", "stderr": ""}',
+                structured_content=None,
+                structured_schema=None,
+                parse_status=None,
+                metadata={"exit_code": 0},
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_process_status_accepts_typed_process_resource_snapshot() -> None:
+    chrome_plan = live_state_evidence_plan(
+        _request("is Chrome running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                structured_schema="system.process_resource_snapshot",
+                structured_content={
+                    "processes": [{"pid": 123, "name": "Google Chrome"}],
+                    "source": "ps",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+    pid_plan = live_state_evidence_plan(
+        _request("is PID 123 running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                structured_schema="system.process_resource_snapshot",
+                structured_content={
+                    "processes": [{"pid": 123, "name": "Google Chrome"}],
+                    "source": "ps",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+    process_pid_plan = live_state_evidence_plan(
+        _request("is process 123 running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                structured_schema="system.process_resource_snapshot",
+                structured_content={
+                    "processes": [{"pid": 123, "name": "Google Chrome"}],
+                    "source": "ps",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert chrome_plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert chrome_plan.missing_tool_names == frozenset()
+    assert pid_plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert pid_plan.missing_tool_names == frozenset()
+    assert process_pid_plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert process_pid_plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_process_status_accepts_multi_token_process_name() -> None:
+    plan = live_state_evidence_plan(
+        _request("is Google Chrome.app running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                structured_schema="system.process_resource_snapshot",
+                structured_content={
+                    "processes": [{"pid": 123, "name": "Google Chrome"}],
+                    "source": "ps",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is LiveStateEvidenceFamily.SYSTEM_PROCESS
+    assert plan.missing_tool_names == frozenset()
+
+
+def test_live_state_evidence_plan_generic_process_request_rejects_raw_ps_exit_code_one() -> None:
+    plan = live_state_evidence_plan(
+        _request("process status"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["ps", "aux"]},
+                content='{"exit_code": 1, "stdout": "", "stderr": "ps failed"}',
+                structured_content=None,
+                structured_schema=None,
+                parse_status=None,
+                metadata={"exit_code": 1},
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_process_status_rejects_name_and_pid_from_different_rows() -> None:
+    plan = live_state_evidence_plan(
+        _request("is the Redis process PID 123 running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Redis"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Redis",
+                    "matches": [{"pid": 123, "name": "Ollama"}],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_accepts_boundary_process_name_alias() -> None:
+    plan = live_state_evidence_plan(
+        _request("is service Redis running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Redis"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Redis",
+                    "matches": [{"pid": 1234, "name": "redis-server"}],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset()
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "is service Redis running?",
+        "is the process Redis running?",
+    ],
+)
+def test_live_state_evidence_plan_rejects_mismatched_prefix_process_observation(
+    user_input: str,
+) -> None:
+    plan = live_state_evidence_plan(
+        _request(user_input),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Ollama"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Ollama",
+                    "matches": [{"pid": 1234, "name": "Ollama"}],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_rejects_mismatched_service_observation() -> None:
+    plan = live_state_evidence_plan(
+        _request("is the Redis service running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Ollama"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Ollama",
+                    "matches": [{"pid": 1234, "name": "Ollama"}],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_rejects_substring_process_observation() -> None:
+    plan = live_state_evidence_plan(
+        _request("is go running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "mongo"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "mongo",
+                    "matches": [{"pid": 4567, "name": "mongo"}],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
+
+
+def test_live_state_evidence_plan_requires_process_name_and_pid_match() -> None:
+    plan = live_state_evidence_plan(
+        _request("is the Redis process PID 123 running?"),
+        _plan(
+            "tool.system.read.process",
+            live_state_tool_names=("tool.system.read.process",),
+        ),
+        tool_observation_refs=(
+            _completed_ref(
+                "tool.system.read.process",
+                arguments={"argv": ["pgrep", "-l", "Redis"]},
+                structured_schema="system.process_name_search",
+                structured_content={
+                    "query": "Redis",
+                    "matches": [{"pid": 999, "name": "Redis"}],
+                    "source": "pgrep",
+                },
+                parse_status=ToolParseStatus.PARSED,
+            ),
+        ),
+    )
+
+    assert plan.family is not None
+    assert plan.family.value == "system_process"
+    assert plan.missing_tool_names == frozenset({"tool.system.read.process"})
 
 
 def test_live_state_evidence_plan_raw_diagnostics_requires_usable_observation_metadata() -> None:

@@ -217,6 +217,7 @@ _SYSTEM_DIAGNOSTICS_TOOL_NAMES = frozenset(
         "tool.system.read.resources",
         "tool.system.read.network",
         "tool.system.read.hardware",
+        "tool.system.read.process",
         "tool.system.read.sensors",
     }
 )
@@ -234,6 +235,11 @@ _SAFE_SYSTEM_DIAGNOSTICS_ARGV = frozenset(
         ("lshw",),
         ("lshw", "-short"),
         ("pmset", "-g", "batt"),
+        ("ps", "-Ao", "pid,command"),
+        ("ps", "-Ao", "pid,comm,command"),
+        ("ps", "-Ao", "pid,ppid,comm,command"),
+        ("ps", "-ef"),
+        ("ps", "aux"),
         ("scutil", "--nc", "list"),
         ("sw_vers",),
         ("sysctl", "-n", "hw.logicalcpu"),
