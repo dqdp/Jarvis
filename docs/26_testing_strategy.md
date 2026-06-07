@@ -200,7 +200,7 @@ Architecture tests may be import-graph checks, AST checks, or simple static grep
 
 At least one E2E user-turn lifecycle test is mandatory.
 
-It must use fake model providers, not real LLM calls.
+CI E2E tests must use fake model providers, not real LLM calls.
 
 Required E2E scenario:
 
@@ -218,6 +218,18 @@ Agent-loop E2E and unit coverage must use fake model providers for live-state
 and available-tools behavior. CI must not require real LLM calls, real network
 state or cloud fallback to prove that evidence gates, deterministic finalizers
 and unavailable recovery work.
+
+Real local LLM prompt regression tests belong in the `evaluation` layer. They
+are opt-in, must use local providers only, must not be required for default CI,
+and must still execute through the normal ReAct loop with fake or typed local
+tool observations rather than bypassing `PolicyPort` or `ToolGatewayPort`.
+Evaluation prompts should cover known brittle classes, including current-time
+questions, live/current duration math that requires `datetime.now` plus
+`datetime.diff`/`calendar.diff` and `calculator.evaluate`, self-contained
+timezone-aware timestamp interval prompts that require `calendar.diff`, and
+named-event interval prompts that must not be satisfied without a separate
+typed event-date evidence source. These tests must not require real network,
+cloud or external factual lookup.
 
 Canonical event chain:
 
@@ -400,6 +412,7 @@ make test-integration
 make test-golden
 make test-architecture
 make test-e2e
+make test-evaluation
 ```
 
 Pytest markers:
@@ -412,6 +425,7 @@ golden
 architecture
 e2e
 db
+evaluation
 ```
 
 Sandbox behavior:
@@ -422,6 +436,9 @@ db tests require the local PostgreSQL test database on TEST_DATABASE_URL
 enable db tests with --run-db or JARVIS_RUN_DB_TESTS=1
 make test-contract/test-integration/test-e2e start the docker-compose test database
 and enable db tests explicitly
+evaluation tests are skipped unless --run-evaluation or
+JARVIS_RUN_EVALUATION_TESTS=1 is set
+make test-evaluation enables evaluation tests explicitly
 ```
 
 ---
@@ -431,7 +448,6 @@ and enable db tests explicitly
 Do not require in MVP:
 
 ```text
-real LLM quality tests
 benchmark tests
 load tests
 multi-user auth tests
@@ -443,6 +459,10 @@ rolling summary tests
 planner/ReAct tests
 cloud provider live tests
 ```
+
+Real local LLM evaluation is not part of the default MVP CI gate, but concrete
+prompt-regression evaluation tests may be added under `tests/evaluation` and
+run with `make test-evaluation`.
 
 ---
 

@@ -86,6 +86,36 @@ can claim the same hard guard. Location or scope wording may prevent a narrow
 deterministic finalizer, but it must not disable the evidence guard when a
 matching local observation is available.
 
+For live-derived numeric answers, matching evidence includes provenance for the
+derived value. A final answer may report a direct typed field from completed
+live evidence, such as a `datetime.until` seconds value, a `datetime.diff`
+fixed-duration interval or a `calendar.diff` calendar interval. If the user
+asks for a mathematical transformation of that live value, the loop requires a completed `calculator.evaluate` observation
+grounded in request-relevant typed numeric fields from the completed live
+observation and explicit constants from the user request. `calendar.diff`
+requires explicit timezone-aware ISO endpoints and is the required boundary for
+calendar-aware units such as months, quarters and decades. `datetime.diff`
+remains a fixed-duration fallback for microseconds through weeks. If an
+endpoint is current, the interval evidence must use a completed `datetime.now`
+observation as that endpoint; explicit timestamp-to-timestamp intervals do not
+require `datetime.now`. Relative named events require a separate typed
+event-date evidence source before their timestamps can satisfy the guard. These
+interval tools do not prove that a model-supplied endpoint is the true date of
+an external event. Operation-implied structural constants, such as the denominator for an
+average over covered live operand groups, are allowed only when they are derived
+from those covered operand groups. The expression's operation family must match the requested transform;
+using a different live field or adding extra operations is not valid evidence.
+The runtime must not add per-operation deterministic finalizers for logarithms,
+powers, averages or similar transformations.
+
+The guard is intentionally expressed over typed observations rather than over a
+closed set of current built-in tools. Future tools such as web search, browser
+automation or code sandboxes may participate only after an explicit typed
+provenance extension defines their live/current-state schemas, request-plan
+metadata and request-relevant source fields. Until that contract exists for a
+tool, its prose snippets, code output or model-facing summaries must not be
+treated as current-state evidence by the loop.
+
 Deterministic finalization is narrower than the evidence guard. It is allowed
 only as a small source-backed transformation of a completed typed observation,
 such as formatting a completed `datetime.now` observation as `HH:MM`. It must

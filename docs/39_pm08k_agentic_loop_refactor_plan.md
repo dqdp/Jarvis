@@ -159,7 +159,9 @@ allowed local tool can observe the state, and finalize only after matching
 completed evidence. PM-08k tests must cover current
 time/date wording, including `сколько времени`, `в данный момент` and `сейчас`;
 local machine or daemon state wording; current live values combined with
-arithmetic, threshold or comparison wording; unavailable-tool behavior; and
+arithmetic, threshold or comparison wording; timestamp/calendar interval
+evidence through `calendar.diff` or fixed-duration `datetime.diff`;
+unavailable-tool behavior; and
 location/scope wording that keeps the evidence guard active while preventing
 over-narrow deterministic finalization when evidence is insufficient.
 
@@ -343,6 +345,7 @@ Verification gate:
 .venv/bin/python -m pytest -m unit tests/unit/test_tool_react_loop.py
 .venv/bin/python -m pytest -m contract tests/contract/test_tool_react_loop_contract.py
 .venv/bin/python -m pytest -m contract tests/contract/test_sse_stream_contract.py
+.venv/bin/python -m pytest -m e2e tests/e2e/test_user_turn_lifecycle.py
 .venv/bin/python -m pytest -m architecture tests/architecture/test_boundaries.py
 git diff --check
 ```
@@ -373,6 +376,7 @@ Verification gate:
 ```text
 .venv/bin/python -m pytest -m unit tests/unit
 .venv/bin/python -m pytest -m contract tests/contract
+.venv/bin/python -m pytest -m e2e tests/e2e/test_user_turn_lifecycle.py
 .venv/bin/python -m pytest -m architecture tests/architecture
 git diff --check
 ```
@@ -399,6 +403,7 @@ Verification gate:
 
 ```text
 .venv/bin/python -m pytest
+.venv/bin/python -m pytest -m e2e tests/e2e/test_user_turn_lifecycle.py
 .venv/bin/python -m pytest -m architecture tests/architecture
 git diff --check
 ```

@@ -468,21 +468,32 @@ Final PM-08l review accepted these as non-blocking P2/P3 follow-ups. They must
 not block the current PM-08l gate, but should be handled before broadening the
 voice surface beyond the initial PM-09 foundation:
 
-- extract live-state math evidence policy, calculator expression matching and
-  proposal-output contract rendering out of `ToolReactLoop` into explicit
-  runtime services, keeping the public loop class as orchestration only;
+- keep live-state math evidence policy, derived numeric grounding and
+  proposal-output contract rendering outside `ToolReactLoop` in explicit
+  runtime helpers/services, keeping the public loop class as orchestration only;
 - split `tool_loop_evidence.py` into narrower helpers for intent-family
   detection, candidate evidence planning, observation matching, unavailable
   recovery pruning and calculator/live-state math matching. Until then,
   architecture tests enforce a size budget so the helper does not keep
   accumulating unrelated responsibilities. Process live-state intent and
-  observation matching now lives in `tool_loop_process_evidence.py`, with
-  process-resource matching isolated in `tool_loop_process_resource_evidence.py`;
+  observation matching now lives in `tool_loop_process_evidence.py`, derived
+  live numeric grounding lives in `tool_loop_derived_values.py`, derived
+  operation-family matching lives in `tool_loop_derived_value_operations.py`,
+  request-scoped typed numeric source extraction lives in
+  `tool_loop_live_numeric_sources.py`,
+  and process-resource matching is isolated in
+  `tool_loop_process_resource_evidence.py`;
   the remaining helper responsibilities still need the same extraction treatment;
 - replace brittle lexical live-state finalization guards with typed
   request-plan/evidence metadata where possible. Keep the pre-answer evidence
   guard broad and safety-oriented, and keep deterministic finalizers narrow,
-  source-backed and post-observation only. Include current-time, sensor,
+  source-backed and post-observation only. New live-state tools such as web
+  search, calendar/event resolution or code sandboxes must first add an explicit typed provenance
+  extension covering request-plan mapping, live/current-state schemas and
+  request-relevant source fields. Until that contract exists for a tool, prose
+  snippets, code output and generic structured payloads are not current-state
+  evidence and must not gain direct loop finalization branches. Include
+  current-time, sensor,
   temperature and multi-expression threshold coverage;
 - add direct unit coverage for `InProcessDarwinResourceProvider`, including
   memory accounting and provider failure paths;

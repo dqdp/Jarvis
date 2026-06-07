@@ -177,8 +177,12 @@ execution path.
 The live-state evidence guard algorithm is:
 
 1. Build the candidate live-state tool set from explicit request metadata and
-   allowed local tools. Initial live-state tools include `datetime.now`,
-   `datetime.until`, `daemon.status` and `tool.system.read.*`.
+   allowed local tools. Initial live-state/calendar evidence tools include
+   `datetime.now`, `calendar.diff`, `datetime.diff`, `datetime.until`, `daemon.status`,
+   `tool.system.read.resources`, `tool.system.read.network`, `tool.system.read.hardware`,
+   `tool.system.read.sensors` and `tool.system.read.process`. A new tool with
+   a similar prefix is not live-state evidence until it has an explicit typed
+   provenance mapping.
 2. If a relevant local tool is allowed, do not silently downgrade the request
    to hallucinated ordinary chat. The loop may collect evidence, answer that
    live evidence is unavailable after a failed/denied/unavailable observation,
@@ -195,9 +199,11 @@ The live-state evidence guard algorithm is:
    - current local machine, process or daemon state, including CPU/processor,
      memory/RAM, load/usage, battery, network/VPN/IP, disk, hardware,
      process/service/PID and daemon/status wording;
-   - current live values combined with arithmetic, threshold or comparison
-     wording, such as requests that calculate from the current time or current
-     resource values.
+   - current live values combined with arithmetic, threshold, comparison or
+     derived numeric wording, such as requests that calculate from the current
+     time, a countdown value or current resource values.
+   - timestamp/calendar interval wording, such as "how many hours between",
+     `количество микросекунд между`, `seconds since` or `недель прошло с`.
 
 5. Return typed guard metadata, not only a boolean. The metadata should identify
    the live-state family, whether completed evidence is required and the
@@ -211,12 +217,40 @@ The live-state evidence guard algorithm is:
    process resource claims such as per-process CPU or memory require a typed
    process-resource observation such as `system.process_resource_snapshot`, not
    a global machine resource snapshot.
-7. After a completed observation exists, finalization follows the normal bounded
+7. Live-derived numeric transformations must not be performed in model prose.
+   If the requested answer is not a direct typed field from completed live
+   evidence, the loop requires a completed `calculator.evaluate` observation
+   whose expression is grounded in request-relevant typed numeric fields from
+   completed live observations plus explicit constants from the user request.
+   Operation-implied structural constants, such as the denominator for an
+   average over covered live operand groups, are allowed only when they are
+   derived from those covered operand groups.
+   Timestamp/calendar interval requests use `calendar.diff` after the model
+   supplies explicit timezone-aware ISO endpoints. Fixed-duration fallback
+   requests may use `datetime.diff` for microseconds, milliseconds, seconds,
+   minutes, hours, days and weeks. Calendar-aware units such as months,
+   quarters and decades require `calendar.diff`. If an endpoint is the current
+   moment, the loop also requires a completed `datetime.now` observation and
+   the diff endpoint must match that observation. Relative named events such as
+   "last Thanksgiving" require a separate typed event-date evidence source
+   before their timestamps can satisfy the guard; `calendar.diff` and
+   `datetime.diff` compute intervals only and do not prove that a
+   model-supplied timestamp is the true date of an external event.
+   The expression's operation family must match the requested transform; extra
+   operations are not valid provenance. The calculator grammar, not a
+   per-operation finalizer, determines which bounded mathematical operations are
+   supported.
+   This rule is intended to stay tool-agnostic, but new tools such as web search
+   or code sandboxes may satisfy it only after an explicit typed provenance
+   extension defines their live/current-state schemas and request-relevant
+   source fields. Until that extension exists for a tool, a prose search
+   snippet, code output or model claim is not evidence for current state.
+8. After a completed observation exists, finalization follows the normal bounded
    loop. A narrow deterministic finalizer may synthesize a short answer only
    from completed typed evidence, for example formatting a completed
    `datetime.now` observation as the current local time. More complex live-state
    answers use the final-answer model with the observation in context.
-8. Location or scope wording must not disable the evidence guard. For example,
+9. Location or scope wording must not disable the evidence guard. For example,
    `сколько времени в данный момент?` still requires `datetime.now` evidence.
    A request such as `сколько времени в Париже?` is still live-state, but it is
    not eligible for the local-time deterministic finalizer unless an appropriate

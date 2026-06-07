@@ -915,15 +915,15 @@ context.inspect
 Initial safe-tool loop budget:
 
 ```text
-max_steps: 4
-max_model_calls: 4
-max_tool_calls: 2
+max_steps: 6
+max_model_calls: 6
+max_tool_calls: 4
 max_consecutive_failures: 1
 max_wall_time_seconds: 60
 ```
 
-These are starting values for Alpha tests. They may move to config in the
-implementation slice if the existing runtime budget model makes that natural.
+These defaults are bounded but large enough for multi-evidence local diagnostics,
+for example CPU/memory, storage and network observations plus finalization.
 
 ### Acceptance criteria
 
@@ -2925,6 +2925,8 @@ tools/system_diagnostics:
         used
         available
         used_percent
+        used_percent_value optional
+        available_percent optional
     system.vpn_status v1:
       connected
       interface_or_service optional
@@ -3967,6 +3969,18 @@ auto/tools modes:
   auto mode must allow ordinary final answers without requiring a tool
     observation, but must not finalize live-state claims without relevant
     completed tool evidence when an allowed local tool can observe that state
+  live-derived numeric answers must require calculator evidence grounded in
+    request-relevant typed numeric fields from completed live observations
+    unless the requested value is a direct typed field from the live observation;
+    operation-implied structural constants such as an average denominator are
+    allowed only when derived from the covered live operand groups; extra
+    calculator operation families are not valid provenance
+  future live-state tools, including web search and code sandboxes, must first
+    add an explicit typed provenance extension covering request-plan mapping,
+    live/current-state schemas and request-relevant source fields. Until that
+    extension exists for a tool, its prose snippets, code output or generic
+    structured payloads are not evidence for current state and must not gain
+    direct loop-specific finalization paths
   explicit malformed tool_call proposals still fail closed
   tools mode must not silently fallback before a valid tool observation when a
     tool observation is required

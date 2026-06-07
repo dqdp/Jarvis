@@ -127,7 +127,15 @@ Rules:
 - `capability` uses ADR-029 capability identifiers;
 - `risk_classes` use ADR-029 risk classes;
 - disabled tools are visible only to diagnostics unless explicitly requested;
-- tool specs must not contain secrets.
+- tool specs must not contain secrets;
+- `capability` and `output_schema` alone do not make a tool valid
+  current-state evidence. A tool that should satisfy live-state evidence guards
+  must have an explicit typed provenance contract that maps request-plan
+  families to live/current-state schemas and request-relevant source fields.
+  Until that contract exists, future tools such as web search, browser
+  automation or code sandboxes may return useful observations, but their prose,
+  code output or generic structured payloads must not be treated as evidence for
+  current state.
 
 ### Schema format
 
@@ -270,6 +278,8 @@ Initial typed diagnostics payloads should cover:
 system.os_version v1
 system.battery_charge v1
 system.disk_free v1
+  filesystems[].used_percent_value optional
+  filesystems[].available_percent optional
 system.vpn_status v1
 system.process_name_search v1
 system.process_resource_snapshot v1
