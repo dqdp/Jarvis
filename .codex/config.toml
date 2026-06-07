@@ -1,0 +1,9 @@
+# Project-local Codex sandbox policy for Jarvis.
+# Jarvis development expects local services on 127.0.0.1:
+# - daemon API: 8080
+# - Ollama: 11434
+# - test PostgreSQL: 55432
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true

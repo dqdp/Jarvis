@@ -19,6 +19,16 @@ def test_pytest_declares_db_marker_and_opt_in_gate() -> None:
     assert "pytest.mark.skip" in conftest
 
 
+def test_pytest_declares_evaluation_marker_and_opt_in_gate() -> None:
+    pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    conftest = (PROJECT_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
+
+    assert "evaluation: opt-in local model evaluation tests" in pyproject
+    assert "--run-evaluation" in conftest
+    assert "JARVIS_RUN_EVALUATION_TESTS" in conftest
+    assert "pytest.mark.skip" in conftest
+
+
 def test_pytest_full_suite_uses_package_safe_import_mode() -> None:
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
@@ -34,6 +44,17 @@ def test_make_db_targets_enable_db_tests_explicitly() -> None:
         block = makefile[start:] if end == -1 else makefile[start:end]
         assert "JARVIS_RUN_DB_TESTS=1" in block, target
         assert "--run-db" in block, target
+
+
+def test_make_evaluation_target_enables_evaluation_tests_explicitly() -> None:
+    makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
+    start = makefile.index("test-evaluation:")
+    end = makefile.find("\n\n", start)
+    block = makefile[start:] if end == -1 else makefile[start:end]
+
+    assert "JARVIS_RUN_EVALUATION_TESTS=1" in block
+    assert "--run-evaluation" in block
+    assert "-m evaluation tests/evaluation" in block
 
 
 def test_database_dependent_tests_are_marked_db() -> None:
