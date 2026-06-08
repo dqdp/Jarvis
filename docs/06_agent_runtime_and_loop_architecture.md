@@ -231,11 +231,18 @@ The live-state evidence guard algorithm is:
    minutes, hours, days and weeks. Calendar-aware units such as months,
    quarters and decades require `calendar.diff`. If an endpoint is the current
    moment, the loop also requires a completed `datetime.now` observation and
-   the diff endpoint must match that observation. Relative named events such as
-   "last Thanksgiving" require a separate typed event-date evidence source
-   before their timestamps can satisfy the guard; `calendar.diff` and
-   `datetime.diff` compute intervals only and do not prove that a
-   model-supplied timestamp is the true date of an external event.
+   the diff endpoint must match that observation. Named or relative external
+   events such as "last Thanksgiving" may satisfy interval evidence when the
+   model supplies explicit structured timestamp endpoints and the completed
+   interval observation uses the required current endpoint and unit. This is not
+   a separate factual-verification step: `calendar.diff` and `datetime.diff`
+   compute intervals only and do not prove that a model-supplied timestamp is
+   the true date of an external event.
+   The gateway invocation boundary may canonicalize a model-supplied date-only
+   endpoint to midnight in the timezone of the paired endpoint, such as the
+   completed `datetime.now` timestamp, before invoking the interval tool. The
+   resulting typed observation still carries timezone-aware endpoints, and bare
+   date-only request endpoints are not accepted as completed interval evidence.
    The expression's operation family must match the requested transform; extra
    operations are not valid provenance. The calculator grammar, not a
    per-operation finalizer, determines which bounded mathematical operations are

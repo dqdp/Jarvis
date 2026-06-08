@@ -98,10 +98,15 @@ calendar-aware units such as months, quarters and decades. `datetime.diff`
 remains a fixed-duration fallback for microseconds through weeks. If an
 endpoint is current, the interval evidence must use a completed `datetime.now`
 observation as that endpoint; explicit timestamp-to-timestamp intervals do not
-require `datetime.now`. Relative named events require a separate typed
-event-date evidence source before their timestamps can satisfy the guard. These
-interval tools do not prove that a model-supplied endpoint is the true date of
-an external event. Operation-implied structural constants, such as the denominator for an
+require `datetime.now`. Named or relative external events can satisfy interval
+evidence when the model supplies explicit structured timestamp endpoints and the
+completed interval observation uses the required current endpoint and unit.
+These interval tools do not prove that a model-supplied endpoint is the true
+date of an external event. At the gateway invocation boundary, a date-only
+endpoint may be canonicalized to midnight in the timezone of the paired endpoint
+before invoking `calendar.diff` or `datetime.diff`; completed interval evidence
+still has timezone-aware endpoints, and bare date-only request endpoints do not
+satisfy the evidence guard. Operation-implied structural constants, such as the denominator for an
 average over covered live operand groups, are allowed only when they are derived
 from those covered operand groups. The expression's operation family must match the requested transform;
 using a different live field or adding extra operations is not valid evidence.

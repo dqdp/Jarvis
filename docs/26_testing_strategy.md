@@ -227,9 +227,10 @@ Evaluation prompts should cover known brittle classes, including current-time
 questions, live/current duration math that requires `datetime.now` plus
 `datetime.diff`/`calendar.diff` and `calculator.evaluate`, self-contained
 timezone-aware timestamp interval prompts that require `calendar.diff`, and
-named-event interval prompts that must not be satisfied without a separate
-typed event-date evidence source. These tests must not require real network,
-cloud or external factual lookup.
+named-event interval prompts where the model supplies structured timestamp
+endpoints and the guard verifies the completed interval observation, current
+endpoint and calculator provenance when a transform is requested. These tests
+must not require real network, cloud or external factual lookup.
 
 Canonical event chain:
 
