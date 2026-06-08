@@ -85,6 +85,12 @@ async def _append_deferred_evidence_step(
         "action": action,
         "missing_evidence_family": family,
         "missing_evidence_families": missing_families,
+        "candidate_evidence_kinds": sorted(
+            kind.value for kind in evidence_plan.candidate_evidence_kinds
+        ),
+        "missing_evidence_kinds": sorted(
+            kind.value for kind in evidence_plan.missing_evidence_kinds
+        ),
         "candidate_tool_names": sorted(evidence_plan.candidate_tool_names),
         "missing_tool_names": sorted(evidence_plan.missing_tool_names),
     }

@@ -72,6 +72,9 @@ from assistant_core.runtime.loops.tool_loop_deterministic import (
 from assistant_core.runtime.loops.tool_loop_evidence_deferral import (
     defer_final_answer_if_missing_evidence as _defer_final_answer_if_missing_evidence,
 )
+from assistant_core.runtime.loops.tool_loop_evidence_payloads import (
+    failure_missing_evidence_payload as _failure_missing_evidence_payload,
+)
 from assistant_core.runtime.loops.tool_loop_evidence import (
     final_answer_missing_evidence_plan as _final_answer_missing_evidence_plan,
     failed_observation_exhausts_missing_evidence as _failed_observation_exhausts_missing_evidence,
@@ -318,6 +321,13 @@ class ToolReactLoop:
                 )
                 context_manifest_refs.append(context.manifest.context_manifest_id)
                 if used_model_calls >= request.budget.max_model_calls:
+                    missing_evidence_plan = _final_answer_missing_evidence_plan(
+                        request,
+                        request_plan,
+                        tool_observation_refs=tuple(tool_observation_refs),
+                    )
+                    if missing_evidence_plan is not None:
+                        raise RuntimeError("required_tool_evidence_missing")
                     raise RuntimeError("max_model_calls_exceeded")
                 model_started = await self._append_event(
                     EventType.MODEL_REQUEST_CREATED,
@@ -445,6 +455,17 @@ class ToolReactLoop:
                             completed_observations=completed_tool_observations,
                         )
                         if proposal is None:
+                            if await _defer_final_answer_if_missing_evidence(self._append_event,
+                                request,
+                                request_plan,
+                                step_started=step_started,
+                                step_id=step_id,
+                                step_index=step_index,
+                                sensitivity=context.manifest.max_sensitivity,
+                                tool_observation_refs=tool_observation_refs,
+                                used_tool_calls=used_tool_calls,
+                            ):
+                                continue
                             if not _should_fallback_to_final_chat_after_malformed_proposal(
                                 model_response.value,
                                 request,
@@ -545,15 +566,29 @@ class ToolReactLoop:
                     state=AgentLoopState.TOOL_VALIDATING,
                 )
                 _ensure_tool_call_allowed_by_plan(request_plan, proposal)
-                observation_ref = await self._proposal_executor.execute(
-                    request,
-                    proposal,
-                    step_id=step_id,
-                    causation_event_id=step_started.event_id,
-                    used_tool_calls=used_tool_calls,
-                    loop_deadline=loop_deadline,
-                    step_index=step_index,
-                )
+                try:
+                    observation_ref = await self._proposal_executor.execute(
+                        request,
+                        proposal,
+                        step_id=step_id,
+                        causation_event_id=step_started.event_id,
+                        used_tool_calls=used_tool_calls,
+                        loop_deadline=loop_deadline,
+                        step_index=step_index,
+                    )
+                except ToolProposalParseError:
+                    if await _defer_final_answer_if_missing_evidence(self._append_event,
+                        request,
+                        request_plan,
+                        step_started=step_started,
+                        step_id=step_id,
+                        step_index=step_index,
+                        sensitivity=context.manifest.max_sensitivity,
+                        tool_observation_refs=tool_observation_refs,
+                        used_tool_calls=used_tool_calls,
+                    ):
+                        continue
+                    raise
                 used_tool_calls += 1
                 tool_observation_refs.append(observation_ref)
                 if observation_ref.status != ToolObservationStatus.COMPLETED:
@@ -733,12 +768,22 @@ class ToolReactLoop:
                     used_tool_calls=used_tool_calls,
                     context_manifest_refs=tuple(context_manifest_refs),
                     tool_observation_refs=tuple(tool_observation_refs),
+                    request_plan=request_plan,
                 )
                 raise failure_exc
             if consecutive_failures > request.budget.max_consecutive_failures:
                 break
 
-        exc = RuntimeError("max_steps_exceeded")
+        missing_evidence_plan = _final_answer_missing_evidence_plan(
+            request,
+            request_plan,
+            tool_observation_refs=tuple(tool_observation_refs),
+        )
+        exc = RuntimeError(
+            "required_tool_evidence_missing"
+            if missing_evidence_plan is not None
+            else "max_steps_exceeded"
+        )
         failure_decision = self._failure_policy.decide(exc)
         await self._fail(
             request,
@@ -749,6 +794,7 @@ class ToolReactLoop:
             used_tool_calls=used_tool_calls,
             context_manifest_refs=tuple(context_manifest_refs),
             tool_observation_refs=tuple(tool_observation_refs),
+            request_plan=request_plan,
         )
         raise exc
 
@@ -984,7 +1030,14 @@ class ToolReactLoop:
         used_tool_calls: int,
         context_manifest_refs: tuple[str, ...],
         tool_observation_refs: tuple[ToolObservationRef, ...],
+        request_plan: ToolRequestPlan,
     ) -> None:
+        missing_evidence_payload = _failure_missing_evidence_payload(
+            request,
+            request_plan,
+            exc,
+            tool_observation_refs,
+        )
         await self._conversation_store.update_assistant_request_status(
             UpdateAssistantRequestStatusCommand(
                 request_id=request.request_id,
@@ -1007,6 +1060,7 @@ class ToolReactLoop:
                 "tool_observation_refs": [
                     ref.tool_call_id for ref in tool_observation_refs
                 ],
+                **missing_evidence_payload,
             },
             causation_id=causation_id,
             state=AgentLoopState.FAILED,
@@ -1024,6 +1078,7 @@ class ToolReactLoop:
                     "request_id": request.request_id,
                     "details": decision.details,
                 },
+                **missing_evidence_payload,
             },
             causation_id=loop_failed.event_id,
             state=AgentLoopState.FAILED,

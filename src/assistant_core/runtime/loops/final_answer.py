@@ -366,6 +366,18 @@ def _final_answer_output_contract(
             "calculator expressions manually or replace an observed calculator "
             "result with mental arithmetic."
         )
+    if any(
+        ref.structured_schema in {"calendar.diff", "datetime.diff"}
+        and ref.status == ToolObservationStatus.COMPLETED
+        for ref in completed_refs
+    ):
+        contract += (
+            " For calendar.diff and datetime.diff observations, use the observed "
+            "unit and value from the matching typed observation when answering "
+            "elapsed-duration questions. Do not convert the observed interval to "
+            "years, months, or another unit unless the user explicitly asked for "
+            "that unit. Do not recompute the interval manually."
+        )
     contract_parts.append(contract)
     return " ".join(contract_parts)
 

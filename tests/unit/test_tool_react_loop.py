@@ -133,6 +133,33 @@ def _typed_datetime_now_observation(request, *, iso: str, now: datetime | None =
     )
 
 
+def _typed_datetime_diff_observation(
+    request,
+    *,
+    from_iso: str,
+    to_iso: str,
+    value: float,
+    unit: str = "days",
+    now: datetime | None = None,
+) -> ToolObservation:
+    payload = {
+        "from_iso": from_iso,
+        "to_iso": to_iso,
+        unit: value,
+        "unit": unit,
+        "value": value,
+        "absolute": False,
+    }
+    content = json.dumps(payload, sort_keys=True)
+    return _completed_tool_observation(
+        request,
+        content=content,
+        now=now,
+        structured_schema="datetime.diff",
+        structured_content=payload,
+    )
+
+
 def _typed_resource_observation(
     request,
     *,
@@ -4414,6 +4441,203 @@ def test_tool_react_loop_does_not_deterministically_finalize_duration_question()
     assert router.chat_calls == 1
 
 
+def test_tool_react_loop_final_chat_gets_datetime_diff_unit_contract() -> None:
+    class ContractContextAssembler(FakeContextAssembler):
+        def __init__(self) -> None:
+            self.final_contracts: list[str | None] = []
+
+        async def assemble(self, request):
+            if getattr(request, "purpose", None) == "final_answer":
+                self.final_contracts.append(getattr(request, "output_contract", None))
+            return await super().assemble(request)
+
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-08T00:12:00+03:00",
+                    now=now,
+                )
+            if request.tool_name == "datetime.diff":
+                return _typed_datetime_diff_observation(
+                    request,
+                    from_iso=request.arguments["from_iso"],
+                    to_iso=request.arguments["to_iso"],
+                    value=26759,
+                    unit=request.arguments["unit"],
+                    now=now,
+                )
+            raise AssertionError(f"unexpected tool call: {request.tool_name}")
+
+    async def scenario():
+        assembler = ContractContextAssembler()
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.diff",
+                    "arguments": {
+                        "from_iso": "1953-03-05",
+                        "to_iso": "2026-06-08T00:12:00+03:00",
+                        "unit": "days",
+                    },
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="Прошло 26759 дней.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=assembler,
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "datetime.diff",
+                        "datetime.now",
+                        live_state_tool_names=("datetime.diff", "datetime.now"),
+                    ),
+                    budget=replace(
+                        _budget(),
+                        max_steps=6,
+                        max_model_calls=6,
+                        max_tool_calls=2,
+                    ),
+                ),
+                user_input="Сколько дней прошло со смерти Сталина?",
+            )
+        )
+        return result, gateway, router, assembler.final_contracts
+
+    result, gateway, router, final_contracts = asyncio.run(scenario())
+
+    assert result.response_text == "Прошло 26759 дней."
+    assert gateway.calls == [
+        ("datetime.now", {}),
+        (
+            "datetime.diff",
+            {
+                "from_iso": "1953-03-05T00:00:00+03:00",
+                "to_iso": "2026-06-08T00:12:00+03:00",
+                "unit": "days",
+            },
+        ),
+    ]
+    assert result.used_tool_calls == 2
+    assert router.structured_calls == 2
+    assert router.chat_calls == 1
+    assert final_contracts
+    assert "use the observed unit and value" in (final_contracts[-1] or "")
+    assert "Do not convert the observed interval to years" in (final_contracts[-1] or "")
+
+
+def test_tool_react_loop_requires_datetime_diff_for_anaphoric_unit_correction() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-08T00:12:00+03:00",
+                    now=now,
+                )
+            if request.tool_name == "datetime.diff":
+                return _typed_datetime_diff_observation(
+                    request,
+                    from_iso=request.arguments["from_iso"],
+                    to_iso=request.arguments["to_iso"],
+                    value=26759,
+                    unit=request.arguments["unit"],
+                    now=now,
+                )
+            raise AssertionError(f"unexpected tool call: {request.tool_name}")
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.diff",
+                    "arguments": {
+                        "from_iso": "1953-03-05",
+                        "to_iso": "2026-06-08T00:12:00+03:00",
+                        "unit": "days",
+                    },
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="Прошло 26759 дней.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "datetime.diff",
+                        "datetime.now",
+                        live_state_tool_names=("datetime.diff", "datetime.now"),
+                    ),
+                    budget=replace(
+                        _budget(),
+                        max_steps=8,
+                        max_model_calls=8,
+                        max_tool_calls=2,
+                    ),
+                ),
+                user_input="Я же спросил про это количество дней, а не лет.",
+            )
+        )
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "Прошло 26759 дней."
+    assert gateway.calls == [
+        ("datetime.now", {}),
+        (
+            "datetime.diff",
+            {
+                "from_iso": "1953-03-05T00:00:00+03:00",
+                "to_iso": "2026-06-08T00:12:00+03:00",
+                "unit": "days",
+            },
+        ),
+    ]
+    assert router.structured_calls == 3
+    assert router.chat_calls == 1
+
+
 def test_tool_react_loop_structured_validation_fallback_waits_for_model_selected_datetime_until() -> None:
     class Gateway:
         def __init__(self) -> None:
@@ -5459,7 +5683,7 @@ def test_tool_react_loop_proposal_contract_blocks_final_answer_for_missing_live_
     assert proposal_contract is not None
     assert "final_answer is not valid yet" in proposal_contract
     assert "missing live-state evidence family: current_time" in proposal_contract
-    assert "missing tool evidence: datetime.now" in proposal_contract
+    assert "missing evidence kinds: current_timestamp" in proposal_contract
     assert "candidate evidence tools: datetime.now" in proposal_contract
 
 
@@ -6441,6 +6665,640 @@ def test_tool_react_loop_blocks_derived_elapsed_duration_answer_without_typed_du
     assert router.chat_calls == 0
 
 
+def test_tool_react_loop_uses_datetime_diff_for_anaphoric_elapsed_duration_answer() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-07T23:24:00+03:00",
+                    now=now,
+                )
+            if request.tool_name == "datetime.diff":
+                payload = {
+                    "from_iso": "1963-11-22T12:30:00-06:00",
+                    "to_iso": "2026-06-07T23:24:00+03:00",
+                    "minutes": 32898294,
+                    "unit": "minutes",
+                    "value": 32898294,
+                    "absolute": False,
+                }
+                content = json.dumps(payload, sort_keys=True)
+                return ToolObservation(
+                    tool_call_id=f"tool-call-{len(self.calls)}",
+                    tool_name=request.tool_name,
+                    status=ToolObservationStatus.COMPLETED,
+                    content=content,
+                    content_type="application/json",
+                    sensitivity=request.sensitivity,
+                    truncated=False,
+                    output_bytes=len(content),
+                    started_at=now,
+                    completed_at=now,
+                    duration_ms=0,
+                    structured_schema="datetime.diff",
+                    structured_schema_version=1,
+                    structured_content=payload,
+                    parse_status=ToolParseStatus.PARSED,
+                )
+            raise AssertionError(f"unexpected tool call: {request.tool_name}")
+
+    async def scenario():
+        gateway = Gateway()
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.diff",
+                    "arguments": {
+                        "from_iso": "1963-11-22T12:30:00-06:00",
+                        "to_iso": "2026-06-07T23:24:00+03:00",
+                        "unit": "minutes",
+                    },
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="С тех пор прошло 32 898 294 минуты.",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "calendar.diff",
+                        "datetime.diff",
+                        "datetime.now",
+                        live_state_tool_names=("calendar.diff", "datetime.diff", "datetime.now"),
+                    ),
+                    budget=replace(
+                        _budget(),
+                        max_steps=6,
+                        max_model_calls=6,
+                        max_tool_calls=2,
+                    ),
+                ),
+                user_input="Сколько с тех пор прошло минут?",
+            )
+        )
+        return result, gateway, router, event_log.events
+
+    result, gateway, router, events = asyncio.run(scenario())
+
+    assert result.response_text == "С тех пор прошло 32 898 294 минуты."
+    assert gateway.calls == [
+        ("datetime.now", {}),
+        (
+            "datetime.diff",
+            {
+                "from_iso": "1963-11-22T12:30:00-06:00",
+                "to_iso": "2026-06-07T23:24:00+03:00",
+                "unit": "minutes",
+            },
+        ),
+    ]
+    assert router.structured_calls == 3
+    assert router.chat_calls == 1
+    assert any(
+        event.payload.get("action") == "final_answer_deferred_missing_evidence"
+        and event.payload.get("missing_evidence_family") == "current_time"
+        and "fixed_time_interval" in event.payload.get("missing_evidence_kinds", [])
+        and "datetime.diff" in event.payload.get("missing_tool_names", [])
+        for event in events
+        if event.event_type is EventType.AGENT_STEP_COMPLETED
+    )
+
+
+def test_tool_react_loop_canonicalizes_datetime_diff_date_only_endpoint_and_unit() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-08T00:12:00+03:00",
+                    now=now,
+                )
+            if request.tool_name == "datetime.diff":
+                payload = {
+                    "from_iso": request.arguments["from_iso"],
+                    "to_iso": request.arguments["to_iso"],
+                    "days": 29480.133333333335,
+                    "unit": request.arguments["unit"],
+                    "value": 29480.133333333335,
+                    "absolute": False,
+                }
+                content = json.dumps(payload, sort_keys=True)
+                return ToolObservation(
+                    tool_call_id=f"tool-call-{len(self.calls)}",
+                    tool_name=request.tool_name,
+                    status=ToolObservationStatus.COMPLETED,
+                    content=content,
+                    content_type="application/json",
+                    sensitivity=request.sensitivity,
+                    truncated=False,
+                    output_bytes=len(content),
+                    started_at=now,
+                    completed_at=now,
+                    duration_ms=0,
+                    structured_schema="datetime.diff",
+                    structured_schema_version=1,
+                    structured_content=payload,
+                    parse_status=ToolParseStatus.PARSED,
+                )
+            raise AssertionError(f"unexpected tool call: {request.tool_name}")
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.diff",
+                    "arguments": {
+                        "from_iso": "1917-11-07",
+                        "to_iso": "2026-06-08T00:12:00+03:00",
+                        "unit": "дней",
+                    },
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="29480.133333333335 days",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "datetime.diff",
+                        "datetime.now",
+                        live_state_tool_names=("datetime.diff", "datetime.now"),
+                    ),
+                    budget=replace(
+                        _budget(),
+                        max_steps=6,
+                        max_model_calls=6,
+                        max_tool_calls=2,
+                    ),
+                ),
+                user_input="Сколько дней прошло с Великой Октябрьской революции 1917 года?",
+            )
+        )
+        return result, gateway
+
+    result, gateway = asyncio.run(scenario())
+
+    assert result.response_text == "29480.133333333335 days"
+    assert gateway.calls == [
+        ("datetime.now", {}),
+        (
+            "datetime.diff",
+            {
+                "from_iso": "1917-11-07T00:00:00+03:00",
+                "to_iso": "2026-06-08T00:12:00+03:00",
+                "unit": "days",
+            },
+        ),
+    ]
+
+
+def test_tool_react_loop_retries_malformed_proposal_while_interval_evidence_is_missing() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-08T00:12:00+03:00",
+                    now=now,
+                )
+            if request.tool_name == "datetime.diff":
+                payload = {
+                    "from_iso": request.arguments["from_iso"],
+                    "to_iso": request.arguments["to_iso"],
+                    "days": 11865.008333333333,
+                    "unit": request.arguments["unit"],
+                    "value": 11865.008333333333,
+                    "absolute": False,
+                }
+                content = json.dumps(payload, sort_keys=True)
+                return ToolObservation(
+                    tool_call_id=f"tool-call-{len(self.calls)}",
+                    tool_name=request.tool_name,
+                    status=ToolObservationStatus.COMPLETED,
+                    content=content,
+                    content_type="application/json",
+                    sensitivity=request.sensitivity,
+                    truncated=False,
+                    output_bytes=len(content),
+                    started_at=now,
+                    completed_at=now,
+                    duration_ms=0,
+                    structured_schema="datetime.diff",
+                    structured_schema_version=1,
+                    structured_content=payload,
+                    parse_status=ToolParseStatus.PARSED,
+                )
+            raise AssertionError(f"unexpected tool call: {request.tool_name}")
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "arguments": {}},
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "tool_call", "arguments": {}},
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.diff",
+                    "arguments": {
+                        "from_iso": "1993-10-04",
+                        "to_iso": "2026-06-08T00:12:00+03:00",
+                        "unit": "дней",
+                    },
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="11865.008333333333 days",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "datetime.diff",
+                        "datetime.now",
+                        live_state_tool_names=("datetime.diff", "datetime.now"),
+                    ),
+                    budget=replace(
+                        _budget(),
+                        max_steps=8,
+                        max_model_calls=8,
+                        max_tool_calls=3,
+                    ),
+                ),
+                user_input="Сколько прошло дней с момента расстрела Ельциным Белого дома?",
+            )
+        )
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "11865.008333333333 days"
+    assert gateway.calls == [
+        ("datetime.now", {}),
+        (
+            "datetime.diff",
+            {
+                "from_iso": "1993-10-04T00:00:00+03:00",
+                "to_iso": "2026-06-08T00:12:00+03:00",
+                "unit": "days",
+            },
+        ),
+    ]
+    assert router.structured_calls == 5
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_retries_invalid_datetime_diff_arguments_before_gateway_call() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-08T00:12:00+03:00",
+                    now=now,
+                )
+            if request.tool_name == "datetime.diff":
+                payload = {
+                    "from_iso": request.arguments["from_iso"],
+                    "to_iso": request.arguments["to_iso"],
+                    "days": 39659.00833333333,
+                    "unit": request.arguments["unit"],
+                    "value": 39659.00833333333,
+                    "absolute": False,
+                }
+                content = json.dumps(payload, sort_keys=True)
+                return ToolObservation(
+                    tool_call_id=f"tool-call-{len(self.calls)}",
+                    tool_name=request.tool_name,
+                    status=ToolObservationStatus.COMPLETED,
+                    content=content,
+                    content_type="application/json",
+                    sensitivity=request.sensitivity,
+                    truncated=False,
+                    output_bytes=len(content),
+                    started_at=now,
+                    completed_at=now,
+                    duration_ms=0,
+                    structured_schema="datetime.diff",
+                    structured_schema_version=1,
+                    structured_content=payload,
+                    parse_status=ToolParseStatus.PARSED,
+                )
+            raise AssertionError(f"unexpected tool call: {request.tool_name}")
+
+    async def scenario():
+        gateway = Gateway()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.diff",
+                    "arguments": {
+                        "from_iso": "917-11-07",
+                        "to_iso": "2026-06-08T00:12:00+03:00",
+                        "unit": "дней",
+                    },
+                },
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.diff",
+                    "arguments": {
+                        "from_iso": "1917-11-07",
+                        "to_iso": "2026-06-08T00:12:00+03:00",
+                        "unit": "дней",
+                    },
+                },
+                {"action": "final_answer"},
+            ],
+            chat_response="39659.00833333333 days",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "datetime.diff",
+                        "datetime.now",
+                        live_state_tool_names=("datetime.diff", "datetime.now"),
+                    ),
+                    budget=replace(
+                        _budget(),
+                        max_steps=8,
+                        max_model_calls=8,
+                        max_tool_calls=2,
+                    ),
+                ),
+                user_input="Сколько дней прошло с Великой Октябрьской революции 917го года?",
+            )
+        )
+        return result, gateway, router
+
+    result, gateway, router = asyncio.run(scenario())
+
+    assert result.response_text == "39659.00833333333 days"
+    assert gateway.calls == [
+        ("datetime.now", {}),
+        (
+            "datetime.diff",
+            {
+                "from_iso": "1917-11-07T00:00:00+03:00",
+                "to_iso": "2026-06-08T00:12:00+03:00",
+                "unit": "days",
+            },
+        ),
+    ]
+    assert router.structured_calls == 3
+    assert router.chat_calls == 1
+
+
+def test_tool_react_loop_defers_named_event_elapsed_final_answer_until_datetime_diff() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-08T00:12:00+03:00",
+                    now=now,
+                )
+            if request.tool_name == "datetime.diff":
+                return _typed_datetime_diff_observation(
+                    request,
+                    from_iso=request.arguments["from_iso"],
+                    to_iso=request.arguments["to_iso"],
+                    value=9036.008333333333,
+                    unit=request.arguments["unit"],
+                    now=now,
+                )
+            raise AssertionError(f"unexpected tool call: {request.tool_name}")
+
+    async def scenario():
+        gateway = Gateway()
+
+        class CapturingContextAssembler(FakeContextAssembler):
+            def __init__(self) -> None:
+                self.seen_contracts: list[str | None] = []
+
+            async def assemble(self, request):
+                self.seen_contracts.append(getattr(request, "output_contract", None))
+                return await super().assemble(request)
+
+        assembler = CapturingContextAssembler()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+                {
+                    "action": "tool_call",
+                    "tool_name": "datetime.diff",
+                    "arguments": {
+                        "from_iso": "2001-09-11",
+                        "to_iso": "2026-06-08T00:12:00+03:00",
+                        "unit": "days",
+                    },
+                },
+            ],
+            chat_response="9036.008333333333 days",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=assembler,
+            model_router=router,
+            event_log=FakeEventLog(),
+            tool_gateway=gateway,
+        )
+        result = await loop.run_turn(
+            replace(
+                _request(
+                    metadata=_tool_plan_metadata(
+                        "datetime.diff",
+                        "datetime.now",
+                        live_state_tool_names=("datetime.diff", "datetime.now"),
+                    ),
+                    budget=replace(
+                        _budget(),
+                        max_steps=8,
+                        max_model_calls=8,
+                        max_tool_calls=2,
+                    ),
+                ),
+                user_input="Сколько дней прошло с терактов 11 сентября до текущего момента?",
+            )
+        )
+        return result, gateway, router, assembler.seen_contracts
+
+    result, gateway, router, seen_contracts = asyncio.run(scenario())
+
+    assert result.response_text == "9036.008333333333 days"
+    assert gateway.calls == [
+        ("datetime.now", {}),
+        (
+            "datetime.diff",
+            {
+                "from_iso": "2001-09-11T00:00:00+03:00",
+                "to_iso": "2026-06-08T00:12:00+03:00",
+                "unit": "days",
+            },
+        ),
+    ]
+    assert router.structured_calls == 3
+    assert router.chat_calls == 1
+    assert 'Return exactly {"action":"tool_call","tool_name":"datetime.diff"' in (
+        seen_contracts[1] or ""
+    )
+    assert "Do not call datetime.now again" in (seen_contracts[1] or "")
+
+
+def test_tool_react_loop_reports_missing_interval_evidence_when_model_never_calls_diff() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def get_tool(self, tool_name: str):
+            return None
+
+        async def invoke(self, request):
+            self.calls.append((request.tool_name, dict(request.arguments)))
+            now = datetime.now(UTC)
+            if request.tool_name == "datetime.now":
+                return _typed_datetime_now_observation(
+                    request,
+                    iso="2026-06-08T00:12:00+03:00",
+                    now=now,
+                )
+            raise AssertionError(f"unexpected tool call: {request.tool_name}")
+
+    async def scenario():
+        gateway = Gateway()
+        event_log = FakeEventLog()
+        router = FakeStructuredAndChatRouter(
+            [
+                {"action": "tool_call", "tool_name": "datetime.now", "arguments": {}},
+                {"action": "final_answer"},
+                {"action": "final_answer"},
+            ],
+            chat_response="incorrect answer",
+        )
+        loop = ToolReactLoop(
+            conversation_store=FakeConversationStore(),
+            context_assembler=FakeContextAssembler(),
+            model_router=router,
+            event_log=event_log,
+            tool_gateway=gateway,
+        )
+        with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
+            await loop.run_turn(
+                replace(
+                    _request(
+                        metadata=_tool_plan_metadata(
+                            "datetime.diff",
+                            "datetime.now",
+                            live_state_tool_names=("datetime.diff", "datetime.now"),
+                        ),
+                        budget=replace(
+                            _budget(),
+                            max_steps=8,
+                            max_model_calls=3,
+                            max_tool_calls=2,
+                        ),
+                    ),
+                    user_input=(
+                        "Сколько дней прошло с момента капитуляции Германии "
+                        "в Великой Отечественной войне?"
+                    ),
+                )
+            )
+        return gateway, router, event_log.events
+
+    gateway, router, events = asyncio.run(scenario())
+
+    assert gateway.calls == [("datetime.now", {})]
+    assert router.structured_calls == 3
+    loop_failed = next(
+        event for event in events if event.event_type is EventType.AGENT_LOOP_FAILED
+    )
+    assert loop_failed.payload["missing_evidence_kinds"] == ["fixed_time_interval"]
+    assert loop_failed.payload["missing_tool_names"] == ["datetime.diff"]
+    assert loop_failed.payload["candidate_tool_names"] == ["datetime.diff", "datetime.now"]
+
+
 @pytest.mark.parametrize(
     ("prompt", "from_iso", "hours_value", "expression", "answer"),
     [
@@ -6696,7 +7554,7 @@ def test_tool_react_loop_blocks_final_answer_in_contract_when_calculator_evidenc
     assert len(assembler.seen_contracts) >= 2
     assert "final_answer is not valid yet" in (assembler.seen_contracts[0] or "")
     assert "final_answer is not valid yet" in (assembler.seen_contracts[1] or "")
-    assert "missing tool evidence: calculator.evaluate" in (assembler.seen_contracts[1] or "")
+    assert "missing evidence kinds: numeric_transform" in (assembler.seen_contracts[1] or "")
     assert "live-state observation" not in (assembler.seen_contracts[1] or "")
     assert "calculator.evaluate" in (assembler.seen_contracts[1] or "")
 
@@ -7616,7 +8474,7 @@ def test_tool_react_loop_fails_closed_for_countdown_when_datetime_now_is_unavail
                             "datetime.until",
                             live_state_tool_names=("datetime.until",),
                         ),
-                        budget=replace(_budget(), max_tool_calls=1),
+                        budget=replace(_budget(), max_model_calls=2, max_tool_calls=1),
                     ),
                     user_input="how many seconds until Christmas?",
                 )
@@ -7700,7 +8558,10 @@ def test_tool_react_loop_omits_invalid_datetime_until_from_iso_from_observation_
     result = asyncio.run(scenario())
 
     assert result.response_text == "Fallback answer."
-    assert result.tool_observation_refs[0].arguments == {}
+    assert result.tool_observation_refs[0].arguments == {
+        "target": "next_new_year",
+        "unit": "seconds",
+    }
 
 
 def test_tool_react_loop_defers_live_state_math_final_answer_after_calculator_without_live_state() -> None:
@@ -7751,7 +8612,7 @@ def test_tool_react_loop_defers_live_state_math_final_answer_after_calculator_wi
             event_log=event_log,
             tool_gateway=gateway,
         )
-        with pytest.raises(RuntimeError, match="max_steps_exceeded"):
+        with pytest.raises(RuntimeError, match="required_tool_evidence_missing"):
             await loop.run_turn(
                 replace(
                     _request(
