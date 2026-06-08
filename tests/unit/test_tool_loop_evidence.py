@@ -12,6 +12,7 @@ from assistant_core.domain.loops import (
 from assistant_core.domain.sensitivity import Sensitivity
 from assistant_core.domain.tools import ToolObservationStatus, ToolParseStatus
 from assistant_core.runtime.loops.tool_loop_evidence import (
+    LiveStateEvidenceKind,
     LiveStateEvidenceFamily,
     LiveStateEvidencePlan,
     contains_live_state_intent,
@@ -24,6 +25,7 @@ from assistant_core.runtime.loops.tool_loop_evidence import (
     request_needs_live_state_math_evidence,
     should_defer_final_answer_for_calculator_evidence,
 )
+from assistant_core.runtime.loops.tool_loop_contracts import tool_proposal_output_contract
 
 
 pytestmark = pytest.mark.unit
@@ -4481,7 +4483,7 @@ def test_live_state_evidence_plan_requires_calculator_for_derived_countdown_valu
     assert grounded_calculator_plan.missing_tool_names == frozenset()
 
 
-def test_live_state_evidence_plan_rejects_model_resolved_event_for_derived_elapsed_duration_value() -> None:
+def test_live_state_evidence_plan_accepts_model_resolved_event_for_derived_elapsed_duration_value() -> None:
     request = _request(
         "корень кубический из количества минут, прошедших с дня благодарения последнего."
     )
@@ -4560,15 +4562,9 @@ def test_live_state_evidence_plan_rejects_model_resolved_event_for_derived_elaps
     assert after_now_plan.missing_tool_names == frozenset(
         {"datetime.diff", "calculator.evaluate"}
     )
-    assert after_diff_plan.missing_tool_names == frozenset(
-        {"datetime.diff", "calculator.evaluate"}
-    )
-    assert ungrounded_calculator_plan.missing_tool_names == frozenset(
-        {"datetime.diff", "calculator.evaluate"}
-    )
-    assert grounded_calculator_plan.missing_tool_names == frozenset(
-        {"datetime.diff", "calculator.evaluate"}
-    )
+    assert after_diff_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert ungrounded_calculator_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert grounded_calculator_plan.missing_tool_names == frozenset()
 
 
 @pytest.mark.parametrize(
@@ -4731,15 +4727,9 @@ def test_live_state_evidence_plan_requires_exact_log_base_for_elapsed_delta_valu
     assert after_now_plan.missing_tool_names == frozenset(
         {"datetime.diff", "calculator.evaluate"}
     )
-    if from_iso in prompt:
-        assert after_diff_plan.missing_tool_names == frozenset({"calculator.evaluate"})
-        assert wrong_base_plan.missing_tool_names == frozenset({"calculator.evaluate"})
-        assert matching_plan.missing_tool_names == frozenset()
-    else:
-        unresolved_missing = frozenset({"datetime.diff", "calculator.evaluate"})
-        assert after_diff_plan.missing_tool_names == unresolved_missing
-        assert wrong_base_plan.missing_tool_names == unresolved_missing
-        assert matching_plan.missing_tool_names == unresolved_missing
+    assert after_diff_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert wrong_base_plan.missing_tool_names == frozenset({"calculator.evaluate"})
+    assert matching_plan.missing_tool_names == frozenset()
 
 
 def test_live_state_evidence_plan_rejects_datetime_diff_with_wrong_explicit_elapsed_endpoint() -> None:
@@ -4832,6 +4822,249 @@ def test_live_state_evidence_plan_rejects_calendar_diff_for_datetime_diff_requir
 
     assert plan.family is LiveStateEvidenceFamily.LIVE_STATE_MATH
     assert plan.missing_tool_names == frozenset({"datetime.diff"})
+
+
+@pytest.mark.parametrize(
+    ("prompt", "unit", "unit_value"),
+    [
+        ("Сколько с тех пор прошло минут?", "minutes", 32898294),
+        ("сколько прошло с тех пор дней?", "days", 22846.0375),
+    ],
+)
+def test_live_state_evidence_plan_requires_datetime_diff_for_anaphoric_elapsed_duration(
+    prompt: str,
+    unit: str,
+    unit_value: float,
+) -> None:
+    request = _request(prompt)
+    request_plan = _plan(
+        "calendar.diff",
+        "datetime.diff",
+        "datetime.now",
+        live_state_tool_names=("calendar.diff", "datetime.diff", "datetime.now"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-07T23:24:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    diff_ref = _completed_ref(
+        "datetime.diff",
+        structured_schema="datetime.diff",
+        structured_content={
+            "from_iso": "1963-11-22T12:30:00-06:00",
+            "to_iso": "2026-06-07T23:24:00+03:00",
+            unit: unit_value,
+            "unit": unit,
+            "value": unit_value,
+            "absolute": False,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    initial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    after_now_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref,),
+    )
+    after_diff_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, diff_ref),
+    )
+
+    assert initial_plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert initial_plan.candidate_tool_names == frozenset({"datetime.now", "datetime.diff"})
+    assert initial_plan.missing_tool_names == frozenset({"datetime.now", "datetime.diff"})
+    assert initial_plan.candidate_evidence_kinds == frozenset(
+        {
+            LiveStateEvidenceKind.CURRENT_TIMESTAMP,
+            LiveStateEvidenceKind.FIXED_TIME_INTERVAL,
+        }
+    )
+    assert initial_plan.missing_evidence_kinds == initial_plan.candidate_evidence_kinds
+    assert after_now_plan.missing_tool_names == frozenset({"datetime.diff"})
+    assert after_now_plan.missing_evidence_kinds == frozenset(
+        {LiveStateEvidenceKind.FIXED_TIME_INTERVAL}
+    )
+    assert after_diff_plan.missing_tool_names == frozenset()
+    assert after_diff_plan.missing_evidence_kinds == frozenset()
+    assert "calculator.evaluate" not in initial_plan.candidate_tool_names
+
+
+def test_live_state_evidence_plan_requires_datetime_diff_for_anaphoric_unit_correction() -> None:
+    request = _request("Я же спросил про это количество дней, а не лет.")
+    request_plan = _plan(
+        "datetime.diff",
+        "datetime.now",
+        live_state_tool_names=("datetime.diff", "datetime.now"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-08T00:12:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    initial_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+    after_now_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref,),
+    )
+
+    assert initial_plan.candidate_tool_names == frozenset({"datetime.now", "datetime.diff"})
+    assert initial_plan.missing_tool_names == frozenset({"datetime.now", "datetime.diff"})
+    assert after_now_plan.missing_tool_names == frozenset({"datetime.diff"})
+
+
+def test_live_state_evidence_plan_accepts_model_resolved_historical_endpoint_for_elapsed_duration() -> None:
+    request = _request("Сколько дней прошло с Великой Октябрьской революции 1917 года?")
+    request_plan = _plan(
+        "datetime.diff",
+        "datetime.now",
+        live_state_tool_names=("datetime.diff", "datetime.now"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-08T00:12:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    diff_ref = _completed_ref(
+        "datetime.diff",
+        structured_schema="datetime.diff",
+        structured_content={
+            "from_iso": "1917-11-07T00:00:00+03:00",
+            "to_iso": "2026-06-08T00:12:00+03:00",
+            "days": 39659.00833333333,
+            "unit": "days",
+            "value": 39659.00833333333,
+            "absolute": False,
+        },
+        parse_status=ToolParseStatus.PARSED,
+    )
+
+    after_diff_plan = live_state_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref, diff_ref),
+    )
+
+    assert after_diff_plan.family is LiveStateEvidenceFamily.CURRENT_TIME
+    assert after_diff_plan.missing_tool_names == frozenset()
+    assert after_diff_plan.missing_evidence_kinds == frozenset()
+
+
+def test_tool_proposal_contract_prefers_fixed_interval_tool_for_fixed_time_delta_evidence() -> None:
+    request = _request(
+        "Какова длительность промежутка времени с того момента до текущего в минутах?"
+    )
+    request_plan = _plan(
+        "calendar.diff",
+        "datetime.diff",
+        "datetime.now",
+        live_state_tool_names=("calendar.diff", "datetime.diff", "datetime.now"),
+    )
+    evidence_plan = final_answer_missing_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+
+    assert evidence_plan is not None
+    contract = tool_proposal_output_contract(
+        request_plan,
+        completed_observations=0,
+        missing_evidence_plan=evidence_plan,
+    )
+
+    assert "missing evidence kinds: current_timestamp, fixed_time_interval" in contract
+    assert "candidate evidence tools: datetime.diff, datetime.now" in contract
+    assert "use datetime.now and then datetime.diff" in contract
+    assert "use datetime.now and then calendar.diff" not in contract
+
+
+def test_tool_proposal_contract_uses_datetime_diff_after_current_timestamp_evidence() -> None:
+    request = _request("Сколько прошло дней с момента Карибского кризиса?")
+    request_plan = _plan(
+        "calendar.diff",
+        "datetime.diff",
+        "datetime.now",
+        live_state_tool_names=("calendar.diff", "datetime.diff", "datetime.now"),
+    )
+    now_ref = _completed_ref(
+        "datetime.now",
+        structured_schema="datetime.now",
+        structured_content={"iso": "2026-06-08T00:12:00+03:00"},
+        parse_status=ToolParseStatus.PARSED,
+    )
+    evidence_plan = final_answer_missing_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(now_ref,),
+    )
+
+    assert evidence_plan is not None
+    contract = tool_proposal_output_contract(
+        request_plan,
+        completed_observations=1,
+        missing_evidence_plan=evidence_plan,
+    )
+
+    assert "missing evidence kinds: fixed_time_interval" in contract
+    assert "candidate evidence tools: datetime.diff, datetime.now" in contract
+    assert 'Return exactly {"action":"tool_call","tool_name":"datetime.diff"' in contract
+    assert "Do not call datetime.now again" in contract
+    assert "use datetime.diff with explicit timezone-aware ISO timestamp arguments" in contract
+    assert "named or historical event" in contract
+    assert "Self-contained calendar, duration, or arithmetic questions" not in contract
+    assert "use datetime.now and then datetime.diff" not in contract
+    assert "use datetime.now and then calendar.diff" not in contract
+
+
+def test_tool_proposal_contract_uses_explicit_endpoints_for_self_contained_calendar_interval() -> None:
+    request = _request(
+        "Количество месяцев между 2025-11-27T00:00:00+00:00 "
+        "и 2026-04-05T00:00:00+00:00."
+    )
+    request_plan = _plan(
+        "calendar.diff",
+        "datetime.now",
+        live_state_tool_names=("calendar.diff", "datetime.now"),
+    )
+    evidence_plan = final_answer_missing_evidence_plan(
+        request,
+        request_plan,
+        tool_observation_refs=(),
+    )
+
+    assert evidence_plan is not None
+    assert evidence_plan.candidate_tool_names == frozenset({"calendar.diff"})
+    assert evidence_plan.missing_tool_names == frozenset({"calendar.diff"})
+    assert evidence_plan.missing_evidence_kinds == frozenset(
+        {LiveStateEvidenceKind.CALENDAR_INTERVAL}
+    )
+    contract = tool_proposal_output_contract(
+        request_plan,
+        completed_observations=0,
+        missing_evidence_plan=evidence_plan,
+    )
+
+    assert 'Return exactly {"action":"tool_call","tool_name":"calendar.diff"' in contract
+    assert "Use the explicit ISO endpoints from the user request" in contract
+    assert "completed datetime.now iso" not in contract
+    assert "Do not call datetime.now again" not in contract
 
 
 @pytest.mark.parametrize(

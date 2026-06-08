@@ -15,6 +15,10 @@ from assistant_core.runtime.loops.tool_loop_datetime_diff_evidence import (
     datetime_diff_observations_match_request,
     expected_time_delta_unit as _expected_datetime_until_unit,
 )
+from assistant_core.runtime.loops.tool_loop_evidence_kinds import (
+    LiveStateEvidenceKind,
+    evidence_kinds_for_tool_names as _evidence_kinds_for_tool_names,
+)
 from assistant_core.runtime.loops.tool_loop_live_state_tools import is_known_live_state_tool_name
 from assistant_core.runtime.loops.tool_loop_observation_evidence import (
     daemon_status_observations_match_request,
@@ -34,7 +38,13 @@ from assistant_core.runtime.loops.tool_loop_raw_diagnostics import (
     system_ref_has_usable_raw_diagnostics as _system_ref_has_usable_raw_diagnostics,
     system_ref_is_unavailable as _system_ref_is_unavailable,
 )
-from assistant_core.runtime.loops.tool_loop_time_delta_units import GENERIC_TIME_DELTA_UNIT_PATTERN, TIME_DELTA_UNIT_PATTERN, is_self_contained_time_delta_interval
+from assistant_core.runtime.loops.tool_loop_time_delta_units import (
+    CALENDAR_ONLY_DIFF_UNITS,
+    GENERIC_TIME_DELTA_UNIT_PATTERN,
+    TIME_DELTA_UNIT_PATTERN,
+    has_anaphoric_time_delta_endpoint,
+    is_self_contained_time_delta_interval,
+)
 
 TOOL_PROPOSAL_MAX_MODEL_CALL_SECONDS = 8.0
 
@@ -59,6 +69,8 @@ class LiveStateEvidencePlan:
     missing_tool_names: frozenset[str]
     families: frozenset[LiveStateEvidenceFamily] = frozenset()
     missing_families: frozenset[LiveStateEvidenceFamily] = frozenset()
+    candidate_evidence_kinds: frozenset[LiveStateEvidenceKind] = frozenset()
+    missing_evidence_kinds: frozenset[LiveStateEvidenceKind] = frozenset()
     unavailable_reason: str | None = None
 
 @dataclass(frozen=True)
@@ -548,7 +560,7 @@ def live_state_evidence_plan(
         scoped_text,
         live_state_detected=live_state_math_base_detected,
         live_time_delta_detected=LiveStateEvidenceFamily.CURRENT_TIME in families
-        and _matches_any(_CURRENT_TIME_DELTA_PATTERNS, scoped_text),
+        and _is_current_time_delta_request(scoped_text),
     )
     if live_state_math_required:
         family = LiveStateEvidenceFamily.LIVE_STATE_MATH
@@ -613,6 +625,8 @@ def live_state_evidence_plan(
         missing_tool_names,
         family,
     )
+    candidate_evidence_kinds = _evidence_kinds_for_tool_names(candidate_tool_names)
+    missing_evidence_kinds = _evidence_kinds_for_tool_names(missing_tool_names)
     return LiveStateEvidencePlan(
         family=family,
         evidence_required=True,
@@ -620,6 +634,8 @@ def live_state_evidence_plan(
         missing_tool_names=missing_tool_names,
         families=families,
         missing_families=missing_families,
+        candidate_evidence_kinds=candidate_evidence_kinds,
+        missing_evidence_kinds=missing_evidence_kinds,
         unavailable_reason="live_state_tool_unavailable" if unavailable else None,
     )
 
@@ -719,7 +735,7 @@ def _detect_live_state_families_from_text(
     if _matches_any(_CURRENT_DATE_PATTERNS, value) and not excluded_time_context:
         families.append(LiveStateEvidenceFamily.CURRENT_DATE)
     if (
-        _matches_any(_CURRENT_TIME_PATTERNS, value)
+        (_matches_any(_CURRENT_TIME_PATTERNS, value) or _is_current_time_delta_request(value))
         and not excluded_time_context
         and not is_self_contained_time_delta_interval(value)
     ):
@@ -929,6 +945,12 @@ def _matches_any(patterns: tuple[str, ...], value: str) -> bool:
     return any(re.search(pattern, value, flags=re.IGNORECASE) for pattern in patterns)
 
 
+def _is_current_time_delta_request(value: str) -> bool:
+    return _matches_any(_CURRENT_TIME_DELTA_PATTERNS, value) or has_anaphoric_time_delta_endpoint(
+        value
+    )
+
+
 def _needs_calculator_for_live_state_math(value: str) -> bool:
     return contains_arithmetic_expression(value) or _LIVE_STATE_THRESHOLD_PATTERN.search(value) is not None
 
@@ -944,22 +966,20 @@ def _candidate_tool_names_for_family(
     request_plan: ToolRequestPlan,
     request_text: str,
 ) -> frozenset[str]:
-    if family is LiveStateEvidenceFamily.CURRENT_TIME and _matches_any(
-        _CURRENT_TIME_DELTA_PATTERNS,
-        request_text,
-    ):
-        allowed = request_plan.allowed_tool_names or frozenset(); expected_unit = _expected_datetime_until_unit(request_text)
+    if family is LiveStateEvidenceFamily.CURRENT_TIME and _is_current_time_delta_request(request_text):
+        allowed = request_plan.allowed_tool_names or frozenset()
+        expected_unit = _expected_datetime_until_unit(request_text)
         delta_required = frozenset({"datetime.now"})
         if _expected_datetime_until_arguments(request_text) is not None:
             delta_required = frozenset({"datetime.now", "datetime.until"})
-        elif "calendar.diff" in allowed and expected_unit is not None:
-            delta_required = frozenset({"datetime.now", "calendar.diff"})
         elif (
             expected_unit is not None
-            and expected_unit not in {"months", "quarters", "decades"}
+            and expected_unit not in CALENDAR_ONLY_DIFF_UNITS
             and "datetime.diff" in allowed
         ):
             delta_required = frozenset({"datetime.now", "datetime.diff"})
+        elif "calendar.diff" in allowed and expected_unit is not None:
+            delta_required = frozenset({"datetime.now", "calendar.diff"})
         elif expected_unit is not None:
             return frozenset()
         delta_candidates = _allowed_live_tool_names(delta_required, request_plan)
@@ -994,7 +1014,7 @@ def _missing_tool_names_for_family_candidates(
     missing: set[str] = set()
     for family, clause_candidates_by_text in per_family_clause_candidates.items():
         for request_text, family_candidates in clause_candidates_by_text:
-            if family is LiveStateEvidenceFamily.CURRENT_TIME and _matches_any(_CURRENT_TIME_DELTA_PATTERNS, request_text) and family_candidates & {"calendar.diff", "datetime.diff"}:
+            if family is LiveStateEvidenceFamily.CURRENT_TIME and _is_current_time_delta_request(request_text) and family_candidates & {"calendar.diff", "datetime.diff"}:
                 diff_tool_name = "calendar.diff" if "calendar.diff" in family_candidates else "datetime.diff"
                 if _has_matching_completed_observation_for_delta(
                     diff_tool_name,
@@ -1018,7 +1038,7 @@ def _missing_tool_names_for_family_candidates(
                 continue
             if (
                 family is LiveStateEvidenceFamily.CURRENT_TIME
-                and _matches_any(_CURRENT_TIME_DELTA_PATTERNS, request_text)
+                and _is_current_time_delta_request(request_text)
                 and _expected_datetime_until_arguments(request_text) is not None
                 and len(family_candidates) > 1
                 and not _current_time_delta_has_unsupported_target(request_text)
@@ -1083,10 +1103,7 @@ def _missing_families_for_family_candidates(
 
 
 def _current_time_delta_has_unsupported_target(value: str) -> bool:
-    return _matches_any(
-        _CURRENT_TIME_DELTA_PATTERNS,
-        value,
-    ) and not _all_delta_clauses_support_datetime_until(
+    return _is_current_time_delta_request(value) and not _all_delta_clauses_support_datetime_until(
         value,
     )
 
@@ -1095,7 +1112,7 @@ def _all_delta_clauses_support_datetime_until(value: str) -> bool:
     delta_clauses = tuple(
         clause
         for clause in _live_state_candidate_clauses(value)
-        if _matches_any(_CURRENT_TIME_DELTA_PATTERNS, clause)
+        if _is_current_time_delta_request(clause)
     )
     if not delta_clauses:
         delta_clauses = (value,)
@@ -1681,7 +1698,7 @@ def _has_all_matching_calculator_observations(
         request_text,
         live_state_detected=bool(families & _LIVE_STATE_MATH_BASE_FAMILIES),
         live_time_delta_detected=LiveStateEvidenceFamily.CURRENT_TIME in families
-        and _matches_any(_CURRENT_TIME_DELTA_PATTERNS, request_text),
+        and _is_current_time_delta_request(request_text),
     ):
         return any(
             calculator_expression_matches_derived_request(request_text, ref, tool_observation_refs)
@@ -1861,6 +1878,7 @@ def _without_terminal_unavailable_observations(
         plan,
         missing_tool_names=missing_tool_names,
         missing_families=_missing_families_for_tool_names(missing_tool_names, plan),
+        missing_evidence_kinds=_evidence_kinds_for_tool_names(missing_tool_names),
     )
 
 

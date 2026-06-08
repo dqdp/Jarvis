@@ -14,7 +14,7 @@ CALENDAR_ONLY_DIFF_UNITS = CALENDAR_DIFF_UNITS - DATETIME_DIFF_UNITS
 TIME_DELTA_UNIT_PATTERN = (
     r"(?:"
     r"микросекунд\w*|миллисекунд\w*|секунд\w*|минут\w*|час(?:ов|а|ы)?|"
-    r"дн(?:ей|я|и|ю|ем|ям|ями|ях)?|недел\w*|месяц\w*|квартал\w*|декад\w*|"
+    r"д(?:н(?:ей|я|и|ю|ем|ям|ями|ях)?|ень)|недел\w*|месяц\w*|квартал\w*|декад\w*|"
     r"microseconds?|usecs?|us|µs|milliseconds?|msecs?|ms|seconds?|secs?|minutes?|mins?|"
     r"hours?|hrs?|days?|weeks?|months?|quarters?|decades?"
     r")"
@@ -27,7 +27,7 @@ _UNIT_PATTERNS: tuple[tuple[str, str], ...] = (
     ("seconds", r"секунд\w*|seconds?|secs?"),
     ("minutes", r"минут\w*|minutes?|mins?"),
     ("hours", r"час(?:ов|а|ы)?|hours?|hrs?"),
-    ("days", r"дн(?:ей|я|и|ю|ем|ям|ями|ях)?|days?"),
+    ("days", r"д(?:н(?:ей|я|и|ю|ем|ям|ями|ях)?|ень)|days?"),
     ("weeks", r"недел\w*|weeks?"),
     ("months", r"месяц\w*|months?"),
     ("quarters", r"квартал\w*|quarters?"),
@@ -53,6 +53,29 @@ _CURRENT_ENDPOINT_PATTERN = re.compile(
     r"\b(?:now|current|right\s+now)\b|"
     r"прошед|остав|остал|послед|прошл|следующ|"
     r"\b(?:elapsed|passed|remaining|left|until|last|previous|next)\b",
+    flags=re.IGNORECASE,
+)
+_ANAPHORIC_TIME_DELTA_ENDPOINT_MARKERS = (
+    "с тех пор",
+    "с того момент",
+    "с той дат",
+    "это количеств",
+    "это число",
+    "после этого",
+    "после того",
+    "since then",
+    "from then",
+    "since that time",
+    "since that date",
+    "since that moment",
+    "after that",
+    "that number of",
+    "that amount of",
+    "this number of",
+    "this amount of",
+)
+_ANAPHORIC_TIME_DELTA_CORRECTION_PATTERN = re.compile(
+    r"(?:\bа\s+не\b|\bне\s+\w+\b|rather\s+than|not\s+\w+)",
     flags=re.IGNORECASE,
 )
 _EXPLICIT_INTERVAL_ENDPOINT_PATTERN = re.compile(
@@ -82,6 +105,24 @@ def time_delta_unit_source(value: str) -> str | None:
     return f"time_delta.{unit}" if unit is not None else None
 
 
+def normalize_time_delta_unit_name(
+    value: str,
+    *,
+    allowed_units: frozenset[str],
+) -> str | None:
+    normalized = _normalize(value)
+    if normalized in allowed_units:
+        return normalized
+    matches = tuple(
+        unit
+        for unit, pattern in _UNIT_PATTERNS
+        if unit in allowed_units and re.fullmatch(pattern, normalized, flags=re.IGNORECASE)
+    )
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def explicit_time_delta_endpoint_values(value: str) -> tuple[str, ...]:
     values: list[str] = []
     for match in _EXPLICIT_INTERVAL_ENDPOINT_PATTERN.finditer(value):
@@ -89,6 +130,18 @@ def explicit_time_delta_endpoint_values(value: str) -> tuple[str, ...]:
         if normalized is not None:
             values.append(normalized)
     return tuple(values)
+
+
+def has_anaphoric_time_delta_endpoint(value: str) -> bool:
+    normalized = _normalize(value)
+    return (
+        expected_time_delta_unit(normalized) is not None
+        and any(marker in normalized for marker in _ANAPHORIC_TIME_DELTA_ENDPOINT_MARKERS)
+        and (
+            _TIME_DELTA_DIRECTION_PATTERN.search(normalized) is not None
+            or _ANAPHORIC_TIME_DELTA_CORRECTION_PATTERN.search(normalized) is not None
+        )
+    )
 
 
 def is_self_contained_time_delta_interval(value: str) -> bool:
@@ -165,8 +218,10 @@ __all__ = [
     "TIME_DELTA_UNIT_PATTERN",
     "explicit_time_delta_endpoint_values",
     "expected_time_delta_unit",
+    "has_anaphoric_time_delta_endpoint",
     "is_self_contained_time_delta_interval",
     "normalize_iso_endpoint_value",
     "normalize_timezone_aware_iso_endpoint_value",
+    "normalize_time_delta_unit_name",
     "time_delta_unit_source",
 ]

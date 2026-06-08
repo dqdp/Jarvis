@@ -83,6 +83,8 @@ def _datetime_diff_ref_matches(
         return bool(observed_sources) and explicit_endpoints[0] in endpoint_set and bool(
             endpoint_set & observed_sources
         )
+    if observed_sources and endpoint_set & observed_sources:
+        return True
     return False
 
 
