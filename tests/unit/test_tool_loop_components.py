@@ -13,6 +13,7 @@ from assistant_core.domain.loops import (
     LoopStrategyName,
     ToolObservationRef,
     ToolProposal,
+    ToolProposalParseError,
 )
 from assistant_core.domain.policy import Capability, PermissionMode, RiskClass
 from assistant_core.domain.requests import RequestStatus
@@ -250,3 +251,110 @@ def test_tool_proposal_executor_passes_request_working_directory_to_gateway() ->
     calls = asyncio.run(scenario())
 
     assert calls[0].working_directory == "/tmp/jarvis-project"
+
+
+@pytest.mark.parametrize(
+    ("unit_argument", "expected_unit"),
+    [
+        ("hours", "hours"),
+        ("дней", "days"),
+        ("день", "days"),
+    ],
+)
+def test_tool_proposal_executor_canonicalizes_datetime_diff_arguments_for_gateway(
+    unit_argument: str,
+    expected_unit: str,
+) -> None:
+    async def scenario():
+        gateway = FakeGateway()
+        executor = ToolProposalExecutor(
+            tool_gateway=gateway,
+            conversation_store=FakeConversationStore(),
+        )
+
+        observation = await executor.execute(
+            _loop_request(),
+            ToolProposal(
+                action="tool_call",
+                tool_name="datetime.diff",
+                arguments={
+                    "from_iso": "1945-09-02",
+                    "to_iso": "2026-06-08T00:12:00+03:00",
+                    "unit": unit_argument,
+                },
+            ),
+            step_id="step-1",
+            causation_event_id="event-step",
+            used_tool_calls=0,
+            loop_deadline=asyncio.get_running_loop().time() + 1.0,
+        )
+        return observation, gateway.calls
+
+    observation, calls = asyncio.run(scenario())
+
+    assert calls[0].arguments == {
+        "from_iso": "1945-09-02T00:00:00+03:00",
+        "to_iso": "2026-06-08T00:12:00+03:00",
+        "unit": expected_unit,
+    }
+    assert observation.arguments == calls[0].arguments
+
+
+def test_tool_proposal_executor_canonicalizes_datetime_until_unit_for_gateway() -> None:
+    async def scenario():
+        gateway = FakeGateway()
+        executor = ToolProposalExecutor(
+            tool_gateway=gateway,
+            conversation_store=FakeConversationStore(),
+        )
+
+        observation = await executor.execute(
+            _loop_request(),
+            ToolProposal(
+                action="tool_call",
+                tool_name="datetime.until",
+                arguments={"target": "next_new_year", "unit": "дней"},
+            ),
+            step_id="step-1",
+            causation_event_id="event-step",
+            used_tool_calls=0,
+            loop_deadline=asyncio.get_running_loop().time() + 1.0,
+        )
+        return observation, gateway.calls
+
+    observation, calls = asyncio.run(scenario())
+
+    assert calls[0].arguments == {"target": "next_new_year", "unit": "days"}
+    assert observation.arguments == calls[0].arguments
+
+
+def test_tool_proposal_executor_rejects_invalid_datetime_diff_arguments_before_gateway() -> None:
+    async def scenario():
+        gateway = FakeGateway()
+        executor = ToolProposalExecutor(
+            tool_gateway=gateway,
+            conversation_store=FakeConversationStore(),
+        )
+
+        with pytest.raises(ToolProposalParseError):
+            await executor.execute(
+                _loop_request(),
+                ToolProposal(
+                    action="tool_call",
+                    tool_name="datetime.diff",
+                    arguments={
+                        "from_iso": "917-11-07",
+                        "to_iso": "2026-06-08T00:12:00+03:00",
+                        "unit": "дней",
+                    },
+                ),
+                step_id="step-1",
+                causation_event_id="event-step",
+                used_tool_calls=0,
+                loop_deadline=asyncio.get_running_loop().time() + 1.0,
+            )
+        return gateway.calls
+
+    calls = asyncio.run(scenario())
+
+    assert calls == []

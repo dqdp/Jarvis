@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime
 
 from assistant_core.domain.conversations import UpdateAssistantRequestStatusCommand
@@ -8,7 +9,11 @@ from assistant_core.domain.loops import LoopExecutionRequest, ToolObservationRef
 from assistant_core.domain.requests import RequestStatus
 from assistant_core.domain.tools import ToolCallRequest, ToolObservationStatus
 from assistant_core.privacy.redaction import redact_content
-from assistant_core.runtime.loops.tool_loop_time_delta_units import CALENDAR_DIFF_UNITS, DATETIME_DIFF_UNITS
+from assistant_core.runtime.loops.tool_loop_time_delta_units import (
+    CALENDAR_DIFF_UNITS,
+    DATETIME_DIFF_UNITS,
+    normalize_time_delta_unit_name,
+)
 
 
 class ToolProposalExecutor:
@@ -177,7 +182,7 @@ class ToolProposalExecutor:
         return await self._tool_gateway.invoke(
             ToolCallRequest(
                 tool_name=proposal.tool_name,
-                arguments=proposal.arguments,
+                arguments=_gateway_invocation_arguments(proposal),
                 request_id=request.request_id,
                 conversation_id=request.conversation_id,
                 correlation_id=request.correlation_id or request.request_id,
@@ -215,6 +220,26 @@ def _safe_observation_arguments(proposal: ToolProposal) -> dict[str, object]:
     if proposal.tool_name in _SYSTEM_DIAGNOSTICS_TOOL_NAMES:
         return _safe_system_diagnostics_arguments(proposal)
     return {}
+
+
+def _gateway_invocation_arguments(proposal: ToolProposal) -> dict[str, object]:
+    if proposal.tool_name in {"calendar.diff", "datetime.diff", "datetime.until"}:
+        arguments = _safe_observation_arguments(proposal)
+        if not _safe_gateway_arguments_are_complete(proposal.tool_name, arguments):
+            raise ToolProposalParseError("tool_call arguments are invalid")
+        return arguments
+    return proposal.arguments
+
+
+def _safe_gateway_arguments_are_complete(
+    tool_name: str | None,
+    arguments: dict[str, object],
+) -> bool:
+    if tool_name in {"calendar.diff", "datetime.diff"}:
+        return {"from_iso", "to_iso", "unit"} <= set(arguments)
+    if tool_name == "datetime.until":
+        return {"target", "unit"} <= set(arguments)
+    return True
 
 
 _SYSTEM_DIAGNOSTICS_TOOL_NAMES = frozenset(
@@ -291,24 +316,32 @@ def _safe_calculator_arguments(proposal: ToolProposal) -> dict[str, object]:
 
 def _safe_datetime_until_arguments(proposal: ToolProposal) -> dict[str, object]:
     target = _safe_short_string_argument(proposal, "target", max_length=100)
-    unit = _safe_short_string_argument(proposal, "unit", max_length=20)
-    if target != "next_new_year" or unit not in DATETIME_DIFF_UNITS:
+    unit = _safe_time_delta_unit_argument(
+        proposal,
+        "unit",
+        allowed_units=DATETIME_DIFF_UNITS,
+    )
+    if target != "next_new_year" or unit is None:
         return {}
     safe_arguments: dict[str, object] = {"target": target, "unit": unit}
     if "from_iso" in proposal.arguments:
         from_iso = _safe_iso_datetime_argument(proposal, "from_iso", max_length=80)
-        if from_iso is None:
-            return {}
-        safe_arguments["from_iso"] = from_iso
+        if from_iso is not None:
+            safe_arguments["from_iso"] = from_iso
     return safe_arguments
 
 
 def _safe_datetime_diff_arguments(proposal: ToolProposal) -> dict[str, object]:
-    unit = _safe_short_string_argument(proposal, "unit", max_length=20)
-    if unit not in DATETIME_DIFF_UNITS:
+    unit = _safe_time_delta_unit_argument(
+        proposal,
+        "unit",
+        allowed_units=DATETIME_DIFF_UNITS,
+    )
+    if unit is None:
         return {}
-    from_iso = _safe_iso_datetime_argument(proposal, "from_iso", max_length=80)
-    to_iso = _safe_iso_datetime_argument(proposal, "to_iso", max_length=80)
+    from_raw = _safe_short_string_argument(proposal, "from_iso", max_length=80)
+    to_raw = _safe_short_string_argument(proposal, "to_iso", max_length=80)
+    from_iso, to_iso = _safe_interval_iso_arguments(from_raw, to_raw)
     if from_iso is None or to_iso is None:
         return {}
     safe_arguments: dict[str, object] = {
@@ -323,11 +356,16 @@ def _safe_datetime_diff_arguments(proposal: ToolProposal) -> dict[str, object]:
 
 
 def _safe_calendar_diff_arguments(proposal: ToolProposal) -> dict[str, object]:
-    unit = _safe_short_string_argument(proposal, "unit", max_length=20)
-    if unit not in CALENDAR_DIFF_UNITS:
+    unit = _safe_time_delta_unit_argument(
+        proposal,
+        "unit",
+        allowed_units=CALENDAR_DIFF_UNITS,
+    )
+    if unit is None:
         return {}
-    from_iso = _safe_iso_datetime_argument(proposal, "from_iso", max_length=80)
-    to_iso = _safe_iso_datetime_argument(proposal, "to_iso", max_length=80)
+    from_raw = _safe_short_string_argument(proposal, "from_iso", max_length=80)
+    to_raw = _safe_short_string_argument(proposal, "to_iso", max_length=80)
+    from_iso, to_iso = _safe_interval_iso_arguments(from_raw, to_raw)
     if from_iso is None or to_iso is None:
         return {}
     safe_arguments: dict[str, object] = {
@@ -339,6 +377,46 @@ def _safe_calendar_diff_arguments(proposal: ToolProposal) -> dict[str, object]:
     if isinstance(absolute, bool):
         safe_arguments["absolute"] = absolute
     return safe_arguments
+
+
+def _safe_interval_iso_arguments(
+    from_raw: str | None,
+    to_raw: str | None,
+) -> tuple[str | None, str | None]:
+    if from_raw is None or to_raw is None:
+        return (None, None)
+    from_parsed = _parse_interval_iso_argument(from_raw)
+    to_parsed = _parse_interval_iso_argument(to_raw)
+    if from_parsed is None or to_parsed is None:
+        return (None, None)
+    from_dt, from_was_date_only = from_parsed
+    to_dt, to_was_date_only = to_parsed
+    if from_dt.tzinfo is None and to_dt.tzinfo is None:
+        return (None, None)
+    if from_dt.tzinfo is None:
+        from_dt = from_dt.replace(tzinfo=to_dt.tzinfo)
+    if to_dt.tzinfo is None:
+        to_dt = to_dt.replace(tzinfo=from_dt.tzinfo)
+    return (
+        _format_interval_datetime(from_dt, date_only=from_was_date_only),
+        _format_interval_datetime(to_dt, date_only=to_was_date_only),
+    )
+
+
+def _parse_interval_iso_argument(value: str) -> tuple[datetime, bool] | None:
+    normalized = value.replace("Z", "+00:00")
+    date_only = re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized) is not None
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    return (parsed, date_only)
+
+
+def _format_interval_datetime(value: datetime, *, date_only: bool) -> str:
+    if date_only:
+        value = value.replace(hour=0, minute=0, second=0, microsecond=0)
+    return value.isoformat()
 
 
 def _safe_iso_datetime_argument(
@@ -361,6 +439,22 @@ def _safe_iso_datetime_argument(
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
     return value
+
+
+def _safe_time_delta_unit_argument(
+    proposal: ToolProposal,
+    argument_name: str,
+    *,
+    allowed_units: frozenset[str],
+) -> str | None:
+    value = _safe_short_string_argument(
+        proposal,
+        argument_name,
+        max_length=30,
+    )
+    if value is None:
+        return None
+    return normalize_time_delta_unit_name(value, allowed_units=allowed_units)
 
 
 def _safe_short_string_argument(
